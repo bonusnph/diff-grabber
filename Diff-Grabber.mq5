@@ -1510,6 +1510,12 @@ void OnDeinit(const int reason)
    EventKillTimer();
    // best effort: release lock
    FileDelete(PathRoleLock(), FILE_COMMON);
+   // Remove all chart objects only when EA is explicitly removed by user
+   if(reason == REASON_REMOVE)
+   {
+      ObjectsDeleteAll(0, -1, -1);
+      ChartRedraw(0);
+   }
    DisplayClearAll();
 }
 
