@@ -415,7 +415,6 @@ int FileWriteAll(const string relPath, const string content)
    int h = FileOpen(relPath, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
    if(h == INVALID_HANDLE) return GetLastError();
    FileWriteString(h, content);
-   FileFlush(h);
    FileClose(h);
    return 0;
 }
@@ -426,7 +425,6 @@ int FileWriteAllAtomic(const string relPath, const string content)
    int h = FileOpen(tmp, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
    if(h == INVALID_HANDLE) return GetLastError();
    FileWriteString(h, content);
-   FileFlush(h);
    FileClose(h);
    bool mv = FileMove(tmp, FILE_COMMON, relPath, FILE_COMMON);
    if(!mv) return FileWriteAll(relPath, content);
@@ -435,7 +433,6 @@ int FileWriteAllAtomic(const string relPath, const string content)
 bool FileReadAll(const string relPath, string &out)
 {
    out = "";
-   if(!FileIsExist(relPath, FILE_COMMON)) return false;
    int h = FileOpen(relPath, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
    if(h == INVALID_HANDLE) return false;
    int size = (int)FileSize(h);
