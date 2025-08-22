@@ -31,6 +31,9 @@ input string input_shared_dir               = "";            // Scope: Both — 
 input string input_symbol                   = "";            // Scope: Both — empty uses current chart symbol
 input bool   input_verbose_journal_logs     = true;          // Scope: Both — emit concise Journal logs for key events
 
+// Display monitor width (pixels)
+input int    input_display_width_pixels      = 520;          // Scope: Both — width of Display Monitor background (pixels)
+
 // Master decision parameters
 input int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
 input MasterSide input_master_side          = SIDE_BUY;      // Scope: Master — master direction (Slave auto-opposite)
@@ -1543,7 +1546,7 @@ void DisplayInit()
    ObjectSet(bg, OBJPROP_CORNER, 0);
    ObjectSet(bg, OBJPROP_XDISTANCE, 0);
    ObjectSet(bg, OBJPROP_YDISTANCE, 0);
-   ObjectSet(bg, OBJPROP_XSIZE, 520);
+   ObjectSet(bg, OBJPROP_XSIZE, input_display_width_pixels);
    ObjectSet(bg, OBJPROP_YSIZE, 210);
    ObjectSet(bg, OBJPROP_COLOR, clrWhite);
    ObjectSet(bg, OBJPROP_BACK, true);
@@ -1591,6 +1594,43 @@ void DisplaySetLine(const int idx, const string text)
    ObjectSetText(name, text, DISPLAY_FONT_SIZE, "Arial", clrBlack);
 }
 
+// Soft-wrap a long text into multiple Display lines to avoid clipping
+int EstimateMaxCharsPerLine()
+{
+   int pad = DISPLAY_X + 10; // left padding plus small right padding
+   int w = input_display_width_pixels - pad;
+   int approxCharPx = 6; // Approx width per character for Arial size 9
+   if(w < 80) w = 80;
+   return w / approxCharPx;
+}
+
+// Returns next line index after writing wrapped segments
+int DisplaySetWrappedLines(int lineIndex, const string text)
+{
+   int maxChars = EstimateMaxCharsPerLine();
+   string remaining = text;
+   while(StringLen(remaining) > 0)
+   {
+      int len = StringLen(remaining);
+      if(len <= maxChars)
+      {
+         DisplaySetLine(lineIndex++, remaining);
+         break;
+      }
+      int cut = maxChars;
+      // try cut on last space within window
+      for(int i=cut; i>0; --i)
+      {
+         if(StringGetCharacter(remaining, i-1) == ' '){ cut = i; break; }
+      }
+      if(cut <= 0 || cut > len) cut = maxChars;
+      string part = StringSubstr(remaining, 0, cut);
+      DisplaySetLine(lineIndex++, part);
+      remaining = TrimAll(StringSubstr(remaining, cut));
+   }
+   return lineIndex;
+}
+
 void DisplayTrimLines(const int keep)
 {
    for(int i=keep; i<g_display_last_lines; ++i)
@@ -1613,7 +1653,7 @@ void DisplayUpdate()
    int hb_age = (int)(NowMs() - g_peer_hb_ms);
    string activeTxt = g_peer_alive?"YES":"NO";
    DisplaySetLine(line++, StringFormat("sync=%s  peer_hb_age=%dms  active=%s", syncTxt, hb_age, activeTxt));
-   DisplaySetLine(line++, StringFormat("sync_path=%s", PathChannelRootAbs()));
+   line = DisplaySetWrappedLines(line, StringFormat("sync_path=%s", PathChannelRootAbs()));
    if(input_role==ROLE_MASTER)
    {
       DisplaySetLine(line++, StringFormat("lot(m/s)=%.2f/%.2f  side(M)=%s", input_lot_master, input_lot_slave, ((input_master_side==SIDE_BUY)?"BUY":"SELL")));
@@ -1647,8 +1687,10 @@ void DisplayUpdate()
             int rem = input_close_cooldown_seconds - el; if(rem<0) rem=0; closeLeft = rem;
          }
       }
-      DisplaySetLine(line++, StringFormat("open_cooldown=%ds left=%s  close_cooldown=%ds left=%s  max_pairs=%d  open_now=%d",
-         input_open_cooldown_seconds, cdLeft, input_close_cooldown_seconds, (closeLeft>=0?IntegerToString(closeLeft):"0"), input_max_open_pairs, CountOpenPairs()));
+      // Split into two lines to avoid clipping on narrow charts
+      DisplaySetLine(line++, StringFormat("open_cooldown=%ds left=%s  close_cooldown=%ds left=%s",
+         input_open_cooldown_seconds, cdLeft, input_close_cooldown_seconds, (closeLeft>=0?IntegerToString(closeLeft):"0")));
+      DisplaySetLine(line++, StringFormat("max_pairs=%d  open_now=%d", input_max_open_pairs, CountOpenPairs()));
    }
    int effMode = DryMode();
    string effModeStr = (effMode==DRY_NONE?"NONE":(effMode==DRY_WRITE_CMD_ONLY?"WRITE_CMD_ONLY":"WRITE_CMD_AND_FAKE_ACK"));
@@ -1662,7 +1704,7 @@ void DisplayUpdate()
       int h = (DISPLAY_FIRST_LINE_OFFSET + line) * DISPLAY_LINE_SPACING + 38;
       ObjectSet(bg, OBJPROP_XDISTANCE, 0);
       ObjectSet(bg, OBJPROP_YDISTANCE, 0);
-      ObjectSet(bg, OBJPROP_XSIZE, 520);
+      ObjectSet(bg, OBJPROP_XSIZE, input_display_width_pixels);
       ObjectSet(bg, OBJPROP_YSIZE, h);
       ObjectSet(bg, OBJPROP_COLOR, clrWhite);
       ObjectSet(bg, OBJPROP_BACK, false);

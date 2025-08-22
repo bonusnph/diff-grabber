@@ -35,6 +35,9 @@ input string input_shared_dir               = "";            // Scope: Both — 
 input string input_symbol                   = "";            // Scope: Both — empty uses current chart symbol
 input bool   input_verbose_journal_logs     = true;          // Scope: Both — emit concise Journal logs for key events
 
+// Display monitor width (pixels)
+input int    input_display_width_pixels      = 520;           // Scope: Both — width of Display Monitor background (pixels)
+
 // Master decision parameters
 input int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
 input MasterSide input_master_side          = SIDE_BUY;      // Scope: Master — master direction (Slave auto-opposite)
@@ -1357,7 +1360,7 @@ void DisplayInit()
    ObjectSetInteger(0, bg, OBJPROP_CORNER, 0);
    ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, 0);
    ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, 0);
-   ObjectSetInteger(0, bg, OBJPROP_XSIZE, 520);
+   ObjectSetInteger(0, bg, OBJPROP_XSIZE, input_display_width_pixels);
    ObjectSetInteger(0, bg, OBJPROP_YSIZE, 210);
    ObjectSetInteger(0, bg, OBJPROP_COLOR, clrWhite);
    ObjectSetInteger(0, bg, OBJPROP_BACK, false);
@@ -1378,7 +1381,7 @@ void DisplayInit()
       string b1 = OBJ_PREFIX + "BTN_OPEN";
       ObjectCreate(0, b1, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, b1, OBJPROP_CORNER, 0);
-      ObjectSetInteger(0, b1, OBJPROP_XDISTANCE, BTN_X);
+      ObjectSetInteger(0, b1, OBJPROP_XDISTANCE, input_display_width_pixels + 20);
       ObjectSetInteger(0, b1, OBJPROP_YDISTANCE, BTN_Y1);
       ObjectSetInteger(0, b1, OBJPROP_XSIZE, BTN_W);
       ObjectSetInteger(0, b1, OBJPROP_YSIZE, BTN_H);
@@ -1388,7 +1391,7 @@ void DisplayInit()
       string b2 = OBJ_PREFIX + "BTN_CLOSE";
       ObjectCreate(0, b2, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, b2, OBJPROP_CORNER, 0);
-      ObjectSetInteger(0, b2, OBJPROP_XDISTANCE, BTN_X);
+      ObjectSetInteger(0, b2, OBJPROP_XDISTANCE, input_display_width_pixels + 20);
       ObjectSetInteger(0, b2, OBJPROP_YDISTANCE, BTN_Y2);
       ObjectSetInteger(0, b2, OBJPROP_XSIZE, BTN_W);
       ObjectSetInteger(0, b2, OBJPROP_YSIZE, BTN_H);
@@ -1413,6 +1416,43 @@ void DisplaySetLine(const int idx, const string text)
    ObjectSetString(0, name, OBJPROP_TEXT, text);
 }
 
+// Soft-wrap a long text into multiple Display lines to avoid clipping
+int EstimateMaxCharsPerLine()
+{
+   int pad = DISPLAY_X + 10; // left padding plus small right padding
+   int w = input_display_width_pixels - pad;
+   int approxCharPx = 6; // Approx width per character for Arial size 9
+   if(w < 80) w = 80;
+   return w / approxCharPx;
+}
+
+// Returns next line index after writing wrapped segments
+int DisplaySetWrappedLines(int lineIndex, const string text)
+{
+   int maxChars = EstimateMaxCharsPerLine();
+   string remaining = text;
+   while(StringLen(remaining) > 0)
+   {
+      int len = StringLen(remaining);
+      if(len <= maxChars)
+      {
+         DisplaySetLine(lineIndex++, remaining);
+         break;
+      }
+      int cut = maxChars;
+      for(int i=cut; i>0; --i)
+      {
+         if(StringGetCharacter(remaining, i-1) == ' '){ cut = i; break; }
+      }
+      if(cut <= 0 || cut > len) cut = maxChars;
+      string part = StringSubstr(remaining, 0, cut);
+      DisplaySetLine(lineIndex++, part);
+      StringTrimLeft(remaining); // ensure no leading spaces after substr
+      remaining = TrimAll(StringSubstr(remaining, cut));
+   }
+   return lineIndex;
+}
+
 void DisplayUpdate()
 {
    string role = (input_role==ROLE_MASTER)?"MASTER":"SLAVE";
@@ -1421,7 +1461,7 @@ void DisplayUpdate()
    double dClose = DiffClosePoints();
    int line = 0;
    DisplaySetLine(line++, StringFormat("role=%s  channel=%s  symbol=%s", role, input_channel_id, g_symbol));
-   DisplaySetLine(line++, StringFormat("sync_path=%s", PathChannelRootAbs()));
+   line = DisplaySetWrappedLines(line, StringFormat("sync_path=%s", PathChannelRootAbs()));
    string syncTxt = g_peer_alive?"OK":"WAITING";
    int hb_age = (int)(NowMs() - g_peer_hb_ms);
    string activeTxt = g_peer_alive?"YES":"NO";
@@ -1432,8 +1472,10 @@ void DisplayUpdate()
       DisplaySetLine(line++, StringFormat("open_th=%d  close_th=%d  spread=%d", input_open_threshold_points, input_close_threshold_points, spread));
       int cd = CooldownRemainSeconds(); string cdLeft = (cd>=0)? IntegerToString(cd):"-";
       int closeLeft = -1; if(g_last_pair_both_open_time>0){ int el=(int)(TimeCurrent()-g_last_pair_both_open_time); int rem=input_close_cooldown_seconds-el; if(rem<0) rem=0; closeLeft=rem; }
-      DisplaySetLine(line++, StringFormat("open_cooldown=%ds left=%s  close_cooldown=%ds left=%s  max_pairs=%d  open_now=%d",
-         input_open_cooldown_seconds, cdLeft, input_close_cooldown_seconds, (closeLeft>=0?IntegerToString(closeLeft):"0"), input_max_open_pairs, CountOpenPairs()));
+      // Split into two lines to avoid clipping on narrow charts
+      DisplaySetLine(line++, StringFormat("open_cooldown=%ds left=%s  close_cooldown=%ds left=%s",
+         input_open_cooldown_seconds, cdLeft, input_close_cooldown_seconds, (closeLeft>=0?IntegerToString(closeLeft):"0")));
+      DisplaySetLine(line++, StringFormat("max_pairs=%d  open_now=%d", input_max_open_pairs, CountOpenPairs()));
    }
    else
    {
@@ -1461,7 +1503,7 @@ void DisplayUpdate()
      int h = (DISPLAY_FIRST_LINE_OFFSET + line) * DISPLAY_LINE_SPACING + 38;
      ObjectSetInteger(0, bg2, OBJPROP_XDISTANCE, 0);
      ObjectSetInteger(0, bg2, OBJPROP_YDISTANCE, 0);
-     ObjectSetInteger(0, bg2, OBJPROP_XSIZE, 520);
+     ObjectSetInteger(0, bg2, OBJPROP_XSIZE, input_display_width_pixels);
      ObjectSetInteger(0, bg2, OBJPROP_YSIZE, h);
      ObjectSetInteger(0, bg2, OBJPROP_COLOR, clrWhite);
      ObjectSetInteger(0, bg2, OBJPROP_BACK, false);
