@@ -29,6 +29,7 @@ input Role   input_role                     = ROLE_MASTER;   // Scope: Both — 
 input string input_channel_id               = "A01";         // Scope: Both — channel identifier (must match across peers)
 input string input_shared_dir               = "";            // Scope: Both — legacy (unused); Common Files is used by default
 input string input_symbol                   = "";            // Scope: Both — empty uses current chart symbol
+input bool   input_verbose_journal_logs     = true;          // Scope: Both — emit concise Journal logs for key events
 
 // Master decision parameters
 input int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
@@ -56,6 +57,7 @@ input int    input_ack_timeout_ms           = 4000;          // Scope: Master �
 input int    input_heartbeat_timeout_ms     = 3000;          // Scope: Master — peer heartbeat stale threshold (ms)
 input ReconcileMode input_reconcile_mode   = RECONCILE_CLOSE;// Scope: Master — desync handling policy (CLOSE/REOPEN)
 input int    input_reconcile_interval_ms    = 500;           // Scope: Master — reconcile cadence (ms)
+input int    input_reconcile_freeze_seconds = 2;             // Scope: Master — freeze reconcile after both sides opened (seconds)
 input int    input_journal_rotate_max_kb    = 256;           // Scope: Master — journal rotation size (KB)
 
 // Dry Run (configured on Master only; Slave uses master's config automatically)
@@ -397,10 +399,15 @@ int FileWriteAllAtomic(const string relPath, const string content)
    FileWriteString(h, content);
    FileFlush(h);
    FileClose(h);
-   // MT4: avoid FileMove portability issues; write direct and delete tmp
-   int err = FileWriteAll(relPath, content);
-   FileDelete(tmp, FILE_COMMON);
-   return err;
+   // Try atomic move first; if not supported, fallback to direct write
+   bool mv = FileMove(tmp, FILE_COMMON, relPath, FILE_COMMON);
+   if(!mv)
+   {
+      int err = FileWriteAll(relPath, content);
+      FileDelete(tmp, FILE_COMMON);
+      return err;
+   }
+   return 0;
 }
 bool FileReadAll(const string relPath, string &out)
 {
@@ -644,7 +651,13 @@ int PeerOpenCount()
 {
    string s; if(!FileReadAll(PathPositionsPeer(), s)) return -1;
    string rows[]; int n = StringSplit(TrimAll(s), '\n', rows);
-   int count=0; for(int i=0;i<n;i++){ if(StringLen(TrimAll(rows[i]))>0) count++; }
+   int count=0;
+   for(int i=0;i<n;i++)
+   {
+      string line = TrimAll(rows[i]); if(StringLen(line)==0) continue;
+      string c[]; int cn = StringSplit(line, ',', c);
+      if(cn>=2 && c[0]!="" && c[0]!="N/A") count++;
+   }
    return count;
 }
 
@@ -657,6 +670,12 @@ void MasterReconcilePositions()
    WritePositions();
    // Compute counts early to detect manual drop
    int selfNow = CountOpenPairs(); int peerNow = PeerOpenCount(); if(peerNow<0) return;
+   // Freeze reconcile briefly after both sides opened to avoid post-open thrash
+   if(g_last_pair_both_open_time>0)
+   {
+      int el = (int)(TimeCurrent() - g_last_pair_both_open_time);
+      if(el < input_reconcile_freeze_seconds) { g_prev_self_pairs=selfNow; g_prev_peer_pairs=peerNow; return; }
+   }
    bool manualDrop = (selfNow < g_prev_self_pairs) || (peerNow < g_prev_peer_pairs);
    // Skip entirely while waiting for slave ACK within timeout window (unless manual drop)
    if(!manualDrop && g_waiting_slave_open_ack && (NowMs()-g_pending_open_created_ms) <= (ulong)input_ack_timeout_ms) { g_prev_self_pairs=selfNow; g_prev_peer_pairs=peerNow; return; }
@@ -1118,14 +1137,14 @@ void MaybeOpenPair()
       g_waiting_slave_open_ack = true; g_pending_open_cmd_id = cmd_id; g_pending_open_created_ms = created_ms; g_rollback_initiated=false; g_open_grace_until_ms = NowMs() + (ulong)input_ack_timeout_ms;
       // Ack self
       string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0);
-      FileWriteAll(PathOpenAckSelf(), ackSelf);
+      FileWriteAllAtomic(PathOpenAckSelf(), ackSelf);
       return;
    }
 
    // Real trading on master side only: send order first
    int ticket=-1; double price=0.0; bool ok = PlaceOrderMaster((input_master_side==SIDE_BUY), input_lot_master, ticket, price);
    string ackSelf2 = StringFormat("1,%s,%I64d,%s,%.5f,%d,%d\n", cmd_id, (long)g_seq, "N/A", price, ok?1:0, ok?0:GetLastError());
-   FileWriteAll(PathOpenAckSelf(), ackSelf2);
+   FileWriteAllAtomic(PathOpenAckSelf(), ackSelf2);
    if(!ok)
    {
       // Enforce open cooldown on fail
@@ -1261,7 +1280,7 @@ void MaybeClosePair()
    if(DryEnabled() && DryMode()==DRY_NONE)
       write_cmd = false;
    if(write_cmd)
-      FileWriteAll(PathCloseCmd(), line);
+      FileWriteAllAtomic(PathCloseCmd(), line);
 
    if(DryEnabled())
    {
@@ -1286,12 +1305,19 @@ void SlaveProcessOpenCmd()
    if(g_role_conflict) return;
    if(input_role==ROLE_MASTER) return;
    string s;
-   if(!FileReadAll(PathOpenCmd(), s)) return;
+   if(!FileReadAll(PathOpenCmd(), s)) { if(input_verbose_journal_logs) Print("[Slave] open_cmd.csv not found or not readable"); return; }
    // Very simple parse; assume last line is the command (single-line file)
    // format: version,cmd_id,seq,pair_id,symbol,master_side,lot_master,lot_slave,slippage,created_ms,expire_ms
    string fields[];
    int n = StringSplit(TrimAll(s), ',', fields);
-   if(n < 11) return;
+   if(n < 11)
+   {
+      // malformed command; acknowledge failure to allow master rollback
+      string ackBad = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", "UNKNOWN", (long)g_seq, "N/A", "0.0", 0, 400);
+      FileWriteAllAtomic(PathOpenAckSelf(), ackBad);
+      if(input_verbose_journal_logs) Print("[Slave] Malformed open_cmd (n<11), wrote ACK fail 400");
+      return;
+   }
    string cmd_id = fields[1];
    string pair_id= fields[3];
    string sym    = fields[4];
@@ -1305,9 +1331,9 @@ void SlaveProcessOpenCmd()
    if(FileReadAll(PathOpenAckSelf(), sAckOpen))
    {
       string af[]; int an = StringSplit(TrimAll(sAckOpen), ',', af);
-      if(an>=2 && af[1]==cmd_id) return;
+      if(an>=2 && af[1]==cmd_id) { if(input_verbose_journal_logs) Print("[Slave] Skip open_cmd idempotent ACK for cmd_id=", cmd_id); return; }
    }
-   if(g_last_processed_open_cmd_id == cmd_id) return;
+   if(g_last_processed_open_cmd_id == cmd_id) { if(input_verbose_journal_logs) Print("[Slave] Skip open_cmd duplicate cmd_id=", cmd_id); return; }
    g_last_processed_open_cmd_id = cmd_id;
 
    // cache for display
@@ -1328,11 +1354,18 @@ void SlaveProcessOpenCmd()
    }
 
    if((NowMs() - created_ms) > (ulong)expire_ms)
-      return; // expired
+   {
+      // acknowledge expired so master can rollback
+      string ackExpired = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 0, 408);
+      FileWriteAllAtomic(PathOpenAckSelf(), ackExpired);
+      if(input_verbose_journal_logs) Print("[Slave] open_cmd expired cmd_id=", cmd_id, " age_ms=", (NowMs()-created_ms));
+      return;
+   }
 
    // Opposite side to master
    bool slaveBuy = (mside=="BUY") ? false : true;
 
+   if(input_verbose_journal_logs) Print("[Slave] Execute open cmd_id=", cmd_id, " pair=", pair_id, " side=", ((slaveBuy)?"SELL":"BUY"), " lot=", DoubleToString(lot_slave, 2));
    // Dry run ack only
    if(DryEnabled())
    {
@@ -1341,7 +1374,8 @@ void SlaveProcessOpenCmd()
          int latency = DryDelayMs();
          if(latency>0) Sleep(latency);
          string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0);
-         FileWriteAll(PathOpenAckSelf(), ackSelf);
+         FileWriteAllAtomic(PathOpenAckSelf(), ackSelf);
+         if(input_verbose_journal_logs) Print("[Slave] DryRun ACK ok for cmd_id=", cmd_id);
       }
       return;
    }
@@ -1353,7 +1387,12 @@ void SlaveProcessOpenCmd()
    bool ok = PlaceOrderMaster(slaveBuy, lot_slave, ticket, price);
    g_pending_pair_id = "";
    string ack = StringFormat("1,%s,%I64d,%s,%.5f,%d,%d\n", cmd_id, (long)g_seq, "N/A", price, ok?1:0, ok?0:GetLastError());
-   FileWriteAll(PathOpenAckSelf(), ack);
+   FileWriteAllAtomic(PathOpenAckSelf(), ack);
+   if(input_verbose_journal_logs)
+   {
+      if(ok) Print("[Slave] Order placed OK cmd_id=", cmd_id, " ticket=", ticket, " price=", DoubleToString(price, g_digits));
+      else   Print("[Slave] Order failed cmd_id=", cmd_id, " err=", GetLastError());
+   }
    if(ok)
    {
       PairMapSelfUpsert(pair_id, ticket);
@@ -1454,7 +1493,7 @@ void WritePositions()
       string side = (OrderType()==OP_BUY)?"BUY":"SELL";
       buf += StringFormat("%s,%d,%s,%s,%.2f,%.5f\n", pid, tkt, g_symbol, side, OrderLots(), OrderOpenPrice());
    }
-   FileWriteAll(PathPositionsSelf(), buf);
+   FileWriteAllAtomic(PathPositionsSelf(), buf);
 }
 
 // -----------------------------
@@ -1657,7 +1696,7 @@ void MasterOpenNow()
       if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK)
       {
          string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0);
-         FileWriteAll(PathOpenAckSelf(), ackSelf);
+         FileWriteAllAtomic(PathOpenAckSelf(), ackSelf);
       }
       g_last_open_time = TimeCurrent();
       g_pending_pair_id = "";
@@ -1667,7 +1706,7 @@ void MasterOpenNow()
    int ticket=-1; double price=0.0;
    bool ok = PlaceOrderMaster((input_master_side==SIDE_BUY), input_lot_master, ticket, price);
    string ack = StringFormat("1,%s,%I64d,%s,%.5f,%d,%d\n", cmd_id, (long)g_seq, "N/A", price, ok?1:0, ok?0:GetLastError());
-   FileWriteAll(PathOpenAckSelf(), ack);
+   FileWriteAllAtomic(PathOpenAckSelf(), ack);
    if(ok)
    {
       g_last_open_time = TimeCurrent();

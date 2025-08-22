@@ -33,6 +33,7 @@ input Role   input_role                     = ROLE_MASTER;   // Scope: Both — 
 input string input_channel_id               = "A01";         // Scope: Both — channel identifier (must match across peers)
 input string input_shared_dir               = "";            // Scope: Both — legacy (unused); Common Files is used by default
 input string input_symbol                   = "";            // Scope: Both — empty uses current chart symbol
+input bool   input_verbose_journal_logs     = true;          // Scope: Both — emit concise Journal logs for key events
 
 // Master decision parameters
 input int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
@@ -60,6 +61,7 @@ input int    input_ack_timeout_ms           = 4000;          // Scope: Master �
 input int    input_heartbeat_timeout_ms     = 3000;          // Scope: Master — peer heartbeat stale threshold (ms)
 input ReconcileMode input_reconcile_mode   = RECONCILE_CLOSE;// Scope: Master — desync handling policy (CLOSE/REOPEN)
 input int    input_reconcile_interval_ms    = 500;           // Scope: Master — reconcile cadence (ms)
+input int    input_reconcile_freeze_seconds = 2;             // Scope: Master — freeze reconcile for N seconds after both sides open
 input int    input_journal_rotate_max_kb    = 256;           // Scope: Master — journal rotation max size (KB)
 
 // Dry Run (configured on Master only; Slave uses master's config automatically)
@@ -667,7 +669,13 @@ int PeerOpenCount()
 {
    string s; if(!FileReadAll(PathPositionsPeer(), s)) return -1;
    string rows[]; int n = StringSplit(TrimAll(s), '\n', rows);
-   int count=0; for(int i=0;i<n;i++){ if(StringLen(TrimAll(rows[i]))>0) count++; }
+   int count=0;
+   for(int i=0;i<n;i++)
+   {
+      string line = TrimAll(rows[i]); if(StringLen(line)==0) continue;
+      string c[]; int cn = StringSplit(line, ',', c);
+      if(cn>=2 && c[0]!="" && c[0]!="N/A") count++;
+   }
    return count;
 }
 
@@ -680,6 +688,12 @@ void MasterReconcilePositions()
   WritePositions();
   // Compute counts early to detect manual drop
   int selfNow = CountOpenPairs(); int peerNow = PeerOpenCount(); if(peerNow<0) return;
+  // Freeze reconcile briefly after both sides opened to avoid post-open thrash
+  if(g_last_pair_both_open_time>0)
+  {
+    int el = (int)(TimeCurrent() - g_last_pair_both_open_time);
+    if(el < input_reconcile_freeze_seconds) { g_prev_self_pairs=selfNow; g_prev_peer_pairs=peerNow; return; }
+  }
   bool manualDrop = (selfNow < g_prev_self_pairs) || (peerNow < g_prev_peer_pairs);
   // Skip only if not a manual drop
   if(!manualDrop && g_waiting_slave_open_ack && (NowMs()-g_pending_open_created_ms) <= (ulong)input_ack_timeout_ms) return;
@@ -1095,14 +1109,17 @@ void MaybeOpenPair()
       FileWriteAllAtomic(PathOpenCmd(), lineDR);
       g_waiting_slave_open_ack=true; g_pending_open_cmd_id=cmd_id; g_pending_open_created_ms=created_ms; g_rollback_initiated=false;
       string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0);
-      FileWriteAll(PathOpenAckSelf(), ackSelf);
+      FileWriteAllAtomic(PathOpenAckSelf(), ackSelf);
+      // Consolidated grace to avoid premature close/reconcile while awaiting/just after ACK
+      g_last_peer_open_ack_ms = 0;
+      g_open_grace_until_ms = NowMs() + (ulong)input_ack_timeout_ms;
       return;
    }
 
    // Real trading: send master order first
    ulong tkt=0; double price=0.0; bool ok = PlaceOrder((input_master_side==SIDE_BUY), input_lot_master, tkt, price);
    string ackSelf2 = StringFormat("1,%s,%I64d,%s,%.5f,%d,%d\n", cmd_id, (long)g_seq, "N/A", price, ok?1:0, ok?0:(int)GetLastError());
-   FileWriteAll(PathOpenAckSelf(), ackSelf2);
+   FileWriteAllAtomic(PathOpenAckSelf(), ackSelf2);
    if(!ok){ g_last_open_time = TimeCurrent(); return; }
 
    g_last_open_time = TimeCurrent();
@@ -1115,6 +1132,9 @@ void MaybeOpenPair()
       g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpen);
    FileWriteAllAtomic(PathOpenCmd(), line);
    g_waiting_slave_open_ack=true; g_pending_open_cmd_id=cmd_id; g_pending_open_created_ms=created_ms2; g_rollback_initiated=false;
+   // Consolidated grace to avoid premature close/reconcile while awaiting/just after ACK
+   g_last_peer_open_ack_ms = 0;
+   g_open_grace_until_ms = NowMs() + (ulong)input_ack_timeout_ms;
 }
 
 void MaybeClosePair()
@@ -1149,14 +1169,14 @@ void MaybeClosePair()
       {
          int latency = DryDelayMs(); if(latency>0) Sleep(latency);
          string ackSelf = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0);
-         FileWriteAll(PathCloseAckSelf(), ackSelf);
+         FileWriteAllAtomic(PathCloseAckSelf(), ackSelf);
       }
       return;
    }
 
    bool ok = CloseAllByMagic(); CompactPairMapSelf(); WritePositions();
    string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError());
-   FileWriteAll(PathCloseAckSelf(), ack);
+   FileWriteAllAtomic(PathCloseAckSelf(), ack);
 }
 
 void SlaveProcessOpenCmd()
@@ -1165,19 +1185,21 @@ void SlaveProcessOpenCmd()
    if(input_role==ROLE_MASTER) return;
    string s; if(!FileReadAll(PathOpenCmd(), s)) {
       // If command file missing for a while, no-op
+      if(input_verbose_journal_logs) Print("[Slave] open_cmd.csv not found or not readable");
       return;
    }
    string fields[]; int n = StringSplit(TrimAll(s), ',', fields); if(n<11) {
       // malformed command; acknowledge failure
       string ackBad = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", "UNKNOWN", (long)g_seq, "N/A", "0.0", 0, 400);
-      FileWriteAll(PathOpenAckSelf(), ackBad);
+      FileWriteAllAtomic(PathOpenAckSelf(), ackBad);
+      if(input_verbose_journal_logs) Print("[Slave] Malformed open_cmd (n<11), wrote ACK fail 400");
       return;
    }
    string cmd_id = fields[1]; string pair_id = fields[3]; string sym=fields[4]; string mside=fields[5]; double lot_slave = StringToDouble(fields[7]);
    ulong created_ms = (ulong)StringToInteger(fields[9]); int expire_ms = (int)StringToInteger(fields[10]);
    // Idempotency: skip if already acknowledged/processed this cmd
-   string sAckOpen; if(FileReadAll(PathOpenAckSelf(), sAckOpen)) { string af[]; int an = StringSplit(TrimAll(sAckOpen), ',', af); if(an>=2 && af[1]==cmd_id) return; }
-   if(g_last_processed_open_cmd_id == cmd_id) return; g_last_processed_open_cmd_id = cmd_id;
+   string sAckOpen; if(FileReadAll(PathOpenAckSelf(), sAckOpen)) { string af[]; int an = StringSplit(TrimAll(sAckOpen), ',', af); if(an>=2 && af[1]==cmd_id) { if(input_verbose_journal_logs) Print("[Slave] Skip open_cmd idempotent ACK for cmd_id=", cmd_id); return; } }
+   if(g_last_processed_open_cmd_id == cmd_id) { if(input_verbose_journal_logs) Print("[Slave] Skip open_cmd duplicate cmd_id=", cmd_id); return; } g_last_processed_open_cmd_id = cmd_id;
    // cache for display
    g_have_master_cmd = true;
    g_last_cmd_side = mside;
@@ -1201,20 +1223,22 @@ void SlaveProcessOpenCmd()
    {
       // Acknowledge expired so master can rollback
       string ackExpired = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 0, 408);
-      FileWriteAll(PathOpenAckSelf(), ackExpired);
+      FileWriteAllAtomic(PathOpenAckSelf(), ackExpired);
+      if(input_verbose_journal_logs) Print("[Slave] open_cmd expired cmd_id=", cmd_id, " age_ms=", (NowMs()-created_ms));
       return;
    }
    bool slaveBuy = (mside=="BUY")?false:true;
-
+   if(input_verbose_journal_logs) Print("[Slave] Execute open cmd_id=", cmd_id, " pair=", pair_id, " side=", (slaveBuy?"SELL":"BUY"), " lot=", DoubleToString(lot_slave, 2));
    if(DryEnabled())
    {
       if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK)
-      { int latency = DryDelayMs(); if(latency>0) Sleep(latency); string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0); FileWriteAll(PathOpenAckSelf(), ackSelf);} return;
+      { int latency = DryDelayMs(); if(latency>0) Sleep(latency); string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0); FileWriteAllAtomic(PathOpenAckSelf(), ackSelf); if(input_verbose_journal_logs) Print("[Slave] DryRun ACK ok for cmd_id=", cmd_id); } return;
    }
 
    ulong tkt=0; double price=0.0; bool ok = PlaceOrder(slaveBuy, lot_slave, tkt, price);
    string ack = StringFormat("1,%s,%I64d,%s,%.5f,%d,%d\n", cmd_id, (long)g_seq, "N/A", price, ok?1:0, ok?0:(int)GetLastError());
-   FileWriteAll(PathOpenAckSelf(), ack);
+   FileWriteAllAtomic(PathOpenAckSelf(), ack);
+   if(input_verbose_journal_logs) { if(ok) Print("[Slave] Order placed OK cmd_id=", cmd_id, " ticket=", (long)tkt, " price=", DoubleToString(price, g_digits)); else Print("[Slave] Order failed cmd_id=", cmd_id, " err=", GetLastError()); }
    if(ok){ PairMapSelfUpsert(pair_id, tkt); CacheUpsert(pair_id, tkt); WritePositions(); CompactPairMapSelf(); RebuildPairMapSelfFromCache(); WritePositions(); }
 }
 
@@ -1232,12 +1256,12 @@ void SlaveProcessCloseCmd()
    {
       // expired close commands are acknowledged to help master reconcile
       string ackExpired = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 205);
-      FileWriteAll(PathCloseAckSelf(), ackExpired);
+      FileWriteAllAtomic(PathCloseAckSelf(), ackExpired);
       return;
    }
 
    if(DryEnabled())
-   { if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ int latency=DryDelayMs(); if(latency>0) Sleep(latency); string ackSelf=StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf);} return; }
+   { if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ int latency=DryDelayMs(); if(latency>0) Sleep(latency); string ackSelf=StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0); FileWriteAllAtomic(PathCloseAckSelf(), ackSelf);} return; }
 
    bool ok = false;
    if(StringFind(fields[4], "CLOSE_ONE")==0)
@@ -1251,7 +1275,7 @@ void SlaveProcessCloseCmd()
      PairMapSelfClearAll();
      WritePositions();
    }
-   string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError()); FileWriteAll(PathCloseAckSelf(), ack);
+   string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError()); FileWriteAllAtomic(PathCloseAckSelf(), ack);
 }
 
 void WritePositions()
@@ -1284,7 +1308,7 @@ void WritePositions()
      double price = PositionGetDouble(POSITION_PRICE_OPEN);
      buf += StringFormat("%s,%I64d,%s,%s,%.2f,%.5f\n", pid, (long)ticket, g_symbol, side, vol, price);
   }
-  FileWriteAll(PathPositionsSelf(), buf);
+  FileWriteAllAtomic(PathPositionsSelf(), buf);
 }
 
 // -----------------------------
@@ -1456,13 +1480,14 @@ void MasterOpenNow()
    g_waiting_slave_open_ack = true; g_pending_open_cmd_id=cmd_id; g_pending_open_created_ms=created_ms; g_rollback_initiated=false;
    g_last_peer_open_ack_ms = 0; // reset grace timer
    g_open_grace_until_ms = NowMs() + (ulong)input_ack_timeout_ms;
+   if(input_debug_buttons_enabled) g_debug_hold_open = true; // keep open until Close Now
 
    if(DryEnabled())
-   { if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0); FileWriteAll(PathOpenAckSelf(), ackSelf);} g_last_open_time=TimeCurrent(); g_open_grace_until_ms = NowMs() + (ulong)input_ack_timeout_ms; return; }
+   { if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0); FileWriteAllAtomic(PathOpenAckSelf(), ackSelf);} g_last_open_time=TimeCurrent(); g_open_grace_until_ms = NowMs() + (ulong)input_ack_timeout_ms; return; }
 
    ulong tkt=0; double price=0.0; bool ok = PlaceOrder((input_master_side==SIDE_BUY), input_lot_master, tkt, price);
    string ack = StringFormat("1,%s,%I64d,%s,%.5f,%d,%d\n", cmd_id, (long)g_seq, "N/A", price, ok?1:0, ok?0:(int)GetLastError());
-   FileWriteAll(PathOpenAckSelf(), ack);
+   FileWriteAllAtomic(PathOpenAckSelf(), ack);
    if(ok){ g_last_open_time = TimeCurrent(); PairMapSelfUpsert(cmd_id, tkt); CacheUpsert(cmd_id, tkt); WritePositions(); CompactPairMapSelf();}
 }
 
@@ -1474,8 +1499,8 @@ void MasterCloseNow()
    string cmd_id = NewCmdId(); ulong created_ms = NowMs(); int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0)? DryOverrideExpireMs(): input_cmd_expire_ms;
    string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
    FileWriteAllAtomic(PathCloseCmd(), line);
-   if(DryEnabled()){ if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string ackSelf=StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf);} return; }
-   bool ok = CloseAllByMagic(); CompactPairMapSelf(); WritePositions(); string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError()); FileWriteAll(PathCloseAckSelf(), ack);
+   if(DryEnabled()){ if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string ackSelf=StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0); FileWriteAllAtomic(PathCloseAckSelf(), ackSelf);} return; }
+   bool ok = CloseAllByMagic(); CompactPairMapSelf(); WritePositions(); string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError()); FileWriteAllAtomic(PathCloseAckSelf(), ack);
 }
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
