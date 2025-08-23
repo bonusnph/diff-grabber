@@ -35,6 +35,10 @@ input string input_shared_dir               = "";            // Scope: Both — 
 input string input_symbol                   = "";            // Scope: Both — empty uses current chart symbol
 input bool   input_verbose_journal_logs     = true;          // Scope: Both — emit concise Journal logs for key events
 
+// File logging (per-channel)
+input bool   input_enable_file_logs         = true;          // Scope: Both — write debug logs to Common Files
+input int    input_log_retain_hours         = 24;            // Scope: Both — retain logs newer than N hours
+
 // Display monitor width (pixels)
 input int    input_display_width_pixels      = 520;           // Scope: Both — width of Display Monitor background (pixels)
 
@@ -49,22 +53,34 @@ input int    input_open_cooldown_seconds    = 300;           // Scope: Master �
 input int    input_close_cooldown_seconds   = 60;            // Scope: Master — close cooldown after both sides opened
 input int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
 
+// Averaged diff gating (Master-only)
+input bool   input_avg_filter_enabled       = true;          // Scope: Master — enable EMA-based averaged diff gating
+input int    input_avg_period               = 9;             // Scope: Master — EMA period (ticks)
+input bool   input_use_prefilter_median     = true;          // Scope: Master — apply median pre-filter before EMA
+input int    input_prefilter_window         = 3;             // Scope: Master — median window (odd 3/5)
+input bool   input_real_confirm_enabled     = true;          // Scope: Master — require real diff confirmation after averaged trigger
+input int    input_confirm_ticks            = 2;             // Scope: Master — consecutive ticks to confirm
+input int    input_confirm_timeout_ms       = 300;           // Scope: Master — max wait for confirmation (ms)
+input int    input_diff_hysteresis_points   = 3;             // Scope: Master — hysteresis added to thresholds when averaging is enabled (points)
+input int    input_epsilon_diff_points      = 1;             // Scope: Master — small margin for real confirm (points)
+input int    input_avg_signal_cooldown_ms   = 400;           // Scope: Master — signal-level cooldown after order (ms)
+
 // Quality guards
 input int    input_max_spread_points_self   = 50;            // Scope: Master — block if own spread exceeds (points)
 input int    input_max_spread_points_peer   = 50;            // Scope: Master — check peer spread before opening (points)
 input int    input_quotes_fresh_ms          = 400;           // Scope: Master — maximum acceptable quote age (ms)
-input int    input_file_poll_ms             = 20;            // Scope: Master — background file polling cadence (ms)
+input int    input_file_poll_ms             = 10;            // Scope: Master — background file polling cadence (ms)
 input int    input_magic_number_base        = 900100;        // Scope: Master — magic base per channel/symbol
 input bool   input_retry_on_requote         = true;          // Scope: Master — retry on requote/off quotes
 input int    input_max_retries              = 20;            // Scope: Master — max retry attempts
 
 // Smart Sync timeouts
-input int    input_cmd_expire_ms            = 15000;         // Scope: Master — command expiry (ms)
-input int    input_ack_timeout_ms           = 4000;          // Scope: Master — ack wait timeout (ms)
+input int    input_cmd_expire_ms            = 30000;         // Scope: Master — command expiry (ms)
+input int    input_ack_timeout_ms           = 6000;          // Scope: Master — ack wait timeout (ms)
 input int    input_heartbeat_timeout_ms     = 3000;          // Scope: Master — peer heartbeat stale threshold (ms)
 input ReconcileMode input_reconcile_mode   = RECONCILE_CLOSE;// Scope: Master — desync handling policy (CLOSE/REOPEN)
 input int    input_reconcile_interval_ms    = 500;           // Scope: Master — reconcile cadence (ms)
-input int    input_reconcile_freeze_seconds = 2;             // Scope: Master — freeze reconcile for N seconds after both sides open
+input int    input_reconcile_freeze_seconds = 8;             // Scope: Master — freeze reconcile for N seconds after both sides open
 input int    input_journal_rotate_max_kb    = 256;           // Scope: Master — journal rotation max size (KB)
 
 // Dry Run (configured on Master only; Slave uses master's config automatically)
@@ -146,11 +162,27 @@ ulong  g_open_grace_until_ms = 0;
 int    g_reconcile_mismatch_streak = 0;
 int    g_prev_self_pairs = 0;
 int    g_prev_peer_pairs = 0;
+// Logs housekeeping
+ulong  g_last_log_cleanup_ms = 0;
 // Anchor time when both sides confirmed open (used for close cooldown)
 datetime g_last_pair_both_open_time = 0;
 // Master-provided new settings (for Slave consumption)
 int    g_master_close_cooldown_seconds = 0;
 double g_master_min_balance_usd = 0.0;
+
+// Averaging state (EMA + optional Median pre-filter)
+double g_ema_open = 0.0; bool g_ema_open_init = false;
+double g_ema_close = 0.0; bool g_ema_close_init = false;
+double g_med_buf_open[16]; int g_med_open_count = 0; int g_med_open_idx = 0;
+double g_med_buf_close[16]; int g_med_close_count = 0; int g_med_close_idx = 0;
+
+// Real confirm state machines
+bool   g_open_pending = false; double g_open_snapshot_avg = 0.0; int g_open_ok_count = 0; ulong g_open_deadline_ms = 0;
+bool   g_close_pending = false; double g_close_snapshot_avg = 0.0; int g_close_ok_count = 0; ulong g_close_deadline_ms = 0;
+
+// Signal-level cooldown timestamps
+ulong  g_last_avg_open_signal_ms = 0;
+ulong  g_last_avg_close_signal_ms = 0;
 
 bool DryEnabled()
 {
@@ -209,6 +241,66 @@ string PathConfigMaster()  { return PathChannelRoot() + "config_master.csv"; }
 string PathRoleLock()      { return PathChannelRoot() + ((input_role==ROLE_MASTER)? "lock_master.csv":"lock_slave.csv"); }
 string PathPairMapSelf()   { return PathChannelRoot() + ((input_role==ROLE_MASTER)? "pair_map_master.csv":"pair_map_slave.csv"); }
 string PathPairMapPeer()   { return PathChannelRoot() + ((input_role==ROLE_MASTER)? "pair_map_slave.csv":"pair_map_master.csv"); }
+
+// -----------------------------
+// Logs (daily append + retention)
+// -----------------------------
+string PathLogsDir() { return PathChannelRoot() + "logs\\"; }
+
+string PathDailyLogFile()
+{
+   MqlDateTime dt; TimeToStruct(TimeLocal(), dt);
+   return PathLogsDir() + StringFormat("log_%04d%02d%02d.csv", dt.year, dt.mon, dt.day);
+}
+
+bool LogsEnsureDir()
+{
+   return FolderCreate(StringFormat("EAChannels\\channel_%s\\logs", input_channel_id), FILE_COMMON);
+}
+
+int LogAppendLine(const string line)
+{
+   if(!input_enable_file_logs) return 0;
+   LogsEnsureDir();
+   string fp = PathDailyLogFile();
+   int h = FileOpen(fp, FILE_READ|FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(h == INVALID_HANDLE)
+   {
+      h = FileOpen(fp, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+      if(h == INVALID_HANDLE) return GetLastError();
+   }
+   FileSeek(h, 0, SEEK_END);
+   FileWriteString(h, line);
+   FileClose(h);
+   return 0;
+}
+
+string RoleName() { return (input_role==ROLE_MASTER)? "MASTER":"SLAVE"; }
+
+void LogEvent(const string event, const string details)
+{
+   if(!input_enable_file_logs) return;
+   string line = StringFormat("%I64u,%s,%s,%s,%s\n", NowMs(), RoleName(), input_channel_id, g_symbol, event + "," + details);
+   LogAppendLine(line);
+}
+
+void LogsCleanupRetention()
+{
+   if(!input_enable_file_logs) return;
+   if(input_log_retain_hours <= 0) return;
+   if((NowMs() - g_last_log_cleanup_ms) < (ulong)60000*30) return; // every 30 minutes
+   g_last_log_cleanup_ms = NowMs();
+   // delete log files older than retain window
+   for(int d=2; d<=31; ++d)
+   {
+      datetime t = (datetime)(TimeLocal() - (d*24*60*60));
+      // skip within retain window
+      if(d*24 <= input_log_retain_hours) continue;
+      MqlDateTime dt; TimeToStruct(t, dt);
+      string oldPath = PathLogsDir() + StringFormat("log_%04d%02d%02d.csv", dt.year, dt.mon, dt.day);
+      FileDelete(oldPath, FILE_COMMON);
+   }
+}
 
 // -----------------------------
 // In-memory cache: pair_id <-> ticket (current symbol/magic)
@@ -695,6 +787,7 @@ void MasterReconcilePositions()
     if(el < input_reconcile_freeze_seconds) { g_prev_self_pairs=selfNow; g_prev_peer_pairs=peerNow; return; }
   }
   bool manualDrop = (selfNow < g_prev_self_pairs) || (peerNow < g_prev_peer_pairs);
+  if(manualDrop) LogEvent("RECONCILE_SKIP", StringFormat("reason=MANUAL_DROP;selfNow=%d;peerNow=%d;prevSelf=%d;prevPeer=%d", selfNow, peerNow, g_prev_self_pairs, g_prev_peer_pairs));
   // Skip only if not a manual drop
   if(!manualDrop && g_waiting_slave_open_ack && (NowMs()-g_pending_open_created_ms) <= (ulong)input_ack_timeout_ms) return;
   if(!manualDrop && g_last_peer_open_ack_ms>0 && (NowMs()-g_last_peer_open_ack_ms) < (ulong)input_ack_timeout_ms) return;
@@ -718,6 +811,7 @@ void MasterReconcilePositions()
       string cmd_id = NewCmdId(); ulong created_ms = NowMs(); int expire_ms = input_cmd_expire_ms;
       string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, pidExtraPeer, "CLOSE_ONE", created_ms, expire_ms);
       FileWriteAllAtomic(PathCloseCmd(), line);
+      LogEvent("RECONCILE_CLOSE_PEER_EXTRA", StringFormat("pair_id=%s;cmd_id=%s", pidExtraPeer, cmd_id));
       if(DryEnabled() && DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string ackSelf=StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf);} 
       g_prev_self_pairs=selfNow; g_prev_peer_pairs=peerNow; return;
     }
@@ -729,6 +823,7 @@ void MasterReconcilePositions()
       bool ok1 = CloseSelfByPairId(pidExtraSelf);
       if(ok1){ PairMapSelfDeleteByPairId(pidExtraSelf); WritePositions(); CompactPairMapSelf(); }
       string cmd_id = NewCmdId(); string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok1?1:0, ok1?0:(int)GetLastError()); FileWriteAll(PathCloseAckSelf(), ack);
+      LogEvent("RECONCILE_CLOSE_SELF_EXTRA", StringFormat("pair_id=%s;ok=%d;err=%d", pidExtraSelf, ok1?1:0, ok1?0:(int)GetLastError()));
       g_prev_self_pairs=selfNow; g_prev_peer_pairs=peerNow; return;
     }
   }
@@ -766,6 +861,7 @@ void MasterReconcilePositions()
       string cmd_id = NewCmdId(); ulong created_ms = NowMs(); int expire_ms = input_cmd_expire_ms;
       string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, pickPair, "CLOSE_ONE", created_ms, expire_ms);
       FileWriteAllAtomic(PathCloseCmd(), line);
+      LogEvent("RECONCILE_CLOSE_SELF_EXTRA", StringFormat("pair_id=%s;cmd_id=%s", pickPair, cmd_id));
       if(DryEnabled()) { if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string ackSelf=StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf);} g_prev_self_pairs=self; g_prev_peer_pairs=peer; return; }
       g_prev_self_pairs=self; g_prev_peer_pairs=peer; return;
     }
@@ -810,6 +906,7 @@ void MasterReconcilePositions()
       bool ok1 = CloseSelfByPairId(pickPair);
       if(ok1){ PairMapSelfDeleteByPairId(pickPair); WritePositions(); CompactPairMapSelf(); }
       string cmd_id = NewCmdId(); string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok1?1:0, ok1?0:(int)GetLastError()); FileWriteAll(PathCloseAckSelf(), ack);
+      LogEvent("RECONCILE_CLOSE_SELF_EXTRA", StringFormat("pair_id=%s;ok=%d;err=%d", pickPair, ok1?1:0, ok1?0:(int)GetLastError()));
       g_prev_self_pairs=self; g_prev_peer_pairs=peer; return;
     }
   }
@@ -821,6 +918,7 @@ void MasterReconcilePositions()
   string cmd_id = NewCmdId(); ulong created_ms = NowMs(); int expire_ms = input_cmd_expire_ms;
   string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
   FileWriteAllAtomic(PathCloseCmd(), line);
+  LogEvent("RECONCILE_FORCE_BOTH_CLOSE", StringFormat("cmd_id=%s;self=%d;peer=%d", cmd_id, self, peer));
   if(DryEnabled()){ if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string ackSelf=StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf);} g_prev_self_pairs=self; g_prev_peer_pairs=peer; return; }
   bool ok = CloseAllByMagic(); CompactPairMapSelf(); WritePositions(); string ack2 = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError()); FileWriteAll(PathCloseAckSelf(), ack2);
   g_prev_self_pairs=self; g_prev_peer_pairs=peer;
@@ -1057,6 +1155,96 @@ double DiffClosePoints()
    return diff / g_point;
 }
 
+// -----------------------------
+// Averaging helpers (EMA + Median pre-filter)
+// -----------------------------
+
+void PushMedianOpen(const double v)
+{
+   int maxN = (input_prefilter_window>16?16:input_prefilter_window);
+   if(maxN<3) maxN = 3;
+   if((maxN % 2)==0) maxN++;
+   if(g_med_open_count < maxN) g_med_open_count++;
+   g_med_buf_open[g_med_open_idx] = v;
+   g_med_open_idx++; if(g_med_open_idx>=maxN) g_med_open_idx=0;
+}
+
+double GetMedianOpen(const int window)
+{
+   int maxN = (window>16?16:window);
+   if(maxN<1) return g_med_buf_open[(g_med_open_idx>0)?(g_med_open_idx-1):0];
+   int useN = (g_med_open_count<maxN? g_med_open_count : maxN);
+   if(useN<=0) return 0.0;
+   double tmp[16];
+   int pos = g_med_open_idx;
+   for(int i=0;i<useN;i++) { int j = pos - 1 - i; if(j<0) j += maxN; tmp[i] = g_med_buf_open[j]; }
+   for(int i=1;i<useN;i++){ double key=tmp[i]; int k=i-1; while(k>=0 && tmp[k]>key){ tmp[k+1]=tmp[k]; k--; } tmp[k+1]=key; }
+   int mid = useN/2; if((useN%2)==1) return tmp[mid]; else return 0.5*(tmp[mid-1]+tmp[mid]);
+}
+
+void PushMedianClose(const double v)
+{
+   int maxN = (input_prefilter_window>16?16:input_prefilter_window);
+   if(maxN<3) maxN = 3;
+   if((maxN % 2)==0) maxN++;
+   if(g_med_close_count < maxN) g_med_close_count++;
+   g_med_buf_close[g_med_close_idx] = v;
+   g_med_close_idx++; if(g_med_close_idx>=maxN) g_med_close_idx=0;
+}
+
+double GetMedianClose(const int window)
+{
+   int maxN = (window>16?16:window);
+   if(maxN<1) return g_med_buf_close[(g_med_close_idx>0)?(g_med_close_idx-1):0];
+   int useN = (g_med_close_count<maxN? g_med_close_count : maxN);
+   if(useN<=0) return 0.0;
+   double tmp[16];
+   int pos = g_med_close_idx;
+   for(int i=0;i<useN;i++) { int j = pos - 1 - i; if(j<0) j += maxN; tmp[i] = g_med_buf_close[j]; }
+   for(int i=1;i<useN;i++){ double key=tmp[i]; int k=i-1; while(k>=0 && tmp[k]>key){ tmp[k+1]=tmp[k]; k--; } tmp[k+1]=key; }
+   int mid = useN/2; if((useN%2)==1) return tmp[mid]; else return 0.5*(tmp[mid-1]+tmp[mid]);
+}
+
+double SmoothedOpenDiff(const double realDiff)
+{
+   if(!input_avg_filter_enabled) return realDiff;
+   double filtered = realDiff;
+   if(input_use_prefilter_median && input_prefilter_window>=3 && (input_prefilter_window%2)==1)
+   {
+      PushMedianOpen(realDiff);
+      filtered = GetMedianOpen(input_prefilter_window);
+   }
+   else
+   {
+      PushMedianOpen(realDiff);
+      filtered = realDiff;
+   }
+   double alpha = 2.0 / (input_avg_period + 1.0);
+   if(!g_ema_open_init){ g_ema_open = filtered; g_ema_open_init = true; }
+   else { g_ema_open = g_ema_open + alpha * (filtered - g_ema_open); }
+   return g_ema_open;
+}
+
+double SmoothedCloseDiff(const double realDiff)
+{
+   if(!input_avg_filter_enabled) return realDiff;
+   double filtered = realDiff;
+   if(input_use_prefilter_median && input_prefilter_window>=3 && (input_prefilter_window%2)==1)
+   {
+      PushMedianClose(realDiff);
+      filtered = GetMedianClose(input_prefilter_window);
+   }
+   else
+   {
+      PushMedianClose(realDiff);
+      filtered = realDiff;
+   }
+   double alpha = 2.0 / (input_avg_period + 1.0);
+   if(!g_ema_close_init){ g_ema_close = filtered; g_ema_close_init = true; }
+   else { g_ema_close = g_ema_close + alpha * (filtered - g_ema_close); }
+   return g_ema_close;
+}
+
 int CountOpenPairs()
 {
    int count = 0;
@@ -1094,8 +1282,52 @@ void MaybeOpenPair()
       if(!s_ok || s_bal < input_min_balance_usd) return;
    }
 
-   double diffOpen = DiffOpenPoints(); if(diffOpen < input_open_threshold_points) return;
+   double diffOpen = DiffOpenPoints();
+   bool triggerOpen = false;
+   if(!input_avg_filter_enabled)
+   {
+      if(diffOpen < input_open_threshold_points) return;
+      triggerOpen = true;
+   }
+   else
+   {
+      if(input_avg_signal_cooldown_ms > 0 && (NowMs() - g_last_avg_open_signal_ms) < (ulong)input_avg_signal_cooldown_ms) return;
+      double avgOpen = SmoothedOpenDiff(diffOpen);
+      double thrEff = (double)(input_open_threshold_points + input_diff_hysteresis_points);
+      if(!g_open_pending)
+      {
+         if(avgOpen >= thrEff)
+         {
+            g_open_pending = true; g_open_snapshot_avg = avgOpen; g_open_ok_count = 0; g_open_deadline_ms = NowMs() + (ulong)input_confirm_timeout_ms;
+         }
+         return; // wait for confirmation path below in next ticks
+      }
+      else
+      {
+         bool ok = true;
+         if(input_real_confirm_enabled)
+         {
+            double need = MathMax(g_open_snapshot_avg, thrEff) + (double)input_epsilon_diff_points;
+            ok = (diffOpen >= need);
+         }
+         else
+         {
+            ok = (avgOpen >= thrEff);
+         }
+         if(ok) g_open_ok_count++; else g_open_ok_count = 0;
+         if(g_open_ok_count >= input_confirm_ticks)
+         {
+            triggerOpen = true; g_open_pending = false; g_last_avg_open_signal_ms = NowMs();
+         }
+         else
+         {
+            if(input_confirm_timeout_ms>0 && NowMs() > g_open_deadline_ms) { g_open_pending = false; g_open_ok_count = 0; }
+            if(!triggerOpen) return;
+         }
+      }
+   }
 
+   if(!triggerOpen) return;
    string cmd_id = NewCmdId(); g_last_cmd_id = cmd_id;
 
    // Dry run path: pretend master open succeeded then write open_cmd
@@ -1107,9 +1339,11 @@ void MaybeOpenPair()
          cmd_id,(long)g_seq,cmd_id,g_symbol,((input_master_side==SIDE_BUY)?"BUY":"SELL"),input_lot_master,input_lot_slave,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
          g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpen);
       FileWriteAllAtomic(PathOpenCmd(), lineDR);
+      LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;dOpen=%.1f;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((input_master_side==SIDE_BUY)?"BUY":"SELL"), input_lot_master, input_lot_slave, expire_ms, diffOpen, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
       g_waiting_slave_open_ack=true; g_pending_open_cmd_id=cmd_id; g_pending_open_created_ms=created_ms; g_rollback_initiated=false;
       string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0);
       FileWriteAllAtomic(PathOpenAckSelf(), ackSelf);
+      LogEvent("OPEN_ACK_MASTER", StringFormat("cmd_id=%s;ok=1;price=0.0;err=0", cmd_id));
       // Consolidated grace to avoid premature close/reconcile while awaiting/just after ACK
       g_last_peer_open_ack_ms = 0;
       g_open_grace_until_ms = NowMs() + (ulong)input_ack_timeout_ms;
@@ -1120,6 +1354,7 @@ void MaybeOpenPair()
    ulong tkt=0; double price=0.0; bool ok = PlaceOrder((input_master_side==SIDE_BUY), input_lot_master, tkt, price);
    string ackSelf2 = StringFormat("1,%s,%I64d,%s,%.5f,%d,%d\n", cmd_id, (long)g_seq, "N/A", price, ok?1:0, ok?0:(int)GetLastError());
    FileWriteAllAtomic(PathOpenAckSelf(), ackSelf2);
+   LogEvent("OPEN_ACK_MASTER", StringFormat("cmd_id=%s;ok=%d;price=%.5f;err=%d", cmd_id, ok?1:0, price, ok?0:(int)GetLastError()));
    if(!ok){ g_last_open_time = TimeCurrent(); return; }
 
    g_last_open_time = TimeCurrent();
@@ -1131,6 +1366,7 @@ void MaybeOpenPair()
       cmd_id,(long)g_seq,cmd_id,g_symbol,((input_master_side==SIDE_BUY)?"BUY":"SELL"),input_lot_master,input_lot_slave,input_slippage_points,created_ms2,expire_ms2,input_open_threshold_points,input_close_threshold_points,
       g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpen);
    FileWriteAllAtomic(PathOpenCmd(), line);
+   LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;dOpen=%.1f;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((input_master_side==SIDE_BUY)?"BUY":"SELL"), input_lot_master, input_lot_slave, expire_ms2, diffOpen, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
    g_waiting_slave_open_ack=true; g_pending_open_cmd_id=cmd_id; g_pending_open_created_ms=created_ms2; g_rollback_initiated=false;
    // Consolidated grace to avoid premature close/reconcile while awaiting/just after ACK
    g_last_peer_open_ack_ms = 0;
@@ -1155,13 +1391,58 @@ void MaybeClosePair()
       int el = (int)(TimeCurrent() - g_last_pair_both_open_time);
       if(el < input_close_cooldown_seconds) return;
    }
-   double diffClose = DiffClosePoints(); if(diffClose < input_close_threshold_points) return;
+   double diffClose = DiffClosePoints();
+   bool triggerClose = false;
+   if(!input_avg_filter_enabled)
+   {
+      if(diffClose < input_close_threshold_points) return;
+      triggerClose = true;
+   }
+   else
+   {
+      if(input_avg_signal_cooldown_ms > 0 && (NowMs() - g_last_avg_close_signal_ms) < (ulong)input_avg_signal_cooldown_ms) return;
+      double avgClose = SmoothedCloseDiff(diffClose);
+      double thrEff = (double)(input_close_threshold_points + input_diff_hysteresis_points);
+      if(!g_close_pending)
+      {
+         if(avgClose >= thrEff)
+         {
+            g_close_pending = true; g_close_snapshot_avg = avgClose; g_close_ok_count = 0; g_close_deadline_ms = NowMs() + (ulong)input_confirm_timeout_ms;
+         }
+         return;
+      }
+      else
+      {
+         bool ok = true;
+         if(input_real_confirm_enabled)
+         {
+            double need = MathMax(g_close_snapshot_avg, thrEff) + (double)input_epsilon_diff_points;
+            ok = (diffClose >= need);
+         }
+         else
+         {
+            ok = (avgClose >= thrEff);
+         }
+         if(ok) g_close_ok_count++; else g_close_ok_count = 0;
+         if(g_close_ok_count >= input_confirm_ticks)
+         {
+            triggerClose = true; g_close_pending = false; g_last_avg_close_signal_ms = NowMs();
+         }
+         else
+         {
+            if(input_confirm_timeout_ms>0 && NowMs() > g_close_deadline_ms) { g_close_pending = false; g_close_ok_count = 0; }
+            if(!triggerClose) return;
+         }
+      }
+   }
 
+   if(!triggerClose) return;
    string cmd_id = NewCmdId(); ulong created_ms = NowMs();
    int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0)? DryOverrideExpireMs(): input_cmd_expire_ms;
    string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
    bool write_cmd = !(DryEnabled() && DryMode()==DRY_NONE);
    if(write_cmd) FileWriteAllAtomic(PathCloseCmd(), line);
+   if(write_cmd) LogEvent("CLOSE_CMD", StringFormat("cmd_id=%s;reason=AUTO;action=CLOSE;dClose=%.1f", cmd_id, diffClose));
 
    if(DryEnabled())
    {
@@ -1177,6 +1458,7 @@ void MaybeClosePair()
    bool ok = CloseAllByMagic(); CompactPairMapSelf(); WritePositions();
    string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError());
    FileWriteAllAtomic(PathCloseAckSelf(), ack);
+   LogEvent("CLOSE_ACK_MASTER", StringFormat("cmd_id=%s;ok=%d;err=%d", cmd_id, ok?1:0, ok?0:(int)GetLastError()));
 }
 
 void SlaveProcessOpenCmd()
@@ -1192,6 +1474,7 @@ void SlaveProcessOpenCmd()
       // malformed command; acknowledge failure
       string ackBad = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", "UNKNOWN", (long)g_seq, "N/A", "0.0", 0, 400);
       FileWriteAllAtomic(PathOpenAckSelf(), ackBad);
+      LogEvent("OPEN_ACK_SLAVE", StringFormat("cmd_id=%s;ok=0;err=%d;reason=MALFORMED", "UNKNOWN", 400));
       if(input_verbose_journal_logs) Print("[Slave] Malformed open_cmd (n<11), wrote ACK fail 400");
       return;
    }
@@ -1224,6 +1507,7 @@ void SlaveProcessOpenCmd()
       // Acknowledge expired so master can rollback
       string ackExpired = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 0, 408);
       FileWriteAllAtomic(PathOpenAckSelf(), ackExpired);
+      LogEvent("OPEN_ACK_SLAVE", StringFormat("cmd_id=%s;ok=0;err=%d;reason=EXPIRED", cmd_id, 408));
       if(input_verbose_journal_logs) Print("[Slave] open_cmd expired cmd_id=", cmd_id, " age_ms=", (NowMs()-created_ms));
       return;
    }
@@ -1232,12 +1516,14 @@ void SlaveProcessOpenCmd()
    if(DryEnabled())
    {
       if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK)
-      { int latency = DryDelayMs(); if(latency>0) Sleep(latency); string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0); FileWriteAllAtomic(PathOpenAckSelf(), ackSelf); if(input_verbose_journal_logs) Print("[Slave] DryRun ACK ok for cmd_id=", cmd_id); } return;
+      { int latency = DryDelayMs(); if(latency>0) Sleep(latency); string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0); FileWriteAllAtomic(PathOpenAckSelf(), ackSelf); if(input_verbose_journal_logs) Print("[Slave] DryRun ACK ok for cmd_id=", cmd_id); }
+      return;
    }
 
    ulong tkt=0; double price=0.0; bool ok = PlaceOrder(slaveBuy, lot_slave, tkt, price);
    string ack = StringFormat("1,%s,%I64d,%s,%.5f,%d,%d\n", cmd_id, (long)g_seq, "N/A", price, ok?1:0, ok?0:(int)GetLastError());
    FileWriteAllAtomic(PathOpenAckSelf(), ack);
+   LogEvent("OPEN_ACK_SLAVE", StringFormat("cmd_id=%s;ok=%d;price=%.5f;err=%d", cmd_id, ok?1:0, price, ok?0:(int)GetLastError()));
    if(input_verbose_journal_logs) { if(ok) Print("[Slave] Order placed OK cmd_id=", cmd_id, " ticket=", (long)tkt, " price=", DoubleToString(price, g_digits)); else Print("[Slave] Order failed cmd_id=", cmd_id, " err=", GetLastError()); }
    if(ok){ PairMapSelfUpsert(pair_id, tkt); CacheUpsert(pair_id, tkt); WritePositions(); CompactPairMapSelf(); RebuildPairMapSelfFromCache(); WritePositions(); }
 }
@@ -1456,6 +1742,8 @@ void DisplayUpdate()
    int spread = SpreadPointsSelf();
    double dOpen = DiffOpenPoints();
    double dClose = DiffClosePoints();
+   double aOpen = input_avg_filter_enabled ? SmoothedOpenDiff(dOpen) : dOpen;
+   double aClose = input_avg_filter_enabled ? SmoothedCloseDiff(dClose) : dClose;
    int line = 0;
    DisplaySetLine(line++, StringFormat("role=%s  channel=%s  symbol=%s", role, input_channel_id, g_symbol));
    line = DisplaySetWrappedLines(line, StringFormat("sync_path=%s", PathChannelRootAbs()));
@@ -1488,7 +1776,21 @@ void DisplayUpdate()
       int closeLeftS=-1; if(g_last_pair_both_open_time>0){ int el=(int)(TimeCurrent()-g_last_pair_both_open_time); int rem=g_master_close_cooldown_seconds-el; if(rem<0) rem=0; closeLeftS=rem; }
       DisplaySetLine(line++, StringFormat("close_cooldown=%ds left=%s", g_master_close_cooldown_seconds, (closeLeftS>=0?IntegerToString(closeLeftS):"-")));
    }
-   DisplaySetLine(line++, StringFormat("diffOpen=%.1f  diffClose=%.1f  fresh=%s", dOpen, dClose, (QuotesFresh()?"OK":"STALE")));
+   if(input_role==ROLE_MASTER)
+   {
+      string avgLine = input_avg_filter_enabled ? StringFormat("AVG ON | EMA-%d%s | H=%d E=%d CF=%d CD=%dms",
+         input_avg_period, (input_use_prefilter_median?StringFormat(" + Med-%d", input_prefilter_window):""),
+         input_diff_hysteresis_points, input_epsilon_diff_points, input_confirm_ticks, input_avg_signal_cooldown_ms) : "AVG OFF | RealOnly";
+      DisplaySetLine(line++, avgLine);
+      string stOpen = g_open_pending ? StringFormat("PENDING %d/%d", g_open_ok_count, input_confirm_ticks) : "READY";
+      string stClose = g_close_pending ? StringFormat("PENDING %d/%d", g_close_ok_count, input_confirm_ticks) : "READY";
+      DisplaySetLine(line++, StringFormat("Open: Real=%.1f Avg=%.1f Thr=%d | %s", dOpen, aOpen, input_open_threshold_points, stOpen));
+      DisplaySetLine(line++, StringFormat("Close: Real=%.1f Avg=%.1f Thr=%d | %s", dClose, aClose, input_close_threshold_points, stClose));
+   }
+   else
+   {
+      DisplaySetLine(line++, StringFormat("diffOpen=%.1f  diffClose=%.1f  fresh=%s", dOpen, dClose, (QuotesFresh()?"OK":"STALE")));
+   }
    if(g_role_conflict) DisplaySetLine(line++, "role_conflict=YES (single-instance per channel)" );
    int effMode = DryMode();
    string dryMode = (effMode==DRY_NONE?"NONE":(effMode==DRY_WRITE_CMD_ONLY?"WRITE_CMD_ONLY":"WRITE_CMD_AND_FAKE_ACK"));
@@ -1601,9 +1903,11 @@ void MasterRollbackOpen()
    string close_id = NewCmdId(); ulong created_ms = NowMs(); int expire_ms = input_cmd_expire_ms;
    string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", close_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
    FileWriteAll(PathCloseCmd(), line);
+   LogEvent("CLOSE_CMD", StringFormat("cmd_id=%s;reason=ROLLBACK;action=CLOSE", close_id));
    bool ok = CloseAllByMagic();
    string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", close_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError());
    FileWriteAll(PathCloseAckSelf(), ack);
+   LogEvent("CLOSE_ACK_MASTER", StringFormat("cmd_id=%s;ok=%d;err=%d", close_id, ok?1:0, ok?0:(int)GetLastError()));
    g_waiting_slave_open_ack = false; g_pending_open_cmd_id = "";
 }
 
@@ -1629,6 +1933,7 @@ void OnTimer()
 {
    if(!(input_role==ROLE_MASTER)) ReadMasterConfig();
    WriteHeartbeat();
+   LogsCleanupRetention();
    UpdatePeerStatus();
    if(!g_role_conflict) WriteRoleLock();
    CacheCompactCurrentPositions();
