@@ -65,7 +65,7 @@ input int    input_avg_signal_cooldown_ms   = 400;           // Scope: Master �
 input int    input_max_spread_points_self   = 50;            // Scope: Master — block if own spread exceeds (points)
 input int    input_max_spread_points_peer   = 50;            // Scope: Master — check peer spread before opening (points)
 input int    input_quotes_fresh_ms          = 400;           // Scope: Master — maximum acceptable quote age (ms)
-input int    input_file_poll_ms             = 10;            // Scope: Master — background file polling cadence (ms)
+input int    input_file_poll_ms             = 5;             // Scope: Master — background file polling cadence (ms)
 input int    input_magic_number_base        = 900100;        // Scope: Master — magic base per channel/symbol
 input bool   input_retry_on_requote         = true;          // Scope: Master — retry on requote/off quotes
 input int    input_max_retries              = 20;             // Scope: Master — max retry attempts
@@ -754,6 +754,14 @@ void MasterReconcilePositions()
 {
    if(!(input_role==ROLE_MASTER)) return;
    if(!g_peer_alive) return; // require peer alive to avoid acting on stale files
+   
+   // CRITICAL: Skip reconcile during grace period to prevent immediate close after open
+   if(NowMs() < g_open_grace_until_ms) { 
+      g_prev_self_pairs = CountOpenPairs(); 
+      g_prev_peer_pairs = PeerOpenCount(); 
+      return; 
+   }
+   
    // Keep mapping/positions fresh before diffing
    RebuildPairMapSelfFromCache();
    WritePositions();
@@ -788,6 +796,14 @@ void MasterReconcilePositions()
    {
       if(self < peer)
       {
+         // ENHANCED: Add throttling to prevent reconcile loop
+         static ulong last_peer_close_ms = 0;
+         if((NowMs() - last_peer_close_ms) < 2000) { // 2 second throttle
+            g_prev_self_pairs=self; g_prev_peer_pairs=peer; 
+            return;
+         }
+         last_peer_close_ms = NowMs();
+         
          // Pick pair_id from peer positions that does not exist on self; fallback via peer map by ticket
          string peerPos, selfPos; string pRows[]; string sRows[]; int pn=0, sn=0;
          if(FileReadAll(PathPositionsPeer(), peerPos)) pn = StringSplit(TrimAll(peerPos), '\n', pRows);
@@ -1356,13 +1372,18 @@ void MaybeOpenPair()
       g_last_open_time = TimeCurrent();
       // Write open_cmd with audit
       ulong created_ms = NowMs();
+      // CRITICAL FIX: Ensure expire_ms is always positive and reasonable
       int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0) ? DryOverrideExpireMs() : input_cmd_expire_ms;
+      if(expire_ms <= 0) expire_ms = 30000; // Default 30 seconds if invalid
       string lineDR = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d,%.5f,%.5f,%.5f,%.5f,%.1f\n",
          cmd_id,(long)g_seq,cmd_id,g_symbol,((input_master_side==SIDE_BUY)?"BUY":"SELL"),input_lot_master,input_lot_slave,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
          g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpen);
       FileWriteAllAtomic(PathOpenCmd(), lineDR);
       LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((input_master_side==SIDE_BUY)?"BUY":"SELL"), input_lot_master, input_lot_slave, expire_ms, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
-      g_waiting_slave_open_ack = true; g_pending_open_cmd_id = cmd_id; g_pending_open_created_ms = created_ms; g_rollback_initiated=false; g_open_grace_until_ms = NowMs() + (ulong)input_ack_timeout_ms;
+      g_waiting_slave_open_ack = true; g_pending_open_cmd_id = cmd_id; g_pending_open_created_ms = created_ms; g_rollback_initiated=false; 
+      // ENHANCED: Set extended grace period to prevent immediate close
+      g_open_grace_until_ms = NowMs() + (ulong)MathMax(input_ack_timeout_ms + 2000, input_close_cooldown_seconds * 1000);
+      g_early_warning_sent = false; // reset warning flag
       // Ack self
       string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0);
       FileWriteAllAtomic(PathOpenAckSelf(), ackSelf);
@@ -1391,13 +1412,18 @@ void MaybeOpenPair()
    // Write open_cmd with audit fields
    {
       ulong created_ms = NowMs();
+      // CRITICAL FIX: Ensure expire_ms is always positive and reasonable
       int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0) ? DryOverrideExpireMs() : input_cmd_expire_ms;
+      if(expire_ms <= 0) expire_ms = 30000; // Default 30 seconds if invalid
       string line = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d,%.5f,%.5f,%.5f,%.5f,%.1f\n",
          cmd_id,(long)g_seq,cmd_id,g_symbol,((input_master_side==SIDE_BUY)?"BUY":"SELL"),input_lot_master,input_lot_slave,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
          g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpen);
       FileWriteAllAtomic(PathOpenCmd(), line);
       LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((input_master_side==SIDE_BUY)?"BUY":"SELL"), input_lot_master, input_lot_slave, created_ms, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
-      g_waiting_slave_open_ack = true; g_pending_open_cmd_id = cmd_id; g_pending_open_created_ms = created_ms; g_rollback_initiated=false; g_open_grace_until_ms = NowMs() + (ulong)input_ack_timeout_ms;
+      g_waiting_slave_open_ack = true; g_pending_open_cmd_id = cmd_id; g_pending_open_created_ms = created_ms; g_rollback_initiated=false; 
+      // ENHANCED: Set extended grace period to prevent immediate close
+      g_open_grace_until_ms = NowMs() + (ulong)MathMax(input_ack_timeout_ms + 2000, input_close_cooldown_seconds * 1000);
+      g_early_warning_sent = false; // reset warning flag
    }
 }
 
@@ -1438,17 +1464,77 @@ void MasterRollbackOpen()
    g_pending_open_cmd_id = "";
 }
 
+// Global variable สำหรับ early warning
+bool g_early_warning_sent = false;
+
+// Performance Metrics
+ulong g_total_opens = 0;
+ulong g_successful_opens = 0;
+ulong g_rollback_count = 0;
+ulong g_avg_ack_time_ms = 0;
+ulong g_total_ack_time_ms = 0;
+
+void UpdateOpenMetrics(ulong ack_time_ms, bool success)
+{
+   g_total_opens++;
+   if(success) 
+   {
+      g_successful_opens++;
+      g_total_ack_time_ms += ack_time_ms;
+      g_avg_ack_time_ms = g_total_ack_time_ms / g_successful_opens;
+   }
+   else
+   {
+      g_rollback_count++;
+   }
+}
+
 void MasterWatchdogOpen()
 {
    if(!g_waiting_slave_open_ack) return;
    // In debug hold mode, do not rollback open; wait until user presses Close Now
    if(input_debug_buttons_enabled && g_debug_hold_open) return;
-   // timeout
-   if((NowMs() - g_pending_open_created_ms) > (ulong)input_ack_timeout_ms)
+   
+   // CRITICAL FIX: Prevent timestamp underflow that causes massive elapsed values
+   ulong now_ms = NowMs();
+   if(now_ms < g_pending_open_created_ms || g_pending_open_created_ms == 0) {
+      // Clock went backwards, overflow, or uninitialized - reset the timer
+      g_pending_open_created_ms = now_ms;
+      LogEvent("WATCHDOG_RESET", StringFormat("cmd_id=%s;reason=TIMESTAMP_FIX", g_pending_open_cmd_id));
+      return;
+   }
+   ulong elapsed = now_ms - g_pending_open_created_ms;
+   
+   // Early warning ที่ 50% ของ timeout
+   if(elapsed > (ulong)(input_ack_timeout_ms * 0.5) && !g_early_warning_sent)
    {
+      LogEvent("SLAVE_SLOW_WARNING", StringFormat("cmd_id=%s;elapsed_ms=%I64u", 
+                g_pending_open_cmd_id, elapsed));
+      g_early_warning_sent = true;
+   }
+   
+   // timeout
+   if(elapsed > (ulong)input_ack_timeout_ms)
+   {
+      // ตรวจสอบ market condition ก่อน rollback
+      double currentSpread = SpreadPointsSelf();
+      
+      // ถ้า spread ปกติ ให้เวลาเพิ่มอีกนิด (แต่ไม่เกิน 50%)
+      if(currentSpread <= input_max_spread_points_self && 
+         elapsed < (ulong)(input_ack_timeout_ms * 1.5))
+      {
+         LogEvent("ROLLBACK_DELAYED", StringFormat("cmd_id=%s;elapsed_ms=%I64u;spread=%d", 
+                   g_pending_open_cmd_id, elapsed, currentSpread));
+         return; // รออีกนิด
+      }
+      
+      LogEvent("ROLLBACK_TIMEOUT", StringFormat("cmd_id=%s;elapsed_ms=%I64u;spread=%d", 
+                g_pending_open_cmd_id, elapsed, currentSpread));
+      UpdateOpenMetrics(elapsed, false); // บันทึก rollback
       MasterRollbackOpen();
       return;
    }
+   
    // check peer ack
    string ack_id; int ok;
    if(TryReadPeerOpenAck(ack_id, ok))
@@ -1457,17 +1543,22 @@ void MasterWatchdogOpen()
       {
          if(ok==1)
          {
-            LogEvent("OPEN_ACK_PEER", StringFormat("cmd_id=%s;ok=1", ack_id));
+            LogEvent("OPEN_ACK_PEER", StringFormat("cmd_id=%s;ok=1;elapsed_ms=%I64u", ack_id, elapsed));
+            UpdateOpenMetrics(elapsed, true); // บันทึก success
             // success from slave
             g_waiting_slave_open_ack = false;
             g_pending_open_cmd_id = "";
+            g_early_warning_sent = false; // reset warning flag
             // Start close cooldown anchor at the moment both sides confirmed open
             g_last_pair_both_open_time = TimeCurrent();
+            // ENHANCED: Extend grace period after successful peer ACK to prevent immediate close
+            g_open_grace_until_ms = NowMs() + (ulong)MathMax(input_close_cooldown_seconds * 1000, 15000); // อย่างน้อย 15 วินาที
          }
          else
          {
-            LogEvent("OPEN_ACK_PEER", StringFormat("cmd_id=%s;ok=0", ack_id));
+            LogEvent("OPEN_ACK_PEER", StringFormat("cmd_id=%s;ok=0;elapsed_ms=%I64u", ack_id, elapsed));
             LogEvent("OPEN_ROLLBACK", StringFormat("cmd_id=%s;reason=PEER_FAIL", ack_id));
+            UpdateOpenMetrics(elapsed, false); // บันทึก peer fail
             // slave failed -> rollback
             MasterRollbackOpen();
          }
@@ -1481,13 +1572,23 @@ void MaybeClosePair()
    if(!(input_role==ROLE_MASTER)) return;
    // In debug mode, keep positions open until user clicks Close Now
    if(input_debug_buttons_enabled && g_debug_hold_open) return;
-   // Do not auto-close while waiting for slave to acknowledge an open or just after it
+   
+   // CRITICAL: Enhanced protection against immediate close after open
+   // Do not auto-close while waiting for slave to acknowledge an open
    if(g_waiting_slave_open_ack) return;
+   
+   // Extended grace period after open command sent (with buffer)
+   if(g_pending_open_created_ms > 0 && (NowMs() - g_pending_open_created_ms) < (ulong)(input_ack_timeout_ms + 2000)) return;
+   
+   // Grace period after peer ACK received
    if(g_last_peer_open_ack_ms>0 && (NowMs()-g_last_peer_open_ack_ms) < (ulong)input_ack_timeout_ms) return;
+   
    // Consolidated grace window across bursts of opens
    if(NowMs() < g_open_grace_until_ms) return;
+   
    // Close only if we actually have open trades to avoid immediate close-after-open effect
    if(CountOpenPairs()<=0) return;
+   
    // Close cooldown: avoid normal auto-close until elapsed; do not block reconcile paths elsewhere
    // If a pair was both-side opened recently, this timestamp should have been set; we set/update it upon successful open + peer ack in watchdog
    if(g_last_pair_both_open_time>0)
@@ -1546,7 +1647,9 @@ void MaybeClosePair()
 
    string cmd_id = NewCmdId();
    ulong created_ms = NowMs();
+   // CRITICAL FIX: Ensure expire_ms is always positive and reasonable
    int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0) ? DryOverrideExpireMs() : input_cmd_expire_ms;
+   if(expire_ms <= 0) expire_ms = 30000; // Default 30 seconds if invalid
    string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n",
                               cmd_id,
                               (long)g_seq,
@@ -1558,7 +1661,11 @@ void MaybeClosePair()
    if(DryEnabled() && DryMode()==DRY_NONE)
       write_cmd = false;
    if(write_cmd)
+   {
       FileWriteAllAtomic(PathCloseCmd(), line);
+      // Enhanced logging to track close triggers
+      LogEvent("CLOSE_CMD", StringFormat("cmd_id=%s;reason=AUTO;diffClose=%.1f;threshold=%d;action=CLOSE", cmd_id, diffClose, input_close_threshold_points));
+   }
 
    if(DryEnabled())
    {
@@ -1984,6 +2091,13 @@ void DisplayUpdate()
       DisplaySetLine(line++, StringFormat("open_cooldown=%ds left=%s  close_cooldown=%ds left=%s",
          input_open_cooldown_seconds, cdLeft, input_close_cooldown_seconds, (closeLeft>=0?IntegerToString(closeLeft):"0")));
       DisplaySetLine(line++, StringFormat("max_pairs=%d  open_now=%d", input_max_open_pairs, CountOpenPairs()));
+      
+      // Performance Metrics
+         double success_rate = (g_total_opens>0) ? ((double)g_successful_opens / g_total_opens * 100.0) : 0.0;
+         ulong avg_ack = (g_total_opens>0) ? g_avg_ack_time_ms : 0;
+         DisplaySetLine(line++, StringFormat("Success Rate: %.1f%% (%I64u/%I64u) AvgAck: %I64ums", 
+                        success_rate, g_successful_opens, g_total_opens, avg_ack));
+         DisplaySetLine(line++, StringFormat("Rollbacks: %I64u", g_rollback_count));
    }
    int effMode = DryMode();
    string effModeStr = (effMode==DRY_NONE?"NONE":(effMode==DRY_WRITE_CMD_ONLY?"WRITE_CMD_ONLY":"WRITE_CMD_AND_FAKE_ACK"));
@@ -2119,30 +2233,36 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
-   // Background housekeeping
+   static int timer_count = 0;
+   timer_count++;
+   
+   // === CRITICAL OPERATIONS - ทุกครั้ง ===
    WriteHeartbeat();
-   LogsCleanupRetention();
    UpdatePeerStatus();
-   WriteMasterConfig();
-   ReadMasterConfigForSlave();
    if(!g_role_conflict) WriteRoleLock();
+   
+   // Position tracking - CRITICAL สำหรับ reconciliation
    WritePositions();
    CacheCompactCurrentOrders();
    CompactPairMapSelf();
    RebuildPairMapSelfFromCache();
-   WritePositions();
-   MasterWatchdogOpen();
+   WritePositions(); // เขียนอีกครั้งหลัง rebuild
+   
+   // Reconciliation - CRITICAL สำหรับ sync
    MasterReconcilePositions();
-   if(input_role==ROLE_MASTER)
+   if(input_role==ROLE_SLAVE)
    {
-      MaybeClosePair();
-   }
-   else
-   {
-      SlaveProcessOpenCmd();
-      SlaveProcessCloseCmd();
       SlaveLocalReconcile();
    }
+   
+   // === LESS CRITICAL - ทุก 3 วินาที ===
+   if(timer_count % 3 == 0)
+   {
+      LogsCleanupRetention();
+      WriteMasterConfig();
+      ReadMasterConfigForSlave();
+   }
+   
    DisplayUpdate();
 }
 
@@ -2155,6 +2275,7 @@ void OnTick()
    {
       MaybeOpenPair();
       MaybeClosePair();
+      MasterWatchdogOpen(); // ย้ายมาจาก OnTimer() เพื่อ check บ่อยขึ้น
    }
    else
    {
