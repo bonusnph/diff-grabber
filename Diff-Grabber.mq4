@@ -57,7 +57,7 @@ input int    input_prefilter_window         = 3;             // Scope: Master �
 input bool   input_real_confirm_enabled     = true;          // Scope: Master — require real diff confirmation after averaged trigger
 input int    input_confirm_ticks            = 2;             // Scope: Master — consecutive ticks to confirm
 input int    input_confirm_timeout_ms       = 300;           // Scope: Master — max wait for confirmation (ms)
-input int    input_diff_hysteresis_points   = 3;             // Scope: Master — hysteresis added to thresholds when averaging is enabled (points)
+input int    input_diff_hysteresis_points   = 0;             // Scope: Master — hysteresis added to thresholds when averaging is enabled (points)
 input int    input_epsilon_diff_points      = 1;             // Scope: Master — small margin for real confirm (points)
 input int    input_avg_signal_cooldown_ms   = 400;           // Scope: Master — signal-level cooldown after order (ms)
 
@@ -2064,10 +2064,78 @@ void DisplayUpdate()
          input_avg_period, (input_use_prefilter_median?StringFormat(" + Med-%d", input_prefilter_window):""),
          input_diff_hysteresis_points, input_epsilon_diff_points, input_confirm_ticks, input_avg_signal_cooldown_ms) : "AVG OFF | RealOnly";
       DisplaySetLine(line++, avgLine);
-      string stOpen = g_open_pending ? StringFormat("PENDING %d/%d", g_open_ok_count, input_confirm_ticks) : "READY";
-      string stClose = g_close_pending ? StringFormat("PENDING %d/%d", g_close_ok_count, input_confirm_ticks) : "READY";
-      DisplaySetLine(line++, StringFormat("Open: Real=%.1f Avg=%.1f Thr=%d | %s", dOpen, aOpen, input_open_threshold_points, stOpen));
-      DisplaySetLine(line++, StringFormat("Close: Real=%.1f Avg=%.1f Thr=%d | %s", dClose, aClose, input_close_threshold_points, stClose));
+      
+      // Enhanced status display with detailed averaging info
+      if(input_avg_filter_enabled)
+      {
+         double thrOpenEff = (double)(input_open_threshold_points + input_diff_hysteresis_points);
+         double thrCloseEff = (double)(input_close_threshold_points + input_diff_hysteresis_points);
+         
+         // Open status with detailed info
+         string stOpen = "READY";
+         string openDetail = "";
+         if(g_open_pending)
+         {
+            int timeLeft = (int)((g_open_deadline_ms > NowMs()) ? (g_open_deadline_ms - NowMs()) : 0);
+            double needReal = input_real_confirm_enabled ? 
+               (MathMax(g_open_snapshot_avg, thrOpenEff) + (double)input_epsilon_diff_points) : thrOpenEff;
+            stOpen = StringFormat("PENDING %d/%d (%.0fms)", g_open_ok_count, input_confirm_ticks, timeLeft);
+            openDetail = StringFormat(" Need: Avg>=%.1f Real>=%.1f", thrOpenEff, needReal);
+         }
+         else if(aOpen >= thrOpenEff)
+         {
+            stOpen = "AVG_TRIGGERED";
+            openDetail = StringFormat(" AvgOK: %.1f>=%.1f", aOpen, thrOpenEff);
+         }
+         
+         // Close status with detailed info  
+         string stClose = "READY";
+         string closeDetail = "";
+         if(g_close_pending)
+         {
+            int timeLeft = (int)((g_close_deadline_ms > NowMs()) ? (g_close_deadline_ms - NowMs()) : 0);
+            double needReal = input_real_confirm_enabled ? 
+               (MathMax(g_close_snapshot_avg, thrCloseEff) + (double)input_epsilon_diff_points) : thrCloseEff;
+            stClose = StringFormat("PENDING %d/%d (%.0fms)", g_close_ok_count, input_confirm_ticks, timeLeft);
+            closeDetail = StringFormat(" Need: Avg>=%.1f Real>=%.1f", thrCloseEff, needReal);
+         }
+         else if(aClose >= thrCloseEff)
+         {
+            stClose = "AVG_TRIGGERED";
+            closeDetail = StringFormat(" AvgOK: %.1f>=%.1f", aClose, thrCloseEff);
+         }
+         
+         DisplaySetLine(line++, StringFormat("Open: Real=%.1f Avg=%.1f Thr=%d+%d=%.0f | %s", 
+            dOpen, aOpen, input_open_threshold_points, input_diff_hysteresis_points, thrOpenEff, stOpen));
+         if(openDetail != "") DisplaySetLine(line++, "  " + openDetail);
+         
+         DisplaySetLine(line++, StringFormat("Close: Real=%.1f Avg=%.1f Thr=%d+%d=%.0f | %s", 
+            dClose, aClose, input_close_threshold_points, input_diff_hysteresis_points, thrCloseEff, stClose));
+         if(closeDetail != "") DisplaySetLine(line++, "  " + closeDetail);
+         
+         // Signal cooldown status
+         if(input_avg_signal_cooldown_ms > 0)
+         {
+            int openCooldown = (int)((NowMs() > g_last_avg_open_signal_ms) ? 
+               (NowMs() - g_last_avg_open_signal_ms) : 0);
+            int closeCooldown = (int)((NowMs() > g_last_avg_close_signal_ms) ? 
+               (NowMs() - g_last_avg_close_signal_ms) : 0);
+            string cooldownStatus = "";
+            if(openCooldown < (ulong)input_avg_signal_cooldown_ms)
+               cooldownStatus += StringFormat("OpenCD:%dms ", input_avg_signal_cooldown_ms - openCooldown);
+            if(closeCooldown < (ulong)input_avg_signal_cooldown_ms)
+               cooldownStatus += StringFormat("CloseCD:%dms", input_avg_signal_cooldown_ms - closeCooldown);
+            if(cooldownStatus != "") DisplaySetLine(line++, "Signal Cooldown: " + cooldownStatus);
+         }
+      }
+      else
+      {
+         // Simple display for non-averaging mode
+         string stOpen = "READY";
+         string stClose = "READY";
+         DisplaySetLine(line++, StringFormat("Open: Real=%.1f Thr=%d | %s", dOpen, input_open_threshold_points, stOpen));
+         DisplaySetLine(line++, StringFormat("Close: Real=%.1f Thr=%d | %s", dClose, input_close_threshold_points, stClose));
+      }
    }
    else
    {
