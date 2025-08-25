@@ -27,71 +27,71 @@ enum DryRunHandshakeMode { DRY_NONE = 0, DRY_WRITE_CMD_ONLY = 1, DRY_WRITE_CMD_A
 enum MasterSide { SIDE_BUY = 0, SIDE_SELL = 1 };
 input Role   input_role                     = ROLE_MASTER;   // Scope: Both — select EA role (ROLE_MASTER or ROLE_SLAVE)
 input string input_channel_id               = "A01";         // Scope: Both — channel identifier (must match across peers)
-input string input_shared_dir               = "";            // Scope: Both — legacy (unused); Common Files is used by default
-input string input_symbol                   = "";            // Scope: Both — empty uses current chart symbol
-input bool   input_verbose_journal_logs     = true;          // Scope: Both — emit concise Journal logs for key events
+// input string input_shared_dir               = "";            // Scope: Both — legacy (unused); Common Files is used by default
+// input string input_symbol                   = "";            // Scope: Both — empty uses current chart symbol
+// input bool   input_verbose_journal_logs     = true;          // Scope: Both — emit concise Journal logs for key events
 
 // File logging (per-channel)
-input bool   input_enable_file_logs         = true;          // Scope: Both — write debug logs to Common Files
-input int    input_log_retain_hours         = 24;            // Scope: Both — retain logs newer than N hours
+// input bool   input_enable_file_logs         = true;          // Scope: Both — write debug logs to Common Files
+// input int    input_log_retain_hours         = 24;            // Scope: Both — retain logs newer than N hours
 
 // Display monitor width (pixels)
-input int    input_display_width_pixels      = 520;          // Scope: Both — width of Display Monitor background (pixels)
+// input int    input_display_width_pixels      = 520;          // Scope: Both — width of Display Monitor background (pixels)
 
 // Master decision parameters
-input int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
-input MasterSide input_master_side          = SIDE_BUY;      // Scope: Master — master direction (Slave auto-opposite)
+// input int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
+input MasterSide input_master_side          = SIDE_SELL;      // Scope: Master — master direction (Slave auto-opposite)
 input double input_lot_master               = 0.01;          // Scope: Master — lot size for master orders
 input double input_lot_slave                = 0.01;          // Scope: Master — advised lot for Slave; Slave ignores local lot input
 input int    input_open_threshold_points    = 30;            // Scope: Master — open threshold (points)
 input int    input_close_threshold_points   = 30;            // Scope: Master — close threshold (points)
-input int    input_open_cooldown_seconds    = 300;           // Scope: Master — open cooldown after an open
-input int    input_close_cooldown_seconds   = 60;            // Scope: Master — close cooldown after both sides opened
-input int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
+// input int    input_open_cooldown_seconds    = 7200;           // Scope: Master — open cooldown after an open
+// input int    input_close_cooldown_seconds   = 60;            // Scope: Master — close cooldown after both sides opened
+// input int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
 
 // Averaged diff gating (Master-only)
-input bool   input_avg_filter_enabled       = true;          // Scope: Master — enable EMA-based averaged diff gating
-input int    input_avg_period               = 9;             // Scope: Master — EMA period (ticks)
-input bool   input_use_prefilter_median     = true;          // Scope: Master — apply median pre-filter before EMA
-input int    input_prefilter_window         = 3;             // Scope: Master — median window (odd 3/5)
-input bool   input_real_confirm_enabled     = true;          // Scope: Master — require real diff confirmation after averaged trigger
-input int    input_confirm_ticks            = 2;             // Scope: Master — consecutive ticks to confirm
-input int    input_confirm_timeout_ms       = 300;           // Scope: Master — max wait for confirmation (ms)
-input int    input_diff_hysteresis_points   = 0;             // Scope: Master — hysteresis added to thresholds when averaging is enabled (points)
-input int    input_epsilon_diff_points      = 1;             // Scope: Master — small margin for real confirm (points)
-input int    input_avg_signal_cooldown_ms   = 400;           // Scope: Master — signal-level cooldown after order (ms)
+input bool   input_avg_filter_enabled       = false;         // Scope: Master — enable EMA-based averaged diff gating
+// input int    input_avg_period               = 9;             // Scope: Master — EMA period (ticks)
+// input bool   input_use_prefilter_median     = true;          // Scope: Master — apply median pre-filter before EMA
+// input int    input_prefilter_window         = 3;             // Scope: Master — median window (odd 3/5)
+// input bool   input_real_confirm_enabled     = true;          // Scope: Master — require real diff confirmation after averaged trigger
+// input int    input_confirm_ticks            = 2;             // Scope: Master — consecutive ticks to confirm
+// input int    input_confirm_timeout_ms       = 300;           // Scope: Master — max wait for confirmation (ms)
+// input int    input_diff_hysteresis_points   = 0;             // Scope: Master — hysteresis added to thresholds when averaging is enabled (points)
+// input int    input_epsilon_diff_points      = 1;             // Scope: Master — small margin for real confirm (points)
+// input int    input_avg_signal_cooldown_ms   = 400;           // Scope: Master — signal-level cooldown after order (ms)
 
 // Quality guards
-input int    input_max_spread_points_self   = 50;            // Scope: Master — block if own spread exceeds (points)
-input int    input_max_spread_points_peer   = 50;            // Scope: Master — check peer spread before opening (points)
-input int    input_quotes_fresh_ms          = 400;           // Scope: Master — maximum acceptable quote age (ms)
-input int    input_file_poll_ms             = 5;             // Scope: Master — background file polling cadence (ms)
-input int    input_magic_number_base        = 900100;        // Scope: Master — magic base per channel/symbol
-input bool   input_retry_on_requote         = true;          // Scope: Master — retry on requote/off quotes
-input int    input_max_retries              = 20;             // Scope: Master — max retry attempts
+// input int    input_max_spread_points_self   = 50;            // Scope: Master — block if own spread exceeds (points)
+// input int    input_max_spread_points_peer   = 50;            // Scope: Master — check peer spread before opening (points)
+// input int    input_quotes_fresh_ms          = 400;           // Scope: Master — maximum acceptable quote age (ms)
+// input int    input_file_poll_ms             = 5;             // Scope: Master — background file polling cadence (ms)
+// input int    input_magic_number_base        = 123456;        // Scope: Master — magic base per channel/symbol
+// input bool   input_retry_on_requote         = true;          // Scope: Master — retry on requote/off quotes
+// input int    input_max_retries              = 20;             // Scope: Master — max retry attempts
 
 // Smart Sync timeouts
-input int    input_cmd_expire_ms            = 30000;         // Scope: Master — command expiry (ms)
-input int    input_ack_timeout_ms           = 10000;          // Scope: Master — ack wait timeout (ms)
-input int    input_heartbeat_timeout_ms     = 3000;          // Scope: Master — peer heartbeat stale threshold (ms)
-input ReconcileMode input_reconcile_mode   = RECONCILE_CLOSE;// Scope: Master — desync handling policy (CLOSE/REOPEN)
-input int    input_reconcile_interval_ms    = 500;           // Scope: Master — reconcile cadence (ms)
-input int    input_reconcile_freeze_seconds = 8;             // Scope: Master — freeze reconcile after both sides opened (seconds)
-input int    input_journal_rotate_max_kb    = 256;           // Scope: Master — journal rotation size (KB)
+// input int    input_cmd_expire_ms            = 30000;         // Scope: Master — command expiry (ms)
+// input int    input_ack_timeout_ms           = 10000;          // Scope: Master — ack wait timeout (ms)
+// input int    input_heartbeat_timeout_ms     = 3000;          // Scope: Master — peer heartbeat stale threshold (ms)
+// input ReconcileMode input_reconcile_mode   = RECONCILE_CLOSE;// Scope: Master — desync handling policy (CLOSE/REOPEN)
+// input int    input_reconcile_interval_ms    = 500;           // Scope: Master — reconcile cadence (ms)
+// input int    input_reconcile_freeze_seconds = 8;             // Scope: Master — freeze reconcile after both sides opened (seconds)
+// input int    input_journal_rotate_max_kb    = 256;           // Scope: Master — journal rotation size (KB)
 
 // Dry Run (configured on Master only; Slave uses master's config automatically)
-input bool   input_dry_run_enabled          = false;         // Scope: Master — enable Dry Run (no real trading)
-input DryRunHandshakeMode input_dry_run_handshake_mode = DRY_NONE; // Scope: Master — NONE/WRITE_CMD_ONLY/WRITE_CMD_AND_FAKE_ACK
-input int    input_dry_run_inject_delay_ms  = 0;             // Scope: Master — inject IO delay (ms)
-input int    input_dry_run_drop_rate_percent= 0;             // Scope: Master — chance to drop cmd/ack writes (%)
-input int    input_dry_run_override_cmd_expire_ms = 0;       // Scope: Master — override cmd expiry in Dry Run (ms)
-input bool   input_dry_run_suppress_heartbeat   = false;     // Scope: Master — suppress heartbeat for testing
+// input bool   input_dry_run_enabled          = false;         // Scope: Master — enable Dry Run (no real trading)
+// input DryRunHandshakeMode input_dry_run_handshake_mode = DRY_NONE; // Scope: Master — NONE/WRITE_CMD_ONLY/WRITE_CMD_AND_FAKE_ACK
+// input int    input_dry_run_inject_delay_ms  = 0;             // Scope: Master — inject IO delay (ms)
+// input int    input_dry_run_drop_rate_percent= 0;             // Scope: Master — chance to drop cmd/ack writes (%)
+// input int    input_dry_run_override_cmd_expire_ms = 0;       // Scope: Master — override cmd expiry in Dry Run (ms)
+// input bool   input_dry_run_suppress_heartbeat   = false;     // Scope: Master — suppress heartbeat for testing
 
 // Debug UI (Master only)
-input bool   input_debug_buttons_enabled     = false;        // Scope: Master — show Open/Close test buttons (simulates diffOpen/diffClose)
+// input bool   input_debug_buttons_enabled     = false;        // Scope: Master — show Open/Close test buttons (simulates diffOpen/diffClose)
 
 // Extended controls (Master-only; synced to Slave via config):
-input double input_min_balance_usd           = 0.00;         // Scope: Master — minimum balance required on BOTH peers to allow new open
+// input double input_min_balance_usd           = 0.00;         // Scope: Master — minimum balance required on BOTH peers to allow new open
 
 // -----------------------------
 // Globals
@@ -2163,8 +2163,8 @@ void DisplayUpdate()
          }
       }
       // Split into two lines to avoid clipping on narrow charts
-      DisplaySetLine(line++, StringFormat("open_cooldown=%ds left=%s  close_cooldown=%ds left=%s",
-         input_open_cooldown_seconds, cdLeft, input_close_cooldown_seconds, (closeLeft>=0?IntegerToString(closeLeft):"0")));
+      // DisplaySetLine(line++, StringFormat("open_cooldown=%ds left=%s  close_cooldown=%ds left=%s",
+      //   input_open_cooldown_seconds, cdLeft, input_close_cooldown_seconds, (closeLeft>=0?IntegerToString(closeLeft):"0")));
       DisplaySetLine(line++, StringFormat("max_pairs=%d  open_now=%d", input_max_open_pairs, CountOpenPairs()));
       
       // Performance Metrics
