@@ -488,6 +488,36 @@ void RebuildPairMapSelfFromCache()
 }
 
 // -----------------------------
+// License Check (Portable Function)
+// -----------------------------
+bool CheckLicenseExpiry()
+{
+   // License expires on 2025-11-30 23:59:59
+   datetime expire_date = D'2025.11.30 23:59:59';
+   datetime current_time = TimeCurrent();
+   
+   if(current_time > expire_date)
+   {
+      Alert("License expired on 2025-11-30. EA will terminate.");
+      Print("License expired on 2025-11-30. Current time: ", TimeToString(current_time));
+      ExpertRemove();
+      return false;
+   }
+   
+   // Show remaining days for awareness (but not too frequently)
+   static datetime last_warning = 0;
+   int days_left = (int)((expire_date - current_time) / 86400);
+   
+   if(days_left <= 30 && (current_time - last_warning) > 86400) // warn daily when <= 30 days
+   {
+      last_warning = current_time;
+      Print("License expires in ", days_left, " days (2025-11-30)");
+   }
+   
+   return true;
+}
+
+// -----------------------------
 // Utils
 // -----------------------------
 ulong NowMs() { return (ulong)TimeLocal()*1000 + (ulong)GetTickCount64()%1000; }
@@ -1982,6 +2012,9 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 // -----------------------------
 int OnInit()
 {
+   // License check first
+   if(!CheckLicenseExpiry()) return(INIT_FAILED);
+   
    g_symbol = (input_symbol=="" ? _Symbol : input_symbol);
    g_digits = (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS);
    g_point  = SymbolInfoDouble(g_symbol, SYMBOL_POINT);
@@ -2136,6 +2169,12 @@ void OnTimer()
 {
    static int timer_count = 0;
    timer_count++;
+   
+   // License check (low priority - every 60 minutes)
+   if(timer_count % 3600 == 0) // every 60 minutes
+   {
+      CheckLicenseExpiry(); // will auto-terminate if expired
+   }
    
    // === CRITICAL OPERATIONS - ทุกครั้ง ===
    WriteHeartbeat();
