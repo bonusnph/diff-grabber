@@ -72,7 +72,7 @@ input int    input_max_retries              = 20;             // Scope: Master �
 
 // Smart Sync timeouts
 input int    input_cmd_expire_ms            = 30000;         // Scope: Master — command expiry (ms)
-input int    input_ack_timeout_ms           = 6000;          // Scope: Master — ack wait timeout (ms)
+input int    input_ack_timeout_ms           = 10000;          // Scope: Master — ack wait timeout (ms)
 input int    input_heartbeat_timeout_ms     = 3000;          // Scope: Master — peer heartbeat stale threshold (ms)
 input ReconcileMode input_reconcile_mode   = RECONCILE_CLOSE;// Scope: Master — desync handling policy (CLOSE/REOPEN)
 input int    input_reconcile_interval_ms    = 500;           // Scope: Master — reconcile cadence (ms)
@@ -1374,7 +1374,7 @@ void MaybeOpenPair()
       ulong created_ms = NowMs();
       // CRITICAL FIX: Ensure expire_ms is always positive and reasonable
       int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0) ? DryOverrideExpireMs() : input_cmd_expire_ms;
-      if(expire_ms <= 0) expire_ms = 30000; // Default 30 seconds if invalid
+      if(expire_ms <= 0) expire_ms = 60000; // Default 60 seconds if invalid (increased for timezone safety)
       string lineDR = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d,%.5f,%.5f,%.5f,%.5f,%.1f\n",
          cmd_id,(long)g_seq,cmd_id,g_symbol,((input_master_side==SIDE_BUY)?"BUY":"SELL"),input_lot_master,input_lot_slave,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
          g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpen);
@@ -1412,10 +1412,10 @@ void MaybeOpenPair()
    // Write open_cmd with audit fields
    {
       ulong created_ms = NowMs();
-      // CRITICAL FIX: Ensure expire_ms is always positive and reasonable
-      int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0) ? DryOverrideExpireMs() : input_cmd_expire_ms;
-      if(expire_ms <= 0) expire_ms = 30000; // Default 30 seconds if invalid
-      string line = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d,%.5f,%.5f,%.5f,%.5f,%.1f\n",
+         // CRITICAL FIX: Ensure expire_ms is always positive and reasonable
+   int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0) ? DryOverrideExpireMs() : input_cmd_expire_ms;
+   if(expire_ms <= 0) expire_ms = 60000; // Default 60 seconds if invalid (increased for timezone safety)
+   string line = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d,%.5f,%.5f,%.5f,%.5f,%.1f\n",
          cmd_id,(long)g_seq,cmd_id,g_symbol,((input_master_side==SIDE_BUY)?"BUY":"SELL"),input_lot_master,input_lot_slave,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
          g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpen);
       FileWriteAllAtomic(PathOpenCmd(), line);
@@ -1649,7 +1649,7 @@ void MaybeClosePair()
    ulong created_ms = NowMs();
    // CRITICAL FIX: Ensure expire_ms is always positive and reasonable
    int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0) ? DryOverrideExpireMs() : input_cmd_expire_ms;
-   if(expire_ms <= 0) expire_ms = 30000; // Default 30 seconds if invalid
+   if(expire_ms <= 0) expire_ms = 60000; // Default 60 seconds if invalid (increased for timezone safety)
    string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n",
                               cmd_id,
                               (long)g_seq,
@@ -1739,12 +1739,16 @@ void SlaveProcessOpenCmd()
       g_have_master_th = false;
    }
 
-   if((NowMs() - created_ms) > (ulong)expire_ms)
+   // CRITICAL FIX: Use absolute expiration timestamp instead of relative time
+   ulong current_ms = NowMs();
+   ulong age_ms = (current_ms >= created_ms) ? (current_ms - created_ms) : 0;
+   if(age_ms > (ulong)expire_ms)
    {
-      // acknowledge expired so master can rollback
+      // Acknowledge expired so master can rollback
       string ackExpired = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 0, 408);
       FileWriteAllAtomic(PathOpenAckSelf(), ackExpired);
-      if(input_verbose_journal_logs) Print("[Slave] open_cmd expired cmd_id=", cmd_id, " age_ms=", (NowMs()-created_ms));
+      LogEvent("OPEN_ACK_SLAVE", StringFormat("cmd_id=%s;ok=0;err=%d;reason=EXPIRED;age_ms=%I64u;expire_ms=%d", cmd_id, 408, age_ms, expire_ms));
+      if(input_verbose_journal_logs) Print("[Slave] open_cmd expired cmd_id=", cmd_id, " age_ms=", age_ms, " expire_ms=", expire_ms);
       return;
    }
 
@@ -1813,7 +1817,10 @@ void SlaveProcessCloseCmd()
     }
     if(g_last_processed_close_cmd_id == cmd_id) return;
     g_last_processed_close_cmd_id = cmd_id;
-   if((NowMs() - created_ms) > (ulong)expire_ms)
+   // CRITICAL FIX: Use absolute expiration timestamp instead of relative time
+   ulong current_ms = NowMs();
+   ulong age_ms = (current_ms >= created_ms) ? (current_ms - created_ms) : 0;
+   if(age_ms > (ulong)expire_ms)
       return; // expired
 
    if(DryEnabled())
@@ -2197,6 +2204,7 @@ void MasterOpenNow()
    g_last_cmd_id = cmd_id;
    ulong created_ms = NowMs();
    int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0) ? DryOverrideExpireMs() : input_cmd_expire_ms;
+   if(expire_ms <= 0) expire_ms = 60000; // Default 60 seconds if invalid (increased for timezone safety)
    string line = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d\n",
                               cmd_id, (long)g_seq, cmd_id, g_symbol,
                               ((input_master_side==SIDE_BUY)?"BUY":"SELL"),
