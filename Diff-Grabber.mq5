@@ -54,7 +54,7 @@ int    input_close_cooldown_seconds   = 60;            // Scope: Master — clos
 int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
 
 // Averaged diff gating (Master-only)
-input bool   input_avg_filter_enabled       = fa;se;          // Scope: Master — enable EMA-based averaged diff gating
+input bool   input_avg_filter_enabled       = false;          // Scope: Master — enable EMA-based averaged diff gating
 int    input_avg_period               = 9;             // Scope: Master — EMA period (ticks)
 bool   input_use_prefilter_median     = true;          // Scope: Master — apply median pre-filter before EMA
 int    input_prefilter_window         = 3;             // Scope: Master — median window (odd 3/5)
