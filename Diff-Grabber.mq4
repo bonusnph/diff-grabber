@@ -138,6 +138,8 @@ string g_last_processed_open_cmd_id = "";
 string g_last_processed_close_cmd_id = "";
 // Debug: hold open until user presses Close Now
 bool   g_debug_hold_open = false;
+// Close Only mode: prevent new orders but allow existing orders to close
+bool   g_close_only_mode = false;
 // Reconcile timer
 ulong  g_last_reconcile_ms = 0;
 // Master-provided dry-run settings
@@ -1295,6 +1297,8 @@ void MaybeOpenPair()
 {
    if(g_role_conflict) return;
    if(!(input_role==ROLE_MASTER)) return;
+   // Close Only mode: prevent new orders
+   if(g_close_only_mode) return;
    // When debug hold is active (user forced open), do not auto-open more pairs
    if(input_debug_buttons_enabled && g_debug_hold_open) return;
    if(!g_peer_alive) return; // do not operate without peer
@@ -1907,6 +1911,12 @@ int    BTN_Y2 = 48;
 int    BTN_W = 96;
 int    BTN_H = 18;
 
+// Close Only button geometry (below display monitor)
+int    CLOSE_ONLY_BTN_X = 6;
+int    CLOSE_ONLY_BTN_Y = 240; // Will be adjusted dynamically based on monitor height
+int    CLOSE_ONLY_BTN_W = 120;
+int    CLOSE_ONLY_BTN_H = 24;
+
 int CooldownRemainSeconds()
 {
    if(!(input_role==ROLE_MASTER)) return -1;
@@ -1969,6 +1979,20 @@ void DisplayInit()
       ObjectSet(b2, OBJPROP_XSIZE, BTN_W);
       ObjectSet(b2, OBJPROP_YSIZE, BTN_H);
       ObjectSetText(b2, "Close Now", 8, "Arial", clrBlack);
+   }
+
+   // Close Only button (Master only)
+   if(input_role==ROLE_MASTER)
+   {
+      string b3 = OBJ_PREFIX + "BTN_CLOSE_ONLY";
+      ObjectCreate(0, b3, OBJ_BUTTON, 0, 0, 0);
+      ObjectSet(b3, OBJPROP_CORNER, 0);
+      ObjectSet(b3, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
+      ObjectSet(b3, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y);
+      ObjectSet(b3, OBJPROP_XSIZE, CLOSE_ONLY_BTN_W);
+      ObjectSet(b3, OBJPROP_YSIZE, CLOSE_ONLY_BTN_H);
+      ObjectSet(b3, OBJPROP_BGCOLOR, g_close_only_mode ? clrRed : clrWhite);
+      ObjectSetText(b3, "Close Only", 9, "Arial", clrBlack);
    }
 }
 
@@ -2177,6 +2201,10 @@ void DisplayUpdate()
    int effMode = DryMode();
    string effModeStr = (effMode==DRY_NONE?"NONE":(effMode==DRY_WRITE_CMD_ONLY?"WRITE_CMD_ONLY":"WRITE_CMD_AND_FAKE_ACK"));
    DisplaySetLine(line++, StringFormat("dry_run=%s mode=%s", (DryEnabled()?"ON":"OFF"), effModeStr));
+   if(input_role==ROLE_MASTER)
+   {
+      DisplaySetLine(line++, StringFormat("close_only_mode=%s", (g_close_only_mode?"ON":"OFF")));
+   }
    DisplayTrimLines(line);
 
    // Resize background to cover lines
@@ -2191,6 +2219,19 @@ void DisplayUpdate()
       ObjectSet(bg, OBJPROP_COLOR, clrWhite);
       ObjectSet(bg, OBJPROP_BACK, false);
    }
+
+   // Update Close Only button position and color (Master only)
+   if(input_role==ROLE_MASTER)
+   {
+      string btnCloseOnly = OBJ_PREFIX + "BTN_CLOSE_ONLY";
+      if(ObjectFind(0, btnCloseOnly) != -1)
+      {
+         int bg_height = (DISPLAY_FIRST_LINE_OFFSET + line) * DISPLAY_LINE_SPACING + 38;
+         int btn_y = bg_height + 10; // 10 pixels below monitor
+         ObjectSet(btnCloseOnly, OBJPROP_YDISTANCE, btn_y);
+         ObjectSet(btnCloseOnly, OBJPROP_BGCOLOR, g_close_only_mode ? clrRed : clrWhite);
+      }
+   }
 }
 
 // ---------------------------------
@@ -2199,6 +2240,8 @@ void DisplayUpdate()
 void MasterOpenNow()
 {
    if(!(input_role==ROLE_MASTER)) return;
+   // Close Only mode: prevent new orders
+   if(g_close_only_mode) return;
 
    string cmd_id = NewCmdId();
    g_last_cmd_id = cmd_id;
@@ -2270,15 +2313,28 @@ void MasterCloseNow()
    FileWriteAll(PathCloseAckSelf(), ack);
 }
 
-// Click handler for debug buttons
+// Click handler for debug buttons and Close Only button
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
-   if(!input_debug_buttons_enabled) return;
    if(!(input_role==ROLE_MASTER)) return;
    if(id==CHARTEVENT_OBJECT_CLICK)
    {
-      if(sparam == OBJ_PREFIX + "BTN_OPEN") { MasterOpenNow(); ObjectSetInteger(0, sparam, OBJPROP_STATE, false); }
-      else if(sparam == OBJ_PREFIX + "BTN_CLOSE") { MasterCloseNow(); ObjectSetInteger(0, sparam, OBJPROP_STATE, false); }
+      if(sparam == OBJ_PREFIX + "BTN_CLOSE_ONLY")
+      {
+         // Toggle Close Only mode
+         g_close_only_mode = !g_close_only_mode;
+         // Update button color immediately
+         ObjectSet(sparam, OBJPROP_BGCOLOR, g_close_only_mode ? clrRed : clrWhite);
+         // Reset button state (not pressed)
+         ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
+         // Log the mode change
+         LogEvent("CLOSE_ONLY_MODE", StringFormat("enabled=%s", g_close_only_mode ? "true" : "false"));
+      }
+      else if(input_debug_buttons_enabled)
+      {
+         if(sparam == OBJ_PREFIX + "BTN_OPEN") { MasterOpenNow(); ObjectSetInteger(0, sparam, OBJPROP_STATE, false); }
+         else if(sparam == OBJ_PREFIX + "BTN_CLOSE") { MasterCloseNow(); ObjectSetInteger(0, sparam, OBJPROP_STATE, false); }
+      }
    }
 }
 
