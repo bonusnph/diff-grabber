@@ -49,6 +49,12 @@ input int    input_open_cooldown_seconds    = 300;           // Scope: Master �
 input int    input_close_cooldown_seconds   = 60;            // Scope: Master — close cooldown after both sides opened
 int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
 
+// Raw stability check (alternative to averaging - Master only)
+input bool   input_raw_stability_enabled   = true;         // Scope: Master — enable raw stability check (alternative to averaging)
+int    input_raw_stability_ticks     = 3;             // Scope: Master — consecutive stable ticks required
+int    input_raw_stability_timeout_ms = 500;          // Scope: Master — max wait time for stability confirmation (ms)
+input int    input_raw_hysteresis_offset   = 10;           // Scope: Master — hysteresis offset below threshold for reset (points)
+
 // Averaged diff gating (Master-only)
 input bool   input_avg_filter_enabled       = false;         // Scope: Master — enable EMA-based averaged diff gating
 int    input_avg_period               = 9;             // Scope: Master — EMA period (ticks)
@@ -188,6 +194,15 @@ bool   g_close_pending = false; double g_close_snapshot_avg = 0.0; int g_close_o
 // Signal-level cooldown timestamps
 ulong  g_last_avg_open_signal_ms = 0;
 ulong  g_last_avg_close_signal_ms = 0;
+
+// Raw stability state (alternative to averaging)
+bool   g_raw_open_pending = false;
+int    g_raw_open_stable_count = 0;
+ulong  g_raw_open_start_ms = 0;
+
+bool   g_raw_close_pending = false;
+int    g_raw_close_stable_count = 0;
+ulong  g_raw_close_start_ms = 0;
 
 // In-memory cache: pair_id <-> ticket (current symbol/magic)
 string g_cache_pair_ids[];
@@ -1332,13 +1347,63 @@ void MaybeOpenPair()
    // Pre-send recheck: compute diff now
    double diffOpen = DiffOpenPoints();
    bool triggerOpen = false;
-   if(!input_avg_filter_enabled)
+   
+   // PRIORITY: Raw Stability > Averaging > Simple
+   if(input_raw_stability_enabled)
    {
-      if(diffOpen < input_open_threshold_points) return;
-      triggerOpen = true;
+      // Raw stability logic (highest priority)
+      double enterThreshold = (double)input_open_threshold_points;
+      double resetThreshold = (double)(input_open_threshold_points - input_raw_hysteresis_offset);
+      
+      if(!g_raw_open_pending)
+      {
+         if(diffOpen >= enterThreshold)
+         {
+            g_raw_open_pending = true;
+            g_raw_open_stable_count = 1;
+            g_raw_open_start_ms = NowMs();
+            LogEvent("RAW_OPEN_START", StringFormat("diff=%.1f;count=1;reset_at=%.1f", 
+                     diffOpen, resetThreshold));
+         }
+         return;
+      }
+      else
+      {
+         if(diffOpen < resetThreshold)
+         {
+            g_raw_open_pending = false;
+            g_raw_open_stable_count = 0;
+            LogEvent("RAW_OPEN_RESET", StringFormat("diff=%.1f;below_reset=%.1f", 
+                     diffOpen, resetThreshold));
+            return;
+         }
+         
+         g_raw_open_stable_count++;
+         LogEvent("RAW_OPEN_TICK", StringFormat("diff=%.1f;count=%d/%d", 
+                  diffOpen, g_raw_open_stable_count, input_raw_stability_ticks));
+         
+         if(g_raw_open_stable_count >= input_raw_stability_ticks)
+         {
+            triggerOpen = true;
+            g_raw_open_pending = false;
+            LogEvent("RAW_OPEN_CONFIRMED", StringFormat("diff=%.1f;final_count=%d", 
+                     diffOpen, g_raw_open_stable_count));
+         }
+         
+         if((NowMs() - g_raw_open_start_ms) > (ulong)input_raw_stability_timeout_ms)
+         {
+            g_raw_open_pending = false;
+            g_raw_open_stable_count = 0;
+            LogEvent("RAW_OPEN_TIMEOUT", StringFormat("elapsed_ms=%I64u", 
+                     NowMs() - g_raw_open_start_ms));
+         }
+         
+         if(!triggerOpen) return;
+      }
    }
-   else
+   else if(input_avg_filter_enabled)
    {
+      // Original averaging logic (medium priority)
       if(input_avg_signal_cooldown_ms > 0 && (NowMs() - g_last_avg_open_signal_ms) < (ulong)input_avg_signal_cooldown_ms) return;
       double avgOpen = SmoothedOpenDiff(diffOpen);
       double thrEff = (double)(input_open_threshold_points + input_diff_hysteresis_points);
@@ -1374,6 +1439,13 @@ void MaybeOpenPair()
          }
       }
    }
+   else
+   {
+      // Simple instant logic (lowest priority)
+      if(diffOpen < input_open_threshold_points) return;
+      triggerOpen = true;
+   }
+
 
    if(!triggerOpen) return;
    // Generate id but DO NOT write open_cmd until master opened successfully
@@ -1615,13 +1687,63 @@ void MaybeClosePair()
    if(!QuotesFresh()) return;
    double diffClose = DiffClosePoints();
    bool triggerClose = false;
-   if(!input_avg_filter_enabled)
+   
+   // PRIORITY: Raw Stability > Averaging > Simple
+   if(input_raw_stability_enabled)
    {
-      if(diffClose < input_close_threshold_points) return;
-      triggerClose = true;
+      // Raw stability logic for close
+      double enterThreshold = (double)input_close_threshold_points;
+      double resetThreshold = (double)(input_close_threshold_points - input_raw_hysteresis_offset);
+      
+      if(!g_raw_close_pending)
+      {
+         if(diffClose >= enterThreshold)
+         {
+            g_raw_close_pending = true;
+            g_raw_close_stable_count = 1;
+            g_raw_close_start_ms = NowMs();
+            LogEvent("RAW_CLOSE_START", StringFormat("diff=%.1f;count=1;reset_at=%.1f", 
+                     diffClose, resetThreshold));
+         }
+         return;
+      }
+      else
+      {
+         if(diffClose < resetThreshold)
+         {
+            g_raw_close_pending = false;
+            g_raw_close_stable_count = 0;
+            LogEvent("RAW_CLOSE_RESET", StringFormat("diff=%.1f;below_reset=%.1f", 
+                     diffClose, resetThreshold));
+            return;
+         }
+         
+         g_raw_close_stable_count++;
+         LogEvent("RAW_CLOSE_TICK", StringFormat("diff=%.1f;count=%d/%d", 
+                  diffClose, g_raw_close_stable_count, input_raw_stability_ticks));
+         
+         if(g_raw_close_stable_count >= input_raw_stability_ticks)
+         {
+            triggerClose = true;
+            g_raw_close_pending = false;
+            LogEvent("RAW_CLOSE_CONFIRMED", StringFormat("diff=%.1f;final_count=%d", 
+                     diffClose, g_raw_close_stable_count));
+         }
+         
+         if((NowMs() - g_raw_close_start_ms) > (ulong)input_raw_stability_timeout_ms)
+         {
+            g_raw_close_pending = false;
+            g_raw_close_stable_count = 0;
+            LogEvent("RAW_CLOSE_TIMEOUT", StringFormat("elapsed_ms=%I64u", 
+                     NowMs() - g_raw_close_start_ms));
+         }
+         
+         if(!triggerClose) return;
+      }
    }
-   else
+   else if(input_avg_filter_enabled)
    {
+      // Original averaging logic for close
       if(input_avg_signal_cooldown_ms > 0 && (NowMs() - g_last_avg_close_signal_ms) < (ulong)input_avg_signal_cooldown_ms) return;
       double avgClose = SmoothedCloseDiff(diffClose);
       double thrEff = (double)(input_close_threshold_points + input_diff_hysteresis_points);
@@ -1657,6 +1779,13 @@ void MaybeClosePair()
          }
       }
    }
+   else
+   {
+      // Simple instant logic (lowest priority)
+      if(diffClose < input_close_threshold_points) return;
+      triggerClose = true;
+   }
+
 
    if(!triggerClose) return;
 
@@ -2102,13 +2231,55 @@ void DisplayUpdate()
    }
    if(input_role==ROLE_MASTER)
    {
-      string avgLine = input_avg_filter_enabled ? StringFormat("AVG ON | EMA-%d%s | H=%d E=%d CF=%d CD=%dms",
-         input_avg_period, (input_use_prefilter_median?StringFormat(" + Med-%d", input_prefilter_window):""),
-         input_diff_hysteresis_points, input_epsilon_diff_points, input_confirm_ticks, input_avg_signal_cooldown_ms) : "AVG OFF | RealOnly";
-      DisplaySetLine(line++, avgLine);
+            string modeStr = "";
+      if(input_raw_stability_enabled)
+         modeStr = StringFormat("RAW STABILITY | Ticks=%d Offset=%d Timeout=%dms", 
+                               input_raw_stability_ticks, input_raw_hysteresis_offset, input_raw_stability_timeout_ms);
+      else if(input_avg_filter_enabled)
+         modeStr = StringFormat("AVG ON | EMA-%d%s | H=%d E=%d CF=%d CD=%dms",
+                               input_avg_period, (input_use_prefilter_median?StringFormat(" + Med-%d", input_prefilter_window):""),
+                               input_diff_hysteresis_points, input_epsilon_diff_points, input_confirm_ticks, input_avg_signal_cooldown_ms);
+      else
+         modeStr = "SIMPLE | RealOnly";
+
+      DisplaySetLine(line++, modeStr);
       
-      // Enhanced status display with detailed averaging info
-      if(input_avg_filter_enabled)
+      // Enhanced status display with detailed info
+      if(input_raw_stability_enabled)
+      {
+         // Raw stability status display with realtime count
+         string stOpen = "READY";
+         string stClose = "READY";
+         
+         if(g_raw_open_pending)
+         {
+            int timeLeft = (int)((g_raw_open_start_ms + (ulong)input_raw_stability_timeout_ms > NowMs()) ? 
+                                (g_raw_open_start_ms + (ulong)input_raw_stability_timeout_ms - NowMs()) : 0);
+            stOpen = StringFormat("COUNT %d/%d (%.0fms)", g_raw_open_stable_count, input_raw_stability_ticks, timeLeft);
+         }
+         else if(dOpen >= input_open_threshold_points)
+         {
+            stOpen = "TRIGGERED";
+         }
+         
+         if(g_raw_close_pending)
+         {
+            int timeLeft = (int)((g_raw_close_start_ms + (ulong)input_raw_stability_timeout_ms > NowMs()) ? 
+                                (g_raw_close_start_ms + (ulong)input_raw_stability_timeout_ms - NowMs()) : 0);
+            stClose = StringFormat("COUNT %d/%d (%.0fms)", g_raw_close_stable_count, input_raw_stability_ticks, timeLeft);
+         }
+         else if(dClose >= input_close_threshold_points)
+         {
+            stClose = "TRIGGERED";
+         }
+         
+         // Show realtime diff and count status prominently
+         DisplaySetLine(line++, StringFormat("Open: %.1f (Thr=%d Reset=%d) | %s", 
+            dOpen, input_open_threshold_points, (input_open_threshold_points - input_raw_hysteresis_offset), stOpen));
+         DisplaySetLine(line++, StringFormat("Close: %.1f (Thr=%d Reset=%d) | %s", 
+            dClose, input_close_threshold_points, (input_close_threshold_points - input_raw_hysteresis_offset), stClose));
+      }
+      else if(input_avg_filter_enabled)
       {
          double thrOpenEff = (double)(input_open_threshold_points + input_diff_hysteresis_points);
          double thrCloseEff = (double)(input_close_threshold_points + input_diff_hysteresis_points);
@@ -2173,10 +2344,10 @@ void DisplayUpdate()
       else
       {
          // Simple display for non-averaging mode
-         string stOpen = "READY";
-         string stClose = "READY";
-         DisplaySetLine(line++, StringFormat("Open: Real=%.1f Thr=%d | %s", dOpen, input_open_threshold_points, stOpen));
-         DisplaySetLine(line++, StringFormat("Close: Real=%.1f Thr=%d | %s", dClose, input_close_threshold_points, stClose));
+         string stOpen = (dOpen >= input_open_threshold_points) ? "TRIGGERED" : "READY";
+         string stClose = (dClose >= input_close_threshold_points) ? "TRIGGERED" : "READY";
+         DisplaySetLine(line++, StringFormat("Open: %.1f (Thr=%d) | %s", dOpen, input_open_threshold_points, stOpen));
+         DisplaySetLine(line++, StringFormat("Close: %.1f (Thr=%d) | %s", dClose, input_close_threshold_points, stClose));
       }
    }
    else
