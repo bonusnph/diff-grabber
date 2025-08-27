@@ -39,7 +39,7 @@ int    input_log_retain_hours         = 24;            // Scope: Both — retain
 int    input_display_width_pixels      = 520;          // Scope: Both — width of Display Monitor background (pixels)
 
 // Master decision parameters
-input int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
+int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
 input MasterSide input_master_side          = SIDE_SELL;     // Scope: Master — master direction (Slave auto-opposite)
 input double input_lot_master               = 0.01;          // Scope: Master — lot size for master orders
 input double input_lot_slave                = 0.01;          // Scope: Master — advised lot for Slave; Slave ignores local lot input
@@ -99,11 +99,20 @@ bool   input_debug_buttons_enabled     = false;        // Scope: Master — show
 // Extended controls (Master-only; synced to Slave via config):
 input double input_min_balance_master_usd    = 0.00;         // Scope: Master — minimum balance required on Master to allow new open
 input double input_min_balance_slave_usd     = 0.00;         // Scope: Master — minimum balance required on Slave to allow new open
+input double input_initial_capital_usd       = 0.00;         // Scope: Both — initial capital for profit calculation
 
 // -----------------------------
 // Globals
 // -----------------------------
 string g_symbol;
+
+// Auto-detected initial capital
+double g_auto_initial_capital = 0.0;
+bool g_auto_capital_detected = false;
+
+// Cached slave balance (to avoid STALE flickering)
+double g_cached_slave_balance = 0.0;
+bool g_has_slave_balance = false;
 int    g_digits;
 double g_point;
 int    g_magic;
@@ -2196,6 +2205,55 @@ void DisplayTrimLines(const int keep)
    g_display_last_lines = keep;
 }
 
+// Auto-detect initial capital from first available balance readings
+void AutoDetectInitialCapital()
+{
+   if(g_auto_capital_detected) return;
+   if(input_initial_capital_usd > 0.0) return; // User has set manual value
+   
+   double master_balance = AccountBalance();
+   double slave_balance = 0.0;
+   ulong slave_ts = 0;
+   bool slave_ok = ReadPeerBalanceFresh(slave_balance, slave_ts);
+   
+   // Only auto-detect when we have both master and slave balance
+   if(master_balance > 0.0 && slave_ok && slave_balance > 0.0)
+   {
+      g_auto_initial_capital = master_balance + slave_balance;
+      g_auto_capital_detected = true;
+      if(input_verbose_journal_logs)
+         Print("Auto-detected initial capital: $", DoubleToString(g_auto_initial_capital, 2), 
+               " (M:$", DoubleToString(master_balance, 2), " + S:$", DoubleToString(slave_balance, 2), ")");
+   }
+}
+
+// Get effective initial capital (manual or auto-detected)
+double GetEffectiveInitialCapital()
+{
+   if(input_initial_capital_usd > 0.0) return input_initial_capital_usd;
+   return g_auto_initial_capital;
+}
+
+// Update cached slave balance if fresh data is available
+void UpdateCachedSlaveBalance()
+{
+   double slave_balance = 0.0;
+   ulong slave_ts = 0;
+   bool slave_ok = ReadPeerBalanceFresh(slave_balance, slave_ts);
+   
+   if(slave_ok && slave_balance > 0.0)
+   {
+      g_cached_slave_balance = slave_balance;
+      g_has_slave_balance = true;
+   }
+}
+
+// Get cached slave balance (returns last known value, never shows STALE)
+double GetCachedSlaveBalance()
+{
+   return g_has_slave_balance ? g_cached_slave_balance : 0.0;
+}
+
 void DisplayUpdate()
 {
    string role = (input_role==ROLE_MASTER)?"MASTER":"SLAVE";
@@ -2386,7 +2444,27 @@ void DisplayUpdate()
    if(input_role==ROLE_MASTER)
    {
       DisplaySetLine(line++, StringFormat("close_only_mode=%s", (g_close_only_mode?"ON":"OFF")));
+      
+      // Update cached slave balance and auto-detect initial capital if needed
+      UpdateCachedSlaveBalance();
+      AutoDetectInitialCapital();
+      
+      // Capital and profit display (Master only)
+      double master_balance = AccountBalance();
+      double slave_balance = GetCachedSlaveBalance();
+      
+      double sum_balance = master_balance + slave_balance;
+      double effective_initial_capital = GetEffectiveInitialCapital();
+      double net_profit = sum_balance - effective_initial_capital;
+      
+      string capital_source = (input_initial_capital_usd > 0.0) ? "Manual" : (g_auto_capital_detected ? "Auto" : "Pending");
+      string slave_status = g_has_slave_balance ? "" : " [WAITING]";
+      DisplaySetLine(line++, StringFormat("Initial Capital: $%.2f [%s]", effective_initial_capital, capital_source));
+      DisplaySetLine(line++, StringFormat("Sum Balance: $%.2f (M:$%.2f + S:$%.2f%s)", 
+         sum_balance, master_balance, slave_balance, slave_status));
+      DisplaySetLine(line++, StringFormat("Net Profit: $%.2f", net_profit));
    }
+   
    DisplayTrimLines(line);
 
    // Resize background to cover lines

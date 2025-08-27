@@ -43,7 +43,7 @@ int    input_log_retain_hours         = 24;            // Scope: Both — retain
 int    input_display_width_pixels      = 520;           // Scope: Both — width of Display Monitor background (pixels)
 
 // Master decision parameters
-input int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
+int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
 input MasterSide input_master_side          = SIDE_SELL;     // Scope: Master — master direction (Slave auto-opposite)
 input double input_lot_master               = 0.01;          // Scope: Master — lot size for master orders
 input double input_lot_slave                = 0.01;          // Scope: Master — advised lot for Slave; Slave ignores local lot input
@@ -54,10 +54,10 @@ input int    input_close_cooldown_seconds   = 60;            // Scope: Master �
 int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
 
 // Raw stability check (alternative to averaging - Master only)
-input bool   input_raw_stability_enabled   = true;         // Scope: Master — enable raw stability check (alternative to averaging)
+bool   input_raw_stability_enabled   = true;         // Scope: Master — enable raw stability check (alternative to averaging)
 int    input_raw_stability_ticks     = 3;             // Scope: Master — consecutive stable ticks required
 int    input_raw_stability_timeout_ms = 500;          // Scope: Master — max wait time for stability confirmation (ms)
-input int    input_raw_hysteresis_offset   = 10;           // Scope: Master — hysteresis offset below threshold for reset (points)
+int    input_raw_hysteresis_offset   = 10;           // Scope: Master — hysteresis offset below threshold for reset (points)
 
 // Averaged diff gating (Master-only)
 input bool   input_avg_filter_enabled       = false;         // Scope: Master — enable EMA-based averaged diff gating
@@ -103,11 +103,20 @@ bool   input_debug_buttons_enabled     = false;         // Scope: Master — sho
 // Extended controls (Master-only; synced to Slave via config)
 input double input_min_balance_master_usd    = 0.00;          // Scope: Master — minimum balance required on Master to allow new open
 input double input_min_balance_slave_usd     = 0.00;          // Scope: Master — minimum balance required on Slave to allow new open
+input double input_initial_capital_usd       = 0.00;          // Scope: Both — initial capital for profit calculation
 
 // -----------------------------
 // Globals
 // -----------------------------
 string g_symbol;
+
+// Auto-detected initial capital
+double g_auto_initial_capital = 0.0;
+bool g_auto_capital_detected = false;
+
+// Cached slave balance (to avoid STALE flickering)
+double g_cached_slave_balance = 0.0;
+bool g_has_slave_balance = false;
 int    g_digits;
 double g_point;
 long   g_magic;
@@ -1951,6 +1960,55 @@ int DisplaySetWrappedLines(int lineIndex, const string text)
    return lineIndex;
 }
 
+// Auto-detect initial capital from first available balance readings
+void AutoDetectInitialCapital()
+{
+   if(g_auto_capital_detected) return;
+   if(input_initial_capital_usd > 0.0) return; // User has set manual value
+   
+   double master_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double slave_balance = 0.0;
+   ulong slave_ts = 0;
+   bool slave_ok = ReadPeerBalanceFresh(slave_balance, slave_ts);
+   
+   // Only auto-detect when we have both master and slave balance
+   if(master_balance > 0.0 && slave_ok && slave_balance > 0.0)
+   {
+      g_auto_initial_capital = master_balance + slave_balance;
+      g_auto_capital_detected = true;
+      if(input_verbose_journal_logs)
+         Print("Auto-detected initial capital: $", DoubleToString(g_auto_initial_capital, 2), 
+               " (M:$", DoubleToString(master_balance, 2), " + S:$", DoubleToString(slave_balance, 2), ")");
+   }
+}
+
+// Get effective initial capital (manual or auto-detected)
+double GetEffectiveInitialCapital()
+{
+   if(input_initial_capital_usd > 0.0) return input_initial_capital_usd;
+   return g_auto_initial_capital;
+}
+
+// Update cached slave balance if fresh data is available
+void UpdateCachedSlaveBalance()
+{
+   double slave_balance = 0.0;
+   ulong slave_ts = 0;
+   bool slave_ok = ReadPeerBalanceFresh(slave_balance, slave_ts);
+   
+   if(slave_ok && slave_balance > 0.0)
+   {
+      g_cached_slave_balance = slave_balance;
+      g_has_slave_balance = true;
+   }
+}
+
+// Get cached slave balance (returns last known value, never shows STALE)
+double GetCachedSlaveBalance()
+{
+   return g_has_slave_balance ? g_cached_slave_balance : 0.0;
+}
+
 void DisplayUpdate()
 {
    string role = (input_role==ROLE_MASTER)?"MASTER":"SLAVE";
@@ -2058,7 +2116,7 @@ void DisplayUpdate()
          string openDetail = "";
          if(g_open_pending)
          {
-            int timeLeft = (int)((g_open_deadline_ms > NowMs()) ? (g_open_deadline_ms - NowMs()) : 0);
+            ulong timeLeft = (g_open_deadline_ms > NowMs()) ? (g_open_deadline_ms - NowMs()) : 0;
             double needReal = input_real_confirm_enabled ? 
                (MathMax(g_open_snapshot_avg, thrOpenEff) + (double)input_epsilon_diff_points) : thrOpenEff;
             stOpen = StringFormat("PENDING %d/%d (%.0fms)", g_open_ok_count, input_confirm_ticks, timeLeft);
@@ -2075,7 +2133,7 @@ void DisplayUpdate()
          string closeDetail = "";
          if(g_close_pending)
          {
-            int timeLeft = (int)((g_close_deadline_ms > NowMs()) ? (g_close_deadline_ms - NowMs()) : 0);
+            ulong timeLeft = (g_close_deadline_ms > NowMs()) ? (g_close_deadline_ms - NowMs()) : 0;
             double needReal = input_real_confirm_enabled ? 
                (MathMax(g_close_snapshot_avg, thrCloseEff) + (double)input_epsilon_diff_points) : thrCloseEff;
             stClose = StringFormat("PENDING %d/%d (%.0fms)", g_close_ok_count, input_confirm_ticks, timeLeft);
@@ -2132,6 +2190,25 @@ void DisplayUpdate()
    if(input_role==ROLE_MASTER)
    {
       DisplaySetLine(line++, StringFormat("close_only_mode=%s", (g_close_only_mode?"ON":"OFF")));
+      
+      // Update cached slave balance and auto-detect initial capital if needed
+      UpdateCachedSlaveBalance();
+      AutoDetectInitialCapital();
+      
+      // Capital and profit display (Master only)
+      double master_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+      double slave_balance = GetCachedSlaveBalance();
+      
+      double sum_balance = master_balance + slave_balance;
+      double effective_initial_capital = GetEffectiveInitialCapital();
+      double net_profit = sum_balance - effective_initial_capital;
+      
+      string capital_source = (input_initial_capital_usd > 0.0) ? "Manual" : (g_auto_capital_detected ? "Auto" : "Pending");
+      string slave_status = g_has_slave_balance ? "" : " [WAITING]";
+      DisplaySetLine(line++, StringFormat("Initial Capital: $%.2f [%s]", effective_initial_capital, capital_source));
+      DisplaySetLine(line++, StringFormat("Sum Balance: $%.2f (M:$%.2f + S:$%.2f%s)", 
+         sum_balance, master_balance, slave_balance, slave_status));
+      DisplaySetLine(line++, StringFormat("Net Profit: $%.2f", net_profit));
    }
 
    string bg2 = OBJ_PREFIX + "BG";
@@ -2222,10 +2299,42 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 }
 
 // -----------------------------
+// EA License Check Function
+bool CheckEALicense()
+{
+   // วันหมดอายุ: 30 พฤศจิกายน 2025
+   datetime expiry_date = D'2025.11.30 23:59:59';
+   datetime current_time = TimeCurrent();
+   
+   if(current_time > expiry_date)
+   {
+      Alert("EA License Expired! วันหมดอายุ: 30 พฤศจิกายน 2025");
+      Print("EA License Expired on: 2025.11.30");
+      return false;
+   }
+   
+   // คำนวณวันที่เหลือ
+   int days_remaining = (int)((expiry_date - current_time) / 86400);
+   
+   // แจ้งเตือนเมื่อเหลือ 7 วัน
+   if(days_remaining <= 7 && days_remaining > 0)
+   {
+      Alert("EA License Warning: เหลือเวลาใช้งาน ", days_remaining, " วัน");
+   }
+   
+   return true;
+}
+
 // Lifecycle
 // -----------------------------
 int OnInit()
 {
+   // Check EA license first
+   if(!CheckEALicense()) 
+   {
+      return(INIT_FAILED);
+   }
+   
    g_symbol = (input_symbol=="" ? _Symbol : input_symbol);
    g_digits = (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS);
    g_point  = SymbolInfoDouble(g_symbol, SYMBOL_POINT);
@@ -2379,7 +2488,20 @@ void MasterWatchdogOpen()
 void OnTimer()
 {
    static int timer_count = 0;
+   static datetime last_license_check = 0;
    timer_count++;
+   
+   // Check license every 12 hours (43200 seconds)
+   datetime current_time = TimeCurrent();
+   if(current_time - last_license_check >= 43200)
+   {
+      if(!CheckEALicense()) 
+      {
+         ExpertRemove(); // Stop EA
+         return;
+      }
+      last_license_check = current_time;
+   }
    
    // === CRITICAL OPERATIONS - ทุกครั้ง ===
    WriteHeartbeat();
