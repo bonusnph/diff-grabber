@@ -2298,43 +2298,10 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    }
 }
 
-// -----------------------------
-// EA License Check Function
-bool CheckEALicense()
-{
-   // วันหมดอายุ: 30 พฤศจิกายน 2025
-   datetime expiry_date = D'2025.11.30 23:59:59';
-   datetime current_time = TimeCurrent();
-   
-   if(current_time > expiry_date)
-   {
-      Alert("EA License Expired! วันหมดอายุ: 30 พฤศจิกายน 2025");
-      Print("EA License Expired on: 2025.11.30");
-      return false;
-   }
-   
-   // คำนวณวันที่เหลือ
-   int days_remaining = (int)((expiry_date - current_time) / 86400);
-   
-   // แจ้งเตือนเมื่อเหลือ 7 วัน
-   if(days_remaining <= 7 && days_remaining > 0)
-   {
-      Alert("EA License Warning: เหลือเวลาใช้งาน ", days_remaining, " วัน");
-   }
-   
-   return true;
-}
-
 // Lifecycle
 // -----------------------------
 int OnInit()
 {
-   // Check EA license first
-   if(!CheckEALicense()) 
-   {
-      return(INIT_FAILED);
-   }
-   
    g_symbol = (input_symbol=="" ? _Symbol : input_symbol);
    g_digits = (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS);
    g_point  = SymbolInfoDouble(g_symbol, SYMBOL_POINT);
@@ -2488,20 +2455,7 @@ void MasterWatchdogOpen()
 void OnTimer()
 {
    static int timer_count = 0;
-   static datetime last_license_check = 0;
    timer_count++;
-   
-   // Check license every 12 hours (43200 seconds)
-   datetime current_time = TimeCurrent();
-   if(current_time - last_license_check >= 43200)
-   {
-      if(!CheckEALicense()) 
-      {
-         ExpertRemove(); // Stop EA
-         return;
-      }
-      last_license_check = current_time;
-   }
    
    // === CRITICAL OPERATIONS - ทุกครั้ง ===
    WriteHeartbeat();
