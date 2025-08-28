@@ -45,15 +45,15 @@ input double input_lot_master               = 0.01;          // Scope: Master �
 input double input_lot_slave                = 0.01;          // Scope: Master — advised lot for Slave; Slave ignores local lot input
 input int    input_open_threshold_points    = 30;            // Scope: Master — open threshold (points)
 input int    input_close_threshold_points   = 30;            // Scope: Master — close threshold (points)
-input int    input_open_cooldown_seconds    = 300;           // Scope: Master — open cooldown after an open
-input int    input_close_cooldown_seconds   = 60;            // Scope: Master — close cooldown after both sides opened
+int    input_open_cooldown_seconds    = 300;           // Scope: Master — open cooldown after an open
+int    input_close_cooldown_seconds   = 60;            // Scope: Master — close cooldown after both sides opened
 int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
 
 // Raw stability check (alternative to averaging - Master only)
 input bool   input_raw_stability_enabled   = true;         // Scope: Master — enable raw stability check (alternative to averaging)
 int    input_raw_stability_ticks     = 3;             // Scope: Master — consecutive stable ticks required
 int    input_raw_stability_timeout_ms = 500;          // Scope: Master — max wait time for stability confirmation (ms)
-input int    input_raw_hysteresis_offset   = 10;           // Scope: Master — hysteresis offset below threshold for reset (points)
+int    input_raw_hysteresis_offset   = 10;           // Scope: Master — hysteresis offset below threshold for reset (points)
 
 // Averaged diff gating (Master-only)
 input bool   input_avg_filter_enabled       = false;         // Scope: Master — enable EMA-based averaged diff gating
@@ -68,8 +68,8 @@ int    input_epsilon_diff_points      = 1;             // Scope: Master — smal
 int    input_avg_signal_cooldown_ms   = 400;           // Scope: Master — signal-level cooldown after order (ms)
 
 // Quality guards
-input int    input_max_spread_points_self   = 10;            // Scope: Master — block if own spread exceeds (points)
-input int    input_max_spread_points_peer   = 20;            // Scope: Master — check peer spread before opening (points)
+int    input_max_spread_points_self   = 10;            // Scope: Master — block if own spread exceeds (points)
+int    input_max_spread_points_peer   = 20;            // Scope: Master — check peer spread before opening (points)
 int    input_quotes_fresh_ms          = 400;           // Scope: Master — maximum acceptable quote age (ms)
 int    input_file_poll_ms             = 5;             // Scope: Master — background file polling cadence (ms)
 int    input_magic_number_base        = 900100;        // Scope: Master — magic base per channel/symbol
@@ -96,10 +96,15 @@ bool   input_dry_run_suppress_heartbeat   = false;     // Scope: Master — supp
 // Debug UI (Master only)
 bool   input_debug_buttons_enabled     = false;        // Scope: Master — show Open/Close test buttons (simulates diffOpen/diffClose)
 
+// Scheduled Close Only Mode (Master only)
+input bool   input_scheduled_close_only_enabled = false;    // Scope: Master — enable scheduled close only mode
+input string input_close_only_start_time        = "01:00";  // Scope: Master — start time for close only mode (HH:mm format)
+input string input_close_only_end_time          = "08:00";  // Scope: Master — end time for close only mode (HH:mm format)
+
 // Extended controls (Master-only; synced to Slave via config):
 input double input_min_balance_master_usd    = 0.00;         // Scope: Master — minimum balance required on Master to allow new open
 input double input_min_balance_slave_usd     = 0.00;         // Scope: Master — minimum balance required on Slave to allow new open
-input double input_initial_capital_usd       = 0.00;         // Scope: Both — initial capital for profit calculation
+input double input_initial_capital_usd       = 0.00;         // Scope: Master — initial capital for profit calculation
 
 // -----------------------------
 // Globals
@@ -156,6 +161,12 @@ string g_last_processed_close_cmd_id = "";
 bool   g_debug_hold_open = false;
 // Close Only mode: prevent new orders but allow existing orders to close
 bool   g_close_only_mode = false;
+bool   g_scheduled_close_only_active = false;  // Current state of scheduled close only mode
+// Cache for scheduled close only optimization
+int    g_cached_start_minutes = -1;
+int    g_cached_end_minutes = -1;
+string g_cached_start_time = "";
+string g_cached_end_time = "";
 // Reconcile timer
 ulong  g_last_reconcile_ms = 0;
 // Master-provided dry-run settings
@@ -617,6 +628,112 @@ string ReconcileModeToString(ReconcileMode mode)
 int SpreadPointsSelf()
 {
    return (int)MathRound(PointsFromPriceDiff(MathMax(0.0, g_self_ask - g_self_bid)));
+}
+
+// Parse time string in HH:mm format to minutes since midnight
+int ParseTimeToMinutes(const string timeStr)
+{
+   int colonPos = StringFind(timeStr, ":");
+   if(colonPos < 0 || colonPos >= StringLen(timeStr) - 1) return -1;
+   
+   string hourStr = StringSubstr(timeStr, 0, colonPos);
+   string minStr = StringSubstr(timeStr, colonPos + 1);
+   
+   int hour = (int)StrToInteger(hourStr);
+   int minute = (int)StrToInteger(minStr);
+   
+   if(hour < 0 || hour > 23 || minute < 0 || minute > 59) return -1;
+   
+   return hour * 60 + minute;
+}
+
+// Check if current time is within scheduled close only period
+bool IsInScheduledCloseOnlyPeriod()
+{
+   if(!input_scheduled_close_only_enabled) return false;
+   if(!(input_role==ROLE_MASTER)) return false;
+   
+   int startMinutes = ParseTimeToMinutes(input_close_only_start_time);
+   int endMinutes = ParseTimeToMinutes(input_close_only_end_time);
+   
+   if(startMinutes < 0 || endMinutes < 0) return false;
+   
+   MqlDateTime dt;
+   TimeToStruct(TimeLocal(), dt);
+   int currentMinutes = dt.hour * 60 + dt.min;
+   
+   if(startMinutes == endMinutes) return false; // Invalid: same start and end time
+   
+   if(startMinutes < endMinutes)
+   {
+      // Same day: e.g., 08:00 - 17:00
+      return (currentMinutes >= startMinutes && currentMinutes < endMinutes);
+   }
+   else
+   {
+      // Cross midnight: e.g., 23:00 - 08:00
+      return (currentMinutes >= startMinutes || currentMinutes < endMinutes);
+   }
+}
+
+// Update scheduled close only mode state (optimized with caching)
+void UpdateScheduledCloseOnlyMode()
+{
+   if(!(input_role==ROLE_MASTER)) return;
+   if(!input_scheduled_close_only_enabled) return;
+   
+   // Check if time settings changed (invalidate cache)
+   if(g_cached_start_time != input_close_only_start_time || g_cached_end_time != input_close_only_end_time)
+   {
+      g_cached_start_time = input_close_only_start_time;
+      g_cached_end_time = input_close_only_end_time;
+      g_cached_start_minutes = ParseTimeToMinutes(input_close_only_start_time);
+      g_cached_end_minutes = ParseTimeToMinutes(input_close_only_end_time);
+   }
+   
+   // Use cached values for better performance
+   if(g_cached_start_minutes < 0 || g_cached_end_minutes < 0) return;
+   
+   bool wasActive = g_scheduled_close_only_active;
+   
+   // Fast calculation using cached values
+   MqlDateTime dt;
+   TimeToStruct(TimeLocal(), dt);
+   int currentMinutes = dt.hour * 60 + dt.min;
+   
+   if(g_cached_start_minutes == g_cached_end_minutes)
+   {
+      g_scheduled_close_only_active = false; // Invalid: same start and end time
+   }
+   else if(g_cached_start_minutes < g_cached_end_minutes)
+   {
+      // Same day: e.g., 08:00 - 17:00
+      g_scheduled_close_only_active = (currentMinutes >= g_cached_start_minutes && currentMinutes < g_cached_end_minutes);
+   }
+   else
+   {
+      // Cross midnight: e.g., 23:00 - 08:00
+      g_scheduled_close_only_active = (currentMinutes >= g_cached_start_minutes || currentMinutes < g_cached_end_minutes);
+   }
+   
+   // Update the actual close only mode based on scheduled state
+   g_close_only_mode = g_scheduled_close_only_active;
+   
+   // Log state changes only (reduce log spam)
+   if(wasActive != g_scheduled_close_only_active)
+   {
+      LogEvent("SCHEDULED_CLOSE_ONLY", StringFormat("active=%s;start=%s;end=%s;current=%02d:%02d", 
+               g_scheduled_close_only_active ? "true" : "false",
+               input_close_only_start_time, input_close_only_end_time,
+               dt.hour, dt.min));
+   }
+}
+
+// Check if user can manually toggle close only mode (not during scheduled period)
+bool CanUserToggleCloseOnly()
+{
+   if(!input_scheduled_close_only_enabled) return true;
+   return !g_scheduled_close_only_active;
 }
 
 // -----------------------------
@@ -1325,6 +1442,8 @@ void MaybeOpenPair()
 {
    if(g_role_conflict) return;
    if(!(input_role==ROLE_MASTER)) return;
+   // Update scheduled close only mode state
+   UpdateScheduledCloseOnlyMode();
    // Close Only mode: prevent new orders
    if(g_close_only_mode) return;
    // When debug hold is active (user forced open), do not auto-open more pairs
@@ -2443,7 +2562,28 @@ void DisplayUpdate()
    DisplaySetLine(line++, StringFormat("dry_run=%s mode=%s", (DryEnabled()?"ON":"OFF"), effModeStr));
    if(input_role==ROLE_MASTER)
    {
-      DisplaySetLine(line++, StringFormat("close_only_mode=%s", (g_close_only_mode?"ON":"OFF")));
+      // Update scheduled close only mode state
+      UpdateScheduledCloseOnlyMode();
+      
+      string closeOnlyStatus = "";
+      if(input_scheduled_close_only_enabled)
+      {
+         string scheduleInfo = StringFormat("%s-%s", input_close_only_start_time, input_close_only_end_time);
+         if(g_scheduled_close_only_active)
+         {
+            closeOnlyStatus = StringFormat("ON (SCHEDULED %s)", scheduleInfo);
+         }
+         else
+         {
+            closeOnlyStatus = StringFormat("OFF (SCHEDULED %s)", scheduleInfo);
+         }
+      }
+      else
+      {
+         closeOnlyStatus = g_close_only_mode ? "ON (MANUAL)" : "OFF";
+      }
+      
+      DisplaySetLine(line++, StringFormat("close_only_mode=%s", closeOnlyStatus));
       
       // Update cached slave balance and auto-detect initial capital if needed
       UpdateCachedSlaveBalance();
@@ -2489,7 +2629,26 @@ void DisplayUpdate()
          int bg_height = (DISPLAY_FIRST_LINE_OFFSET + line) * DISPLAY_LINE_SPACING + 38;
          int btn_y = bg_height + 10; // 10 pixels below monitor
          ObjectSet(btnCloseOnly, OBJPROP_YDISTANCE, btn_y);
-         ObjectSet(btnCloseOnly, OBJPROP_BGCOLOR, g_close_only_mode ? clrRed : clrWhite);
+         
+         // Update button color and text based on scheduled mode
+         if(input_scheduled_close_only_enabled)
+         {
+            if(g_scheduled_close_only_active)
+            {
+               ObjectSet(btnCloseOnly, OBJPROP_BGCOLOR, clrRed);
+               ObjectSetText(btnCloseOnly, "Scheduled ON", 9, "Arial", clrBlack);
+            }
+            else
+            {
+               ObjectSet(btnCloseOnly, OBJPROP_BGCOLOR, clrLightGray);
+               ObjectSetText(btnCloseOnly, "Scheduled OFF", 9, "Arial", clrBlack);
+            }
+         }
+         else
+         {
+            ObjectSet(btnCloseOnly, OBJPROP_BGCOLOR, g_close_only_mode ? clrRed : clrWhite);
+            ObjectSetText(btnCloseOnly, "Close Only", 9, "Arial", clrBlack);
+         }
       }
    }
 }
@@ -2500,6 +2659,8 @@ void DisplayUpdate()
 void MasterOpenNow()
 {
    if(!(input_role==ROLE_MASTER)) return;
+   // Update scheduled close only mode state
+   UpdateScheduledCloseOnlyMode();
    // Close Only mode: prevent new orders
    if(g_close_only_mode) return;
 
@@ -2581,14 +2742,30 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    {
       if(sparam == OBJ_PREFIX + "BTN_CLOSE_ONLY")
       {
-         // Toggle Close Only mode
-         g_close_only_mode = !g_close_only_mode;
+         // Update scheduled state first
+         UpdateScheduledCloseOnlyMode();
+         
+         // Check if user can toggle (not during scheduled period)
+         if(!CanUserToggleCloseOnly())
+         {
+            // Reset button state and show it's disabled during scheduled period
+            ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
+            LogEvent("CLOSE_ONLY_BUTTON", "disabled_during_scheduled_period");
+            return;
+         }
+         
+         // Toggle Close Only mode (only if not in scheduled mode)
+         if(!input_scheduled_close_only_enabled)
+         {
+            g_close_only_mode = !g_close_only_mode;
+            // Log the mode change
+            LogEvent("CLOSE_ONLY_MODE", StringFormat("enabled=%s;source=manual", g_close_only_mode ? "true" : "false"));
+         }
+         
          // Update button color immediately
          ObjectSet(sparam, OBJPROP_BGCOLOR, g_close_only_mode ? clrRed : clrWhite);
          // Reset button state (not pressed)
          ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
-         // Log the mode change
-         LogEvent("CLOSE_ONLY_MODE", StringFormat("enabled=%s", g_close_only_mode ? "true" : "false"));
       }
       else if(input_debug_buttons_enabled)
       {
@@ -2653,6 +2830,12 @@ void OnTimer()
       LogsCleanupRetention();
       WriteMasterConfig();
       ReadMasterConfigForSlave();
+   }
+   
+   // === SCHEDULED CLOSE ONLY - ทุก 30 วินาที (เพื่อประสิทธิภาพ) ===
+   if(timer_count % 30 == 0 && input_role==ROLE_MASTER && input_scheduled_close_only_enabled)
+   {
+      UpdateScheduledCloseOnlyMode();
    }
    
    DisplayUpdate();
