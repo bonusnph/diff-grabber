@@ -47,20 +47,20 @@ int    input_slippage_points          = 10;            // Scope: Both — slippa
 input MasterSide input_master_side          = SIDE_SELL;     // Scope: Master — master direction (Slave auto-opposite)
 input double input_lot_master               = 0.01;          // Scope: Master — lot size for master orders
 input double input_lot_slave                = 0.01;          // Scope: Master — advised lot for Slave; Slave ignores local lot input
-input int    input_open_threshold_points    = 30;            // Scope: Master — open threshold (points)
-input int    input_close_threshold_points   = 30;            // Scope: Master — close threshold (points)
-int    input_open_cooldown_seconds    = 300;           // Scope: Master — open cooldown after an open
+int    input_open_threshold_points    = 15;            // Scope: Master — open threshold (points)
+int    input_close_threshold_points   = 15;            // Scope: Master — close threshold (points)
+int    input_open_cooldown_seconds    = 3600;           // Scope: Master — open cooldown after an open
 int    input_close_cooldown_seconds   = 60;            // Scope: Master — close cooldown after both sides opened
 int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
 
 // Raw stability check (alternative to averaging - Master only)
-bool   input_raw_stability_enabled   = true;         // Scope: Master — enable raw stability check (alternative to averaging)
+bool   input_raw_stability_enabled   = false;         // Scope: Master — enable raw stability check (alternative to averaging)
 int    input_raw_stability_ticks     = 3;             // Scope: Master — consecutive stable ticks required
 int    input_raw_stability_timeout_ms = 500;          // Scope: Master — max wait time for stability confirmation (ms)
 int    input_raw_hysteresis_offset   = 10;           // Scope: Master — hysteresis offset below threshold for reset (points)
 
 // Averaged diff gating (Master-only)
-input bool   input_avg_filter_enabled       = false;         // Scope: Master — enable EMA-based averaged diff gating
+bool   input_avg_filter_enabled       = false;         // Scope: Master — enable EMA-based averaged diff gating
 int    input_avg_period               = 9;             // Scope: Master — EMA period (ticks)
 bool   input_use_prefilter_median     = true;          // Scope: Master — apply median pre-filter before EMA
 int    input_prefilter_window         = 3;             // Scope: Master — median window (odd 3/5)
@@ -76,7 +76,7 @@ int    input_max_spread_points_self   = 10;            // Scope: Master — bloc
 int    input_max_spread_points_peer   = 20;            // Scope: Master — check peer spread before opening (points)
 int    input_quotes_fresh_ms          = 400;           // Scope: Master — maximum acceptable quote age (ms)
 int    input_file_poll_ms             = 5;             // Scope: Master — background file polling cadence (ms)
-int    input_magic_number_base        = 900100;        // Scope: Master — magic base per channel/symbol
+int    input_magic_number_base        = 212224;        // Scope: Master — magic base per channel/symbol
 bool   input_retry_on_requote         = true;          // Scope: Master — retry on requote/off quotes
 int    input_max_retries              = 20;            // Scope: Master — max retry attempts
 
@@ -101,14 +101,14 @@ bool   input_dry_run_suppress_heartbeat   = false;     // Scope: Master — supp
 bool   input_debug_buttons_enabled     = false;         // Scope: Master — show Open/Close test buttons (simulate diffOpen/diffClose)
 
 // Scheduled Close Only Mode (Master only)
-input bool   input_scheduled_close_only_enabled = false;     // Scope: Master — enable scheduled close only mode
-input string input_close_only_start_time        = "01:00";   // Scope: Master — start time for close only mode (HH:mm format)
-input string input_close_only_end_time          = "08:00";   // Scope: Master — end time for close only mode (HH:mm format)
+bool   input_scheduled_close_only_enabled = false;     // Scope: Master — enable scheduled close only mode
+string input_close_only_start_time        = "01:00";   // Scope: Master — start time for close only mode (HH:mm format)
+string input_close_only_end_time          = "08:00";   // Scope: Master — end time for close only mode (HH:mm format)
 
 // Extended controls (Master-only; synced to Slave via config)
-input double input_min_balance_master_usd    = 0.00;          // Scope: Master — minimum balance required on Master to allow new open
-input double input_min_balance_slave_usd     = 0.00;          // Scope: Master — minimum balance required on Slave to allow new open
-input double input_initial_capital_usd       = 0.00;          // Scope: Master — initial capital for profit calculation
+double input_min_balance_master_usd    = 0.00;          // Scope: Master — minimum balance required on Master to allow new open
+double input_min_balance_slave_usd     = 0.00;          // Scope: Master — minimum balance required on Slave to allow new open
+double input_initial_capital_usd       = 0.00;          // Scope: Master — initial capital for profit calculation
 
 // -----------------------------
 // Globals
@@ -2047,6 +2047,19 @@ void DisplaySetLine(const int idx, const string text)
    ObjectSetString(0, name, OBJPROP_TEXT, text);
 }
 
+void DisplayTrimLines(const int maxLines)
+{
+   // Remove any display lines beyond maxLines to keep display compact
+   for(int i = maxLines; i < 50; i++) // Check up to 50 lines
+   {
+      string name = OBJ_PREFIX + "LINE_" + IntegerToString(i);
+      if(ObjectFind(0, name) != -1)
+      {
+         ObjectDelete(0, name);
+      }
+   }
+}
+
 // Soft-wrap a long text into multiple Display lines to avoid clipping
 int EstimateMaxCharsPerLine()
 {
@@ -2151,7 +2164,9 @@ void DisplayUpdate()
    if(input_role==ROLE_MASTER)
    {
       DisplaySetLine(line++, StringFormat("lot(m/s)=%.2f/%.2f  side(M)=%s", input_lot_master, input_lot_slave, ((input_master_side==SIDE_BUY)?"BUY":"SELL")));
-      DisplaySetLine(line++, StringFormat("open_th=%d  close_th=%d  spread=%d", input_open_threshold_points, input_close_threshold_points, spread));
+      // Only show first 4 lines for Master
+      DisplayTrimLines(line);
+      return;
       int cd = CooldownRemainSeconds(); string cdLeft = (cd>=0)? IntegerToString(cd):"-";
       int closeLeft = -1; if(g_last_pair_both_open_time>0){ int el=(int)(TimeCurrent()-g_last_pair_both_open_time); int rem=input_close_cooldown_seconds-el; if(rem<0) rem=0; closeLeft=rem; }
       // Split into two lines to avoid clipping on narrow charts
@@ -2168,17 +2183,16 @@ void DisplayUpdate()
    }
    else
    {
+      // Slave: Show only 4 lines in specific order
       if(!g_have_master_cmd) ReadMasterConfigForSlave();
       if(g_have_master_cmd)
       {
          string sideS = (g_last_cmd_side=="BUY")?"SELL":"BUY";
-         DisplaySetLine(line++, StringFormat("lot(M/S)=%.2f/%.2f  side(S)=%s", g_last_cmd_lot_master, g_last_cmd_lot_slave, sideS));
-         if(g_have_master_th)
-            DisplaySetLine(line++, StringFormat("th(M): open=%d close=%d", g_last_cmd_open_th, g_last_cmd_close_th));
+         DisplaySetLine(line++, StringFormat("lot(m/s)=%.2f/%.2f  side(S)=%s", g_last_cmd_lot_master, g_last_cmd_lot_slave, sideS));
       }
-      DisplaySetLine(line++, StringFormat("spread=%d", spread));
-      int closeLeftS=-1; if(g_last_pair_both_open_time>0){ int el=(int)(TimeCurrent()-g_last_pair_both_open_time); int rem=g_master_close_cooldown_seconds-el; if(rem<0) rem=0; closeLeftS=rem; }
-      DisplaySetLine(line++, StringFormat("close_cooldown=%ds left=%s", g_master_close_cooldown_seconds, (closeLeftS>=0?IntegerToString(closeLeftS):"-")));
+      // Only show first 4 lines for Slave
+      DisplayTrimLines(line);
+      return;
    }
    if(input_role==ROLE_MASTER)
    {
@@ -2484,10 +2498,53 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    }
 }
 
+// -----------------------------
+// License Check Function
+// -----------------------------
+bool CheckEALicense()
+{
+   // Check authorized account numbers
+   long current_account = AccountInfoInteger(ACCOUNT_LOGIN);
+   if(current_account != 2620179 && current_account != 1120444)
+   {
+      Alert("EA License Error: Unauthorized account number ", current_account);
+      Print("EA License Error: Account ", current_account, " is not authorized");
+      return false;
+   }
+   
+   // วันหมดอายุ: 31 มกราคม 2026
+   datetime expiry_date = D'2026.01.31 23:59:59';
+   datetime current_time = TimeCurrent();
+   
+   if(current_time > expiry_date)
+   {
+      Alert("EA License Expired! วันหมดอายุ: 31 มกราคม 2026");
+      Print("EA License Expired on: 2026.01.31");
+      return false;
+   }
+   
+   // คำนวณวันที่เหลือ
+   int days_remaining = (int)((expiry_date - current_time) / 86400);
+   
+   // แจ้งเตือนเมื่อเหลือ 7 วัน
+   if(days_remaining <= 7 && days_remaining > 0)
+   {
+      Alert("EA License Warning: เหลือเวลาใช้งาน ", days_remaining, " วัน");
+   }
+   
+   return true;
+}
+
 // Lifecycle
 // -----------------------------
 int OnInit()
 {
+   // Check EA License first
+   if(!CheckEALicense()) 
+   {
+      return(INIT_FAILED);
+   }
+   
    g_symbol = (input_symbol=="" ? _Symbol : input_symbol);
    g_digits = (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS);
    g_point  = SymbolInfoDouble(g_symbol, SYMBOL_POINT);
@@ -2641,7 +2698,20 @@ void MasterWatchdogOpen()
 void OnTimer()
 {
    static int timer_count = 0;
+   static datetime last_license_check = 0;
    timer_count++;
+   
+   // License check every 12 hours (43200 seconds)
+   datetime current_time = TimeCurrent();
+   if(current_time - last_license_check >= 43200)
+   {
+      if(!CheckEALicense()) 
+      {
+         ExpertRemove(); // Stop EA
+         return;
+      }
+      last_license_check = current_time;
+   }
    
    // === CRITICAL OPERATIONS - ทุกครั้ง ===
    WriteHeartbeat();
