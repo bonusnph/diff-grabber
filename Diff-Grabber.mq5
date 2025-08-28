@@ -708,16 +708,21 @@ void UpdateScheduledCloseOnlyMode()
       g_scheduled_close_only_active = (currentMinutes >= g_cached_start_minutes || currentMinutes < g_cached_end_minutes);
    }
    
-   // Update the actual close only mode based on scheduled state
-   g_close_only_mode = g_scheduled_close_only_active;
+   // IMPORTANT: Only override g_close_only_mode when in scheduled period
+   // Outside scheduled period, allow manual control via button
+   if(g_scheduled_close_only_active)
+   {
+      g_close_only_mode = true; // Force ON during scheduled period
+   }
+   // When outside scheduled period, g_close_only_mode retains its manual state
    
    // Log state changes only (reduce log spam)
    if(wasActive != g_scheduled_close_only_active)
    {
-      LogEvent("SCHEDULED_CLOSE_ONLY", StringFormat("active=%s;start=%s;end=%s;current=%02d:%02d", 
+      LogEvent("SCHEDULED_CLOSE_ONLY", StringFormat("active=%s;start=%s;end=%s;current=%02d:%02d;mode=%s", 
                g_scheduled_close_only_active ? "true" : "false",
                input_close_only_start_time, input_close_only_end_time,
-               dt.hour, dt.min));
+               dt.hour, dt.min, g_close_only_mode ? "ON" : "OFF"));
    }
 }
 
@@ -2321,7 +2326,9 @@ void DisplayUpdate()
          }
          else
          {
-            closeOnlyStatus = StringFormat("OFF (SCHEDULED %s)", scheduleInfo);
+            // Outside scheduled period - show manual state
+            string manualState = g_close_only_mode ? "ON" : "OFF";
+            closeOnlyStatus = StringFormat("%s (MANUAL | SCHEDULE %s)", manualState, scheduleInfo);
          }
       }
       else
@@ -2378,13 +2385,16 @@ void DisplayUpdate()
          {
             if(g_scheduled_close_only_active)
             {
+               // During scheduled period - force ON, disable button
                ObjectSetInteger(0, btnCloseOnly, OBJPROP_BGCOLOR, clrRed);
                ObjectSetString(0, btnCloseOnly, OBJPROP_TEXT, "Scheduled ON");
             }
             else
             {
-               ObjectSetInteger(0, btnCloseOnly, OBJPROP_BGCOLOR, clrLightGray);
-               ObjectSetString(0, btnCloseOnly, OBJPROP_TEXT, "Scheduled OFF");
+               // Outside scheduled period - allow manual control
+               ObjectSetInteger(0, btnCloseOnly, OBJPROP_BGCOLOR, g_close_only_mode ? clrRed : clrWhite);
+               string btnText = g_close_only_mode ? "Manual ON" : "Manual OFF";
+               ObjectSetString(0, btnCloseOnly, OBJPROP_TEXT, btnText);
             }
          }
          else
@@ -2454,13 +2464,12 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             return;
          }
          
-         // Toggle Close Only mode (only if not in scheduled mode)
-         if(!input_scheduled_close_only_enabled)
-         {
-            g_close_only_mode = !g_close_only_mode;
-            // Log the mode change
-            LogEvent("CLOSE_ONLY_MODE", StringFormat("enabled=%s;source=manual", g_close_only_mode ? "true" : "false"));
-         }
+         // Toggle Close Only mode (allow manual control outside scheduled period)
+         g_close_only_mode = !g_close_only_mode;
+         
+         // Log the mode change
+         string source = input_scheduled_close_only_enabled ? "manual_outside_schedule" : "manual";
+         LogEvent("CLOSE_ONLY_MODE", StringFormat("enabled=%s;source=%s", g_close_only_mode ? "true" : "false", source));
          
          // Update button color immediately
          ObjectSetInteger(0, sparam, OBJPROP_BGCOLOR, g_close_only_mode ? clrRed : clrWhite);
