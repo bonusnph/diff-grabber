@@ -708,13 +708,17 @@ void UpdateScheduledCloseOnlyMode()
       g_scheduled_close_only_active = (currentMinutes >= g_cached_start_minutes || currentMinutes < g_cached_end_minutes);
    }
    
-   // IMPORTANT: Only override g_close_only_mode when in scheduled period
-   // Outside scheduled period, allow manual control via button
+   // IMPORTANT: Auto-control g_close_only_mode based on scheduled period
+   // During scheduled period: force ON
+   // Outside scheduled period: force OFF (reset to allow normal operation)
    if(g_scheduled_close_only_active)
    {
       g_close_only_mode = true; // Force ON during scheduled period
    }
-   // When outside scheduled period, g_close_only_mode retains its manual state
+   else
+   {
+      g_close_only_mode = false; // Force OFF outside scheduled period
+   }
    
    // Log state changes only (reduce log spam)
    if(wasActive != g_scheduled_close_only_active)
