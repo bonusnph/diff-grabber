@@ -13,11 +13,17 @@
 	let capitalPerUnit = 7500;
 	let totalActiveAccounts = 16;
 	let unitMappings: Record<number, string> = { 1: 'xs-sell', 2: 'xs-buy', 3: 'gold-sell' };
+	let brokerMinMargins: Record<string, number> = {};
 	let unitGroups: Record<string, AccountSummary[]> = {};
 	let unitStats: Array<{unit: number, totalBalance: number, profitLoss: number, accountCount: number}> = [];
 	let loading = true;
 	let pollingInterval = 5; // seconds
-	let intervalId: number | null = null;
+	let intervalId: ReturnType<typeof setInterval> | null = null;
+	let countdownSeconds = 0;
+	let countdownInterval: ReturnType<typeof setInterval> | null = null;
+	let autoFetchEnabled = false;
+	let fetchedThisCycle = false;
+	let lastCountdown = 0;
 	let showSettingsModal = false;
 	let savingSettings = false;
 	let latestUpdate: number = 0;
@@ -33,6 +39,8 @@
 	// Unit mappings editing
 	let newUnitNumber = '';
 	let newUnitName = '';
+	let newBrokerName = '';
+	let newBrokerMargin: string = '';
 
 	// Data completeness check
 	$: currentActiveAccounts = summaries.length;
@@ -89,6 +97,7 @@
 			capitalPerUnit = data.capital_per_unit;
 			totalActiveAccounts = data.total_active_accounts;
 			unitMappings = data.unit_mappings || {};
+			brokerMinMargins = data.broker_min_margins || {};
 		} catch (error) {
 			console.error('Error loading settings:', error);
 			// Keep default values if loading fails
@@ -96,13 +105,11 @@
 	}
 
 	function startPolling() {
-		if (intervalId) {
-			clearInterval(intervalId);
-		}
-		intervalId = setInterval(fetchData, pollingInterval * 1000);
+		autoFetchEnabled = true;
 	}
 
 	function stopPolling() {
+		autoFetchEnabled = false;
 		if (intervalId) {
 			clearInterval(intervalId);
 			intervalId = null;
@@ -110,6 +117,23 @@
 	}
 
 
+
+	function updateCountdown() {
+		const now = new Date();
+		const sec = now.getSeconds();
+		countdownSeconds = (30 - (sec % 30)) % 30;
+		// Detect new 30s cycle (count jumps up from 0 -> 29)
+		const cycleStart = countdownSeconds > lastCountdown;
+		if (cycleStart) {
+			fetchedThisCycle = false;
+		}
+		// Trigger fetch one tick after 0 (i.e., when switching to 29)
+		if (autoFetchEnabled && lastCountdown === 0 && countdownSeconds === 29 && !fetchedThisCycle) {
+			fetchedThisCycle = true;
+			fetchData();
+		}
+		lastCountdown = countdownSeconds;
+	}
 
 	function getDataAge(timestamp: string): { minutes: number; status: 'fresh' | 'warning' | 'danger' } {
 		const now = new Date();
@@ -207,6 +231,24 @@
 		}
 	}
 
+	async function updateBrokerMinMargins() {
+		try {
+			const response = await fetch('/api/settings', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({ broker_min_margins: brokerMinMargins })
+			});
+			if (response.ok) {
+				const data = await response.json();
+				brokerMinMargins = data.broker_min_margins || brokerMinMargins;
+			}
+		} catch (error) {
+			console.error('Error updating broker min margins:', error);
+		}
+	}
+
 	function addUnitMapping() {
 		const unitNumber = parseInt(newUnitNumber);
 		if (!isNaN(unitNumber) && newUnitName.trim()) {
@@ -222,8 +264,39 @@
 		updateUnitMappings();
 	}
 
+	function addBrokerMinMargin() {
+		const name = newBrokerName.trim();
+		const margin = parseFloat(newBrokerMargin);
+		if (name && !isNaN(margin) && margin >= 0) {
+			brokerMinMargins[name] = margin;
+			updateBrokerMinMargins();
+			newBrokerName = '';
+			newBrokerMargin = '';
+		}
+	}
+
+	function removeBrokerMinMargin(name: string) {
+		delete brokerMinMargins[name];
+		updateBrokerMinMargins();
+	}
+
 	function getUnitDisplayName(unit: number): string {
 		return unitMappings[unit] || `Unit ${unit}`;
+	}
+
+	function getBrokerMinFor(name: string): number | undefined {
+		if (!name) return undefined;
+		const lower = name.toLowerCase();
+		for (const [k, v] of Object.entries(brokerMinMargins || {})) {
+			if (k.toLowerCase() === lower) return v as number;
+		}
+		return undefined;
+	}
+
+	function isInsufficientBalance(account: AccountSummary): boolean {
+		const min = getBrokerMinFor(account.broker_name);
+		if (min === undefined) return false;
+		return account.latest_balance <= min;
 	}
 
 	// PIN Protection Functions
@@ -330,15 +403,27 @@
 		return `${dd}/${mm}/${yyyy} ${HH}:${min}:${ss}`;
 	}
 
+	function shortName(name: string): string {
+		if (!name) return '';
+		return name.length > 8 ? name.slice(0, 8) + '~' : name;
+	}
+
 	onMount(() => {
 		// Don't load data until authenticated
 		// Data loading will be triggered after PIN validation
 		
 		// Add keyboard event listener for PIN input
 		document.addEventListener('keydown', handleKeydown);
+		// Start 30s boundary countdown
+		updateCountdown();
+		countdownInterval = setInterval(updateCountdown, 1000);
 		
 		return () => {
 			document.removeEventListener('keydown', handleKeydown);
+			if (countdownInterval) {
+				clearInterval(countdownInterval);
+				countdownInterval = null;
+			}
 		};
 	});
 
@@ -483,18 +568,18 @@
 	<div class="max-w-7xl mx-auto">
 		<!-- Header -->
 		<div class="mb-8">
-			<div class="flex justify-between items-center mb-4">
+			<div class="flex flex-col md:flex-row md:justify-between md:items-center mb-4 gap-3">
 				<div>
 					<h1 class="text-3xl font-bold text-white mb-2">Profit Monitor Dashboard</h1>
-					<div class="flex items-center space-x-3">
+					<div class="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3">
 						<p class="text-gray-300">Real-time trading account monitoring</p>
-						<div class="flex items-center space-x-1 text-sm text-gray-400">
-							<span>Auto refresh every 5s</span>
+						<div class="flex items-center gap-1 text-sm text-gray-400">
 							<div class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+							<span>Live</span>
 						</div>
 					</div>
 				</div>
-				<div class="flex items-center space-x-3">
+				<div class="flex items-center gap-2 mt-1 md:mt-0 flex-wrap">
 					<button
 						on:click={fetchData}
 						class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center space-x-2"
@@ -527,36 +612,30 @@
 		{:else}
 			<!-- Profit/Loss Highlight Card -->
 			<div class="bg-gradient-to-r from-gray-800 to-gray-700 border border-gray-600 rounded-xl shadow-2xl p-8 mb-8 text-white">
+				<div class="flex flex-col gap-1 md:flex-row md:items-center md:justify-between mb-4">
+					<h2 class="text-lg font-medium text-gray-300 uppercase tracking-wide">Total Profit/Loss</h2>
+					<div class="flex flex-col text-xs text-gray-400 md:flex-row md:items-center md:gap-3">
+						{#if latestUpdate}
+							<span>Updated: {formatDateTime(new Date(latestUpdate).toISOString())}</span>
+						{/if}
+						<span>Next refresh in: {String(countdownSeconds).padStart(2,'0')}s</span>
+					</div>
+				</div>
 				<div class="text-center">
-					<h2 class="text-lg font-medium text-gray-300 uppercase tracking-wide mb-2">Total Profit/Loss</h2>
-					{#if latestUpdate}
-						<p class="text-xs text-gray-400 mb-3">Last updated: {formatDateTime(new Date(latestUpdate).toISOString())}</p>
-					{/if}
-					
-					{#if !isDataComplete}
-						<!-- Data Incomplete Warning -->
-						<div class="mb-4 p-3 bg-yellow-900 border border-yellow-600 rounded-lg">
-							<div class="flex items-center justify-center space-x-2 text-yellow-300">
-								<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
-								</svg>
-								<span class="font-medium">ข้อมูลไม่ครบถ้วน</span>
-							</div>
-							<p class="text-yellow-200 text-sm mt-1">
-								กำลังรอข้อมูลจาก EA ({currentActiveAccounts}/{totalActiveAccounts} accounts - {dataCompletenessPercentage}%)
-							</p>
-						</div>
-					{/if}
-
 					<p class="text-5xl font-bold mb-2 {!isDataComplete ? 'opacity-60' : ''}" class:text-green-400={stats.profit_loss >= 0} class:text-red-400={stats.profit_loss < 0}>
 						{stats.profit_loss >= 0 ? '+' : ''}{formatNumber(stats.profit_loss)}
 					</p>
-					<p class="text-gray-300 text-sm {!isDataComplete ? 'opacity-60' : ''}">
-						{stats.profit_loss >= 0 ? '📈 Profitable' : '📉 Loss'}
+					<div class="mt-2 flex items-center justify-center gap-2">
+						<span class="px-2 py-0.5 rounded-full text-xs font-medium"
+							class:bg-green-700={stats.profit_loss >= 0}
+							class:bg-red-700={stats.profit_loss < 0}
+						>
+							{stats.profit_loss >= 0 ? 'Profitable' : 'Loss'}
+						</span>
 						{#if !isDataComplete}
-							<span class="text-yellow-400 ml-2">(Partial Data)</span>
+							<span class="px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-900 border border-yellow-600 text-yellow-200">Partial Data</span>
 						{/if}
-					</p>
+					</div>
 				</div>
 			</div>
 
@@ -587,7 +666,13 @@
 				{#each Object.entries(unitGroups) as [unitStr, accounts]}
 					{@const unit = parseInt(unitStr)}
 					{@const unitStat = unitStats.find(s => s.unit === unit)}
-					<div class="mb-6">
+					{@const groupIsTrading = accounts.some(isTrading)}
+					<div class="mb-6 rounded-md"
+						class:bg-blue-700={groupIsTrading}
+						class:border-2={groupIsTrading}
+						class:border-blue-400={groupIsTrading}
+						class:p-2={groupIsTrading}
+					>
 						<div class="flex justify-between items-center mb-3 border-b border-gray-600 pb-2">
 							<div class="flex items-center space-x-2">
 								<h3 class="text-lg font-medium text-gray-200">
@@ -598,15 +683,12 @@
 								</span>
 							</div>
 							{#if unitStat}
-								<div class="flex items-center space-x-4 text-sm">
+								<div class="flex flex-col md:flex-row items-start md:items-center space-y-1 md:space-y-0 md:space-x-4 text-sm">
 									<span class="text-gray-400">
 										Total: {formatNumber(unitStat.totalBalance)}
 									</span>
 									<span class="font-medium" class:text-green-400={unitStat.profitLoss >= 0} class:text-red-400={unitStat.profitLoss < 0}>
 										P/L: {unitStat.profitLoss >= 0 ? '+' : ''}{formatNumber(unitStat.profitLoss)}
-									</span>
-									<span class="text-gray-500">
-										({unitStat.accountCount} accounts)
 									</span>
 								</div>
 							{/if}
@@ -616,35 +698,40 @@
 							<table class="w-full text-sm">
 								<thead>
 									<tr class="border-b border-gray-600">
-										<th class="text-left py-2 px-3 text-gray-400 font-medium">Account</th>
-										<th class="text-left py-2 px-3 text-gray-400 font-medium">Name</th>
+										<th class="text-left py-2 px-3 text-gray-400 font-medium">Account / Name</th>
 										<th class="text-right py-2 px-3 text-gray-400 font-medium">Balance</th>
 										<th class="text-right py-2 px-3 text-gray-400 font-medium">Equity</th>
-										<th class="text-left py-2 px-3 text-gray-400 font-medium">Updated</th>
 										<th class="text-left py-2 px-3 text-gray-400 font-medium">Broker</th>
+										<th class="text-right py-2 px-3 text-gray-400 font-medium">Adjust</th>
+										<th class="text-left py-2 px-3 text-gray-400 font-medium">Updated</th>
 									</tr>
 								</thead>
 								<tbody>
 									{#each accounts as account}
 										{@const dataAge = getDataAge(account.last_update)}
-										{@const accountIsTrading = isTrading(account)}
 										<tr class="border-b border-gray-700 hover:bg-gray-600 transition-colors"
 											class:bg-yellow-900={dataAge.status === 'warning'}
 											class:bg-red-900={dataAge.status === 'danger'}
+											class:bg-red-950={isInsufficientBalance(account)}
 										>
 											<td class="py-2 px-3">
-												<div class="flex items-center space-x-2">
-													<span class="font-medium text-white">{account.account_number}</span>
-													{#if accountIsTrading}
-														<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-700 text-white tracking-wide uppercase">TRADING</span>
-													{/if}
+												<div class="flex flex-col leading-tight">
+													<span class="font-mono font-semibold text-white">
+														{#if isInsufficientBalance(account)}<span class="text-red-400">*</span> {/if}{account.account_number}
+													</span>
+													<span class="text-gray-400 text-xs truncate" title={account.account_name}>{shortName(account.account_name)}</span>
 												</div>
 											</td>
-											<td class="py-2 px-3 text-gray-300 max-w-32 truncate">{account.account_name}</td>
 											<td class="py-2 px-3 text-right font-medium text-white">{formatNumber(account.latest_balance)}</td>
 											<td class="py-2 px-3 text-right font-medium text-white">{formatNumber(account.latest_equity)}</td>
-											<td class="py-2 px-3 text-gray-400 text-xs">{formatDateTime(account.last_update)}</td>
 											<td class="py-2 px-3 text-gray-400 text-xs">{account.broker_name}</td>
+											<td class="py-2 px-3 text-right font-medium"
+												class:text-green-400={(capitalPerUnit / 2) - account.latest_balance >= 0}
+												class:text-red-400={(capitalPerUnit / 2) - account.latest_balance < 0}
+											>
+												{((capitalPerUnit / 2) - account.latest_balance) >= 0 ? '+' : ''}{formatNumber((capitalPerUnit / 2) - account.latest_balance)}
+											</td>
+											<td class="py-2 px-3 text-gray-400 text-xs">{formatDateTime(account.last_update)}</td>
 										</tr>
 									{/each}
 								</tbody>
@@ -699,7 +786,7 @@
 				<!-- Initial Capital Setting -->
 				<div>
 					<label for="modal-initial-capital" class="block text-sm font-medium text-gray-300 mb-2">
-						Initial Capital (THB)
+						Initial Capital
 					</label>
 					<div class="flex items-center space-x-3">
 						<input
@@ -721,7 +808,7 @@
 				<!-- Capital Per Unit Setting -->
 				<div>
 					<label for="modal-capital-per-unit" class="block text-sm font-medium text-gray-300 mb-2">
-						Capital Per Unit (THB)
+						Capital Per Unit
 					</label>
 					<div class="flex items-center space-x-3">
 						<input
@@ -813,22 +900,61 @@
 				</fieldset>
 			</div>
 
-				<!-- Auto Refresh Info -->
-				<div>
-					<div class="block text-sm font-medium text-gray-300 mb-2">
-						Auto Refresh
+			<!-- Broker Min Margin Settings -->
+			<div>
+				<fieldset>
+					<legend class="block text-sm font-medium text-gray-300 mb-2">
+						Broker Min Margin
+					</legend>
+					<div class="space-y-2 mb-3">
+						{#each Object.entries(brokerMinMargins) as [broker, margin]}
+							<div class="flex items-center justify-between bg-gray-700 border border-gray-600 rounded-md px-3 py-2">
+								<div class="flex items-center space-x-2">
+									<span class="text-sm font-medium text-gray-300">{broker}</span>
+									<span class="text-sm text-white">= {formatNumber(margin)}</span>
+								</div>
+								<button
+									on:click={() => removeBrokerMinMargin(broker)}
+									class="text-red-400 hover:text-red-300 transition-colors"
+									aria-label={`Remove min margin for broker ${broker}`}
+								>
+									<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+									</svg>
+								</button>
+							</div>
+						{/each}
 					</div>
-					<div class="flex items-center justify-between p-3 bg-gray-700 border border-gray-600 rounded-md">
-						<div class="flex items-center space-x-2">
-							<div class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-							<span class="text-sm text-gray-300">Every 5 seconds</span>
-						</div>
-						<span class="text-xs text-gray-500">Active</span>
+					<div class="flex items-center space-x-2">
+						<input
+							type="text"
+							bind:value={newBrokerName}
+							placeholder="Broker name"
+							class="flex-1 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+						/>
+						<span class="text-gray-400">=</span>
+						<input
+							type="number"
+							bind:value={newBrokerMargin}
+							placeholder="Min margin"
+							min="0"
+							class="w-32 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+						/>
+						<button
+							on:click={addBrokerMinMargin}
+							class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md text-sm transition-colors"
+							disabled={!newBrokerName.trim() || !newBrokerMargin}
+						>
+							Add
+						</button>
 					</div>
 					<p class="text-xs text-gray-500 mt-1">
-						Data automatically refreshes every 5 seconds
+						Map broker (case-insensitive) to minimum margin. Used to flag low balance rows.
 					</p>
-				</div>
+				</fieldset>
+			</div>
+
+				<!-- Auto Refresh Info removed per new 30s countdown policy -->
 			</div>
 
 			<div class="px-6 py-4 border-t border-gray-700 bg-gray-800 flex items-center justify-end gap-3">

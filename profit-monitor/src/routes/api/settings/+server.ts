@@ -7,13 +7,14 @@ export const GET: RequestHandler = async () => {
 		initial_capital: await storage.getInitialCapital(),
 		capital_per_unit: await storage.getCapitalPerUnit(),
 		total_active_accounts: await storage.getTotalActiveAccounts(),
-		unit_mappings: await storage.getUnitMappings()
+		unit_mappings: await storage.getUnitMappings(),
+		broker_min_margins: await storage.getBrokerMinMargins()
 	});
 };
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
-		const { initial_capital, capital_per_unit, total_active_accounts, unit_mappings } = await request.json();
+		const { initial_capital, capital_per_unit, total_active_accounts, unit_mappings, broker_min_margins } = await request.json();
 		
 		if (initial_capital !== undefined) {
 			if (typeof initial_capital !== 'number' || initial_capital < 0) {
@@ -42,13 +43,27 @@ export const POST: RequestHandler = async ({ request }) => {
 			}
 			await storage.setUnitMappings(unit_mappings);
 		}
+
+		if (broker_min_margins !== undefined) {
+			if (typeof broker_min_margins !== 'object' || Array.isArray(broker_min_margins)) {
+				return json({ error: 'Invalid broker min margins' }, { status: 400 });
+			}
+			// Validate values are numbers >= 0
+			for (const [k, v] of Object.entries(broker_min_margins)) {
+				if (typeof v !== 'number' || v < 0) {
+					return json({ error: `Invalid margin for broker '${k}'` }, { status: 400 });
+				}
+			}
+			await storage.setBrokerMinMargins(broker_min_margins);
+		}
 		
 		return json({ 
 			status: 'success',
 			initial_capital: await storage.getInitialCapital(),
 			capital_per_unit: await storage.getCapitalPerUnit(),
 			total_active_accounts: await storage.getTotalActiveAccounts(),
-			unit_mappings: await storage.getUnitMappings()
+			unit_mappings: await storage.getUnitMappings(),
+			broker_min_margins: await storage.getBrokerMinMargins()
 		});
 		
 	} catch (error) {

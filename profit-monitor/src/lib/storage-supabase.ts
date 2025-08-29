@@ -367,6 +367,44 @@ class SupabaseStorage {
 		};
 	}
 
+	async setBrokerMinMargins(mappings: Record<string, number>): Promise<void> {
+		const { error } = await supabase
+			.from('settings')
+			.upsert({
+				setting_key: 'broker_min_margins',
+				setting_value: JSON.stringify(mappings),
+				updated_at: new Date().toISOString()
+			});
+
+		if (error) {
+			console.error('Error setting broker min margins:', error);
+			throw error;
+		}
+	}
+
+	async getBrokerMinMargins(): Promise<Record<string, number>> {
+		const { data, error } = await supabase
+			.from('settings')
+			.select('setting_value')
+			.eq('setting_key', 'broker_min_margins')
+			.single();
+
+		if (error && error.code !== 'PGRST116') {
+			console.error('Error getting broker min margins:', error);
+			throw error;
+		}
+
+		if (data) {
+			try {
+				return JSON.parse(data.setting_value);
+			} catch (parseError) {
+				console.error('Error parsing broker min margins:', parseError);
+			}
+		}
+
+		return {};
+	}
+
 	getUnitName(unit: number): string {
 		// This will need to be async in practice, but for compatibility
 		// we'll implement it synchronously with a fallback
