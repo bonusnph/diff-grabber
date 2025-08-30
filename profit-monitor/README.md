@@ -157,6 +157,36 @@ yarn build
 vercel deploy
 ```
 
+##### Switching Vercel Account/Team
+
+CLI (from the `profit-monitor` directory):
+
+```bash
+# Remove stale local project link
+rm -rf .vercel
+
+# Switch to desired team/account (optional)
+vercel switch
+
+# Re-authenticate if needed
+vercel logout && vercel login
+
+# Link to the new scope/team
+vercel link
+
+# Deploy
+vercel deploy
+```
+
+Git Integration (Dashboard):
+- Set Project → Settings → Git → Root Directory to `profit-monitor`.
+- Framework Preset: SvelteKit.
+- (Optional) Install Command: `yarn install`; Build Command: `yarn build`.
+
+Notes:
+- In a monorepo, you can run from repo root with: `vercel --cwd profit-monitor`.
+- If you see "Could not retrieve Project Settings", remove `.vercel` and run `vercel link` again.
+
 #### Railway/Render
 1. Connect your GitHub repository
 2. Set build command: `yarn build`

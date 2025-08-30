@@ -718,14 +718,40 @@ void UpdateScheduledCloseOnlyMode()
    
    // IMPORTANT: Auto-control g_close_only_mode based on scheduled period
    // During scheduled period: force ON
-   // Outside scheduled period: force OFF (reset to allow normal operation)
+   // Outside scheduled period: for 5 minutes after end time, force OFF; otherwise keep manual state
    if(g_scheduled_close_only_active)
    {
       g_close_only_mode = true; // Force ON during scheduled period
    }
    else
    {
-      g_close_only_mode = false; // Force OFF outside scheduled period
+      // Compute 5-minute grace window after end time to force OFF
+      int graceMin = 5;
+      bool inGrace = false;
+      int endPlus = (g_cached_end_minutes + graceMin) % 1440;
+      if(g_cached_start_minutes < g_cached_end_minutes)
+      {
+         // Same-day schedule: [start, end)
+         if(g_cached_end_minutes + graceMin < 1440)
+            inGrace = (currentMinutes >= g_cached_end_minutes && currentMinutes < (g_cached_end_minutes + graceMin));
+         else
+            inGrace = (currentMinutes >= g_cached_end_minutes || currentMinutes < endPlus);
+      }
+      else if(g_cached_start_minutes > g_cached_end_minutes)
+      {
+         // Cross-midnight schedule: active when (cur>=start || cur<end)
+         // Grace after end begins at end
+         if(g_cached_end_minutes + graceMin < 1440)
+            inGrace = (currentMinutes >= g_cached_end_minutes && currentMinutes < (g_cached_end_minutes + graceMin));
+         else
+            inGrace = (currentMinutes >= g_cached_end_minutes || currentMinutes < endPlus);
+      }
+      // If within grace window after scheduled end, force OFF; otherwise keep manual state
+      if(inGrace)
+      {
+         g_close_only_mode = false;
+      }
+      // else: do not change g_close_only_mode to preserve manual toggle
    }
    
    // Log state changes only (reduce log spam)

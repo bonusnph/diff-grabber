@@ -33,7 +33,7 @@
 	let showPinModal = true;
 	let pinInput = '';
 	let pinError = '';
-	let correctPin = '250514';
+	let correctPin = '759637';
 	let pinLoading = false;
 
 	// Unit mappings editing
@@ -323,12 +323,12 @@
 		pinLoading = true;
 		try {
 			// Load PIN from Supabase if not already loaded
-			if (correctPin === '250514') {
+			if (correctPin === '759637') {
 				const response = await fetch('/api/settings');
 				if (response.ok) {
 					const settings = await response.json();
 					// For now, use hardcoded PIN since we don't have PIN API endpoint yet
-					correctPin = '250514';
+					correctPin = '759637';
 				}
 			}
 			

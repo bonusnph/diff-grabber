@@ -117,6 +117,69 @@ EA ส่งข้อมูล → PostgreSQL → Server restart → ข้อ�
 - Supabase เก็บข้อมูลใน database
 - Deploy กี่ครั้งก็ไม่หาย
 
+### **ปัญหา: PGRST202 – ไม่พบฟังก์ชัน RPC `public.get_account_summaries()`**
+**อาการ:** API ตอบกลับ error `PGRST202` ว่าไม่พบฟังก์ชันใน schema cache
+
+**สาเหตุ:** ยังไม่ได้สร้างฟังก์ชัน RPC ในฐานข้อมูล Supabase
+
+**วิธีแก้ (รันใน Supabase SQL Editor):**
+```sql
+-- Remove if exists to ensure clean state
+drop function if exists public.get_account_summaries();
+
+-- Create RPC to fetch the latest record per account
+create or replace function public.get_account_summaries()
+returns table (
+  account_number text,
+  account_name   text,
+  broker_name    text,
+  latest_balance numeric,
+  latest_equity  numeric,
+  unit           integer,
+  last_update    timestamptz
+)
+language sql
+stable
+as $$
+  with ranked as (
+    select
+      a.account_number,
+      a.account_name,
+      a.broker_name,
+      a.balance  as latest_balance,
+      a.equity   as latest_equity,
+      a.unit,
+      a.timestamp as last_update,
+      row_number() over (
+        partition by a.account_number
+        order by a.timestamp desc
+      ) as rn
+    from public.accounts a
+  )
+  select
+    account_number,
+    account_name,
+    broker_name,
+    latest_balance,
+    latest_equity,
+    unit,
+    last_update
+  from ranked
+  where rn = 1
+  order by broker_name, account_number;
+$$;
+
+-- Grant to API roles
+grant execute on function public.get_account_summaries() to anon, authenticated;
+
+-- Optional: refresh PostgREST schema cache immediately
+notify pgrst, 'reload schema';
+```
+
+**ตรวจสอบเพิ่มเติม:**
+- ตั้งค่า Environment Variables: `SUPABASE_URL`, `SUPABASE_ANON_KEY`
+- ตาราง `public.accounts` ต้องมีคอลัมน์: `account_number, account_name, broker_name, balance, equity, unit, timestamp`
+
 ## 🔄 **Data Migration:**
 
 ### **ข้อมูลเก่าจะหายไหม?**
