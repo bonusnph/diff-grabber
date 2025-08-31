@@ -33,7 +33,7 @@
 	let showPinModal = true;
 	let pinInput = '';
 	let pinError = '';
-	let correctPin = '759637';
+	let correctPin = '250514';
 	let pinLoading = false;
 
 	// Unit mappings editing
@@ -121,14 +121,14 @@
 	function updateCountdown() {
 		const now = new Date();
 		const sec = now.getSeconds();
-		countdownSeconds = (30 - (sec % 30)) % 30;
-		// Detect new 30s cycle (count jumps up from 0 -> 29)
+		countdownSeconds = (10 - (sec % 10)) % 10;
+		// Detect new 10s cycle (count jumps up from 0 -> 9)
 		const cycleStart = countdownSeconds > lastCountdown;
 		if (cycleStart) {
 			fetchedThisCycle = false;
 		}
-		// Trigger fetch one tick after 0 (i.e., when switching to 29)
-		if (autoFetchEnabled && lastCountdown === 0 && countdownSeconds === 29 && !fetchedThisCycle) {
+		// Trigger fetch one tick after 0 (i.e., when switching to 9)
+		if (autoFetchEnabled && lastCountdown === 0 && countdownSeconds === 9 && !fetchedThisCycle) {
 			fetchedThisCycle = true;
 			fetchData();
 		}
@@ -323,12 +323,12 @@
 		pinLoading = true;
 		try {
 			// Load PIN from Supabase if not already loaded
-			if (correctPin === '759637') {
+			if (correctPin === '250514') {
 				const response = await fetch('/api/settings');
 				if (response.ok) {
 					const settings = await response.json();
 					// For now, use hardcoded PIN since we don't have PIN API endpoint yet
-					correctPin = '759637';
+					correctPin = '250514';
 				}
 			}
 			
@@ -414,7 +414,7 @@
 		
 		// Add keyboard event listener for PIN input
 		document.addEventListener('keydown', handleKeydown);
-		// Start 30s boundary countdown
+		// Start 10s boundary countdown
 		updateCountdown();
 		countdownInterval = setInterval(updateCountdown, 1000);
 		
@@ -954,7 +954,7 @@
 				</fieldset>
 			</div>
 
-				<!-- Auto Refresh Info removed per new 30s countdown policy -->
+				<!-- Auto Refresh Info removed per new 10s countdown policy -->
 			</div>
 
 			<div class="px-6 py-4 border-t border-gray-700 bg-gray-800 flex items-center justify-end gap-3">

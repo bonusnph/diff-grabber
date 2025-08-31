@@ -7,8 +7,8 @@
 #property version   "1.00"
 
 // Input parameters
-input string API_URL = "https://profit-monitor.vercel.app/api/webhook"; // API endpoint URL
-input int SendInterval = 30; // Send interval in seconds (30 = 30 seconds)
+input string API_URL = "https://bonusnph.vercel.app/api/webhook"; // API endpoint URL
+input int SendInterval = 10; // Send interval in seconds (30 = 30 seconds)
 input int Unit = 0; // Unit/Label for grouping (1, 2, 3, etc.)
 bool EnableLogging = false; // Enable console logging
 

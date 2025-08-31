@@ -50,7 +50,7 @@ int    input_close_cooldown_seconds   = 60;            // Scope: Master — clos
 int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
 
 // Raw stability check (alternative to averaging - Master only)
-input bool   input_raw_stability_enabled   = true;         // Scope: Master — enable raw stability check (alternative to averaging)
+bool   input_raw_stability_enabled   = true;         // Scope: Master — enable raw stability check (alternative to averaging)
 int    input_raw_stability_ticks     = 3;             // Scope: Master — consecutive stable ticks required
 int    input_raw_stability_timeout_ms = 500;          // Scope: Master — max wait time for stability confirmation (ms)
 int    input_raw_hysteresis_offset   = 10;           // Scope: Master — hysteresis offset below threshold for reset (points)
@@ -96,15 +96,20 @@ bool   input_dry_run_suppress_heartbeat   = false;     // Scope: Master — supp
 // Debug UI (Master only)
 bool   input_debug_buttons_enabled     = false;        // Scope: Master — show Open/Close test buttons (simulates diffOpen/diffClose)
 
-// Scheduled Close Only Mode (Master only)
-input bool   input_scheduled_close_only_enabled = false;    // Scope: Master — enable scheduled close only mode
-input string input_close_only_start_time        = "01:00";  // Scope: Master — start time for close only mode (HH:mm format)
-input string input_close_only_end_time          = "08:00";  // Scope: Master — end time for close only mode (HH:mm format)
-
 // Extended controls (Master-only; synced to Slave via config):
 input double input_min_balance_master_usd    = 0.00;         // Scope: Master — minimum balance required on Master to allow new open
 input double input_min_balance_slave_usd     = 0.00;         // Scope: Master — minimum balance required on Slave to allow new open
 input double input_initial_capital_usd       = 0.00;         // Scope: Master — initial capital for profit calculation
+
+// Scheduled Close Only Mode (Master only)
+input bool   input_scheduled_close_only_enabled = true;    // Scope: Master — enable scheduled close only mode
+string input_close_only_start_time        = "00:57";  // Scope: Master — start time for close only mode (HH:mm format)
+string input_close_only_end_time          = "08:03";  // Scope: Master — end time for close only mode (HH:mm format)
+
+// Saturday-only Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
+bool   input_sat_close_only_enabled       = true;     // Scope: Master — enable Saturday-only close-only schedule
+string input_sat_close_only_start_time    = "00:57";  // Scope: Master — Saturday start time (HH:mm)
+string input_sat_close_only_end_time      = "08:03";  // Scope: Master — Saturday end time (HH:mm)
 
 // -----------------------------
 // Globals
@@ -167,6 +172,11 @@ int    g_cached_start_minutes = -1;
 int    g_cached_end_minutes = -1;
 string g_cached_start_time = "";
 string g_cached_end_time = "";
+// Cache for Saturday-only close-only optimization
+int    g_cached_sat_start_minutes = -1;
+int    g_cached_sat_end_minutes = -1;
+string g_cached_sat_start_time = "";
+string g_cached_sat_end_time = "";
 // Reconcile timer
 ulong  g_last_reconcile_ms = 0;
 // Master-provided dry-run settings
@@ -214,6 +224,25 @@ bool   g_close_pending = false; double g_close_snapshot_avg = 0.0; int g_close_o
 // Signal-level cooldown timestamps
 ulong  g_last_avg_open_signal_ms = 0;
 ulong  g_last_avg_close_signal_ms = 0;
+
+// Peak diff statistics and histograms (master only)
+double g_peak_open_real = 0.0;
+double g_peak_close_real = 0.0;
+#define DIFF_HIST_MAX_POINTS 300
+ulong  g_hist_open_counts[DIFF_HIST_MAX_POINTS+1];
+ulong  g_hist_close_counts[DIFF_HIST_MAX_POINTS+1];
+int    g_mode_open_index = 0;
+ulong  g_mode_open_count = 0;
+int    g_mode_close_index = 0;
+ulong  g_mode_close_count = 0;
+// Weighted suggest parameters/state (master only)
+double g_weighted_alpha = 1.5;
+int    g_weighted_window = 5;
+int    g_weighted_min_count = 5;
+int    g_weighted_open_suggest = 0;
+int    g_weighted_close_suggest = 0;
+ulong  g_last_weighted_suggest_ms = 0;
+int    g_weighted_refresh_ms = 1800000; // 30 minutes
 
 // Raw stability state (alternative to averaging)
 bool   g_raw_open_pending = false;
@@ -342,6 +371,25 @@ string PathAccountStatusPeer()  { return PathChannelRoot() + ((input_role==ROLE_
 // Logs (daily append + retention)
 // -----------------------------
 string PathLogsDir() { return PathChannelRoot() + "logs\\"; }
+
+// Daily histogram storage
+string PathHistogramDir() { return PathChannelRoot() + "histogram\\"; }
+
+bool HistogramEnsureDir()
+{
+   return FolderCreate(StringFormat("EAChannels\\channel_%s\\histogram", input_channel_id), FILE_COMMON);
+}
+
+string FormatDateYYYYMMDD(datetime t)
+{
+   MqlDateTime dt; TimeToStruct(t, dt);
+   return StringFormat("%04d%02d%02d", dt.year, dt.mon, dt.day);
+}
+
+string PathHistogramDailyFileFor(const string yyyymmdd)
+{
+   return PathHistogramDir() + StringFormat("hist_%s.csv", yyyymmdd);
+}
 
 string PathDailyLogFile()
 {
@@ -550,6 +598,45 @@ bool FileReadAll(const string relPath, string &out)
    return true;
 }
 
+// Write daily histogram once at end of day (local time), master only
+void MaybeWriteDailyHistogram()
+{
+   if(!(input_role==ROLE_MASTER)) return;
+   string today = FormatDateYYYYMMDD(TimeLocal());
+   static string last_written_day = "";
+   static datetime last_check_ts = 0;
+   if(TimeLocal() == last_check_ts) return;
+   last_check_ts = TimeLocal();
+   if(last_written_day == "") { last_written_day = today; return; }
+   if(today != last_written_day)
+   {
+      string ymd = last_written_day;
+      HistogramEnsureDir();
+      string path = PathHistogramDailyFileFor(ymd);
+      string buf = "type,index,count\n";
+      for(int i=0;i<=DIFF_HIST_MAX_POINTS;i++)
+      {
+         if(g_hist_open_counts[i]>0) buf += StringFormat("open,%d,%I64u\n", i, g_hist_open_counts[i]);
+      }
+      for(int j=0;j<=DIFF_HIST_MAX_POINTS;j++)
+      {
+         if(g_hist_close_counts[j]>0) buf += StringFormat("close,%d,%I64u\n", j, g_hist_close_counts[j]);
+      }
+      buf += StringFormat("summary,peak_open,%.1f\n", g_peak_open_real);
+      buf += StringFormat("summary,peak_close,%.1f\n", g_peak_close_real);
+      buf += StringFormat("summary,mode_open,%d\n", g_mode_open_index);
+      buf += StringFormat("summary,mode_close,%d\n", g_mode_close_index);
+      buf += StringFormat("summary,weighted_open,%d\n", g_weighted_open_suggest);
+      buf += StringFormat("summary,weighted_close,%d\n", g_weighted_close_suggest);
+      FileWriteAllAtomic(path, buf);
+      for(int k=0;k<=DIFF_HIST_MAX_POINTS;k++){ g_hist_open_counts[k]=0; g_hist_close_counts[k]=0; }
+      g_peak_open_real=0.0; g_peak_close_real=0.0;
+      g_mode_open_index=0; g_mode_open_count=0; g_mode_close_index=0; g_mode_close_count=0;
+      g_weighted_open_suggest=0; g_weighted_close_suggest=0;
+      last_written_day = today;
+   }
+}
+
 double PointsFromPriceDiff(double priceDiff)
 {
    if(g_point <= 0.0) return 0.0;
@@ -647,6 +734,24 @@ int ParseTimeToMinutes(const string timeStr)
    return hour * 60 + minute;
 }
 
+// Saturday helpers
+bool IsSaturday()
+{
+   MqlDateTime dt; TimeToStruct(TimeLocal(), dt);
+   return (dt.day_of_week == 6);
+}
+
+// Quiet window on Saturday morning: block open/close between 03:00-08:00
+bool IsInSaturdayQuietWindow()
+{
+   if(!IsSaturday()) return false;
+   MqlDateTime dt; TimeToStruct(TimeLocal(), dt);
+   int currentMinutes = dt.hour * 60 + dt.min;
+   int startMinutes = 3*60;  // 03:00
+   int endMinutes   = 8*60;  // 08:00
+   return (currentMinutes >= startMinutes && currentMinutes < endMinutes);
+}
+
 // Check if current time is within scheduled close only period
 bool IsInScheduledCloseOnlyPeriod()
 {
@@ -680,94 +785,100 @@ bool IsInScheduledCloseOnlyPeriod()
 void UpdateScheduledCloseOnlyMode()
 {
    if(!(input_role==ROLE_MASTER)) return;
-   if(!input_scheduled_close_only_enabled) return;
+   if(!input_scheduled_close_only_enabled && !input_sat_close_only_enabled) return;
    
-   // Check if time settings changed (invalidate cache)
-   if(g_cached_start_time != input_close_only_start_time || g_cached_end_time != input_close_only_end_time)
+   // Update caches for general schedule
+   if(input_scheduled_close_only_enabled)
    {
-      g_cached_start_time = input_close_only_start_time;
-      g_cached_end_time = input_close_only_end_time;
-      g_cached_start_minutes = ParseTimeToMinutes(input_close_only_start_time);
-      g_cached_end_minutes = ParseTimeToMinutes(input_close_only_end_time);
+      if(g_cached_start_time != input_close_only_start_time || g_cached_end_time != input_close_only_end_time)
+      {
+         g_cached_start_time = input_close_only_start_time;
+         g_cached_end_time = input_close_only_end_time;
+         g_cached_start_minutes = ParseTimeToMinutes(input_close_only_start_time);
+         g_cached_end_minutes = ParseTimeToMinutes(input_close_only_end_time);
+      }
+   }
+   // Update caches for Saturday schedule
+   if(input_sat_close_only_enabled)
+   {
+      if(g_cached_sat_start_time != input_sat_close_only_start_time || g_cached_sat_end_time != input_sat_close_only_end_time)
+      {
+         g_cached_sat_start_time = input_sat_close_only_start_time;
+         g_cached_sat_end_time = input_sat_close_only_end_time;
+         g_cached_sat_start_minutes = ParseTimeToMinutes(input_sat_close_only_start_time);
+         g_cached_sat_end_minutes = ParseTimeToMinutes(input_sat_close_only_end_time);
+      }
    }
    
-   // Use cached values for better performance
-   if(g_cached_start_minutes < 0 || g_cached_end_minutes < 0) return;
-   
+   // Compute activity
+   MqlDateTime dt; TimeToStruct(TimeLocal(), dt);
+   int currentMinutes = dt.hour * 60 + dt.min;
    bool wasActive = g_scheduled_close_only_active;
    
-   // Fast calculation using cached values
-   MqlDateTime dt;
-   TimeToStruct(TimeLocal(), dt);
-   int currentMinutes = dt.hour * 60 + dt.min;
+   bool generalActive = false;
+   if(input_scheduled_close_only_enabled && g_cached_start_minutes >= 0 && g_cached_end_minutes >= 0)
+   {
+      if(g_cached_start_minutes == g_cached_end_minutes) generalActive = false;
+      else if(g_cached_start_minutes < g_cached_end_minutes)
+         generalActive = (currentMinutes >= g_cached_start_minutes && currentMinutes < g_cached_end_minutes);
+      else
+         generalActive = (currentMinutes >= g_cached_start_minutes || currentMinutes < g_cached_end_minutes);
+   }
+   bool saturdayActive = false;
+   if(input_sat_close_only_enabled && IsSaturday() && g_cached_sat_start_minutes >= 0 && g_cached_sat_end_minutes >= 0)
+   {
+      if(g_cached_sat_start_minutes == g_cached_sat_end_minutes) saturdayActive = false;
+      else if(g_cached_sat_start_minutes < g_cached_sat_end_minutes)
+         saturdayActive = (currentMinutes >= g_cached_sat_start_minutes && currentMinutes < g_cached_sat_end_minutes);
+      else
+         saturdayActive = (currentMinutes >= g_cached_sat_start_minutes || currentMinutes < g_cached_sat_end_minutes);
+   }
    
-   if(g_cached_start_minutes == g_cached_end_minutes)
-   {
-      g_scheduled_close_only_active = false; // Invalid: same start and end time
-   }
-   else if(g_cached_start_minutes < g_cached_end_minutes)
-   {
-      // Same day: e.g., 08:00 - 17:00
-      g_scheduled_close_only_active = (currentMinutes >= g_cached_start_minutes && currentMinutes < g_cached_end_minutes);
-   }
-   else
-   {
-      // Cross midnight: e.g., 23:00 - 08:00
-      g_scheduled_close_only_active = (currentMinutes >= g_cached_start_minutes || currentMinutes < g_cached_end_minutes);
-   }
-   
-   // IMPORTANT: Auto-control g_close_only_mode based on scheduled period
-   // During scheduled period: force ON
-   // Outside scheduled period: for 5 minutes after end time, force OFF; otherwise keep manual state
+   g_scheduled_close_only_active = (generalActive || saturdayActive);
    if(g_scheduled_close_only_active)
    {
-      g_close_only_mode = true; // Force ON during scheduled period
+      g_close_only_mode = true;
    }
    else
    {
-      // Compute 5-minute grace window after end time to force OFF
       int graceMin = 5;
-      bool inGrace = false;
-      int endPlus = (g_cached_end_minutes + graceMin) % 1440;
-      if(g_cached_start_minutes < g_cached_end_minutes)
+      bool inGraceGeneral=false, inGraceSat=false;
+      if(input_scheduled_close_only_enabled && g_cached_start_minutes >= 0 && g_cached_end_minutes >= 0)
       {
-         // Same-day schedule: [start, end)
-         if(g_cached_end_minutes + graceMin < 1440)
-            inGrace = (currentMinutes >= g_cached_end_minutes && currentMinutes < (g_cached_end_minutes + graceMin));
-         else
-            inGrace = (currentMinutes >= g_cached_end_minutes || currentMinutes < endPlus);
+         int endPlus = (g_cached_end_minutes + graceMin) % 1440;
+         if(g_cached_start_minutes < g_cached_end_minutes)
+            inGraceGeneral = (currentMinutes >= g_cached_end_minutes && currentMinutes < (g_cached_end_minutes + graceMin));
+         else if(g_cached_start_minutes > g_cached_end_minutes)
+            inGraceGeneral = (currentMinutes >= g_cached_end_minutes || currentMinutes < endPlus);
       }
-      else if(g_cached_start_minutes > g_cached_end_minutes)
+      if(input_sat_close_only_enabled && IsSaturday() && g_cached_sat_start_minutes >= 0 && g_cached_sat_end_minutes >= 0)
       {
-         // Cross-midnight schedule: active when (cur>=start || cur<end)
-         // Grace after end begins at end
-         if(g_cached_end_minutes + graceMin < 1440)
-            inGrace = (currentMinutes >= g_cached_end_minutes && currentMinutes < (g_cached_end_minutes + graceMin));
-         else
-            inGrace = (currentMinutes >= g_cached_end_minutes || currentMinutes < endPlus);
+         int endPlusS = (g_cached_sat_end_minutes + graceMin) % 1440;
+         if(g_cached_sat_start_minutes < g_cached_sat_end_minutes)
+            inGraceSat = (currentMinutes >= g_cached_sat_end_minutes && currentMinutes < (g_cached_sat_end_minutes + graceMin));
+         else if(g_cached_sat_start_minutes > g_cached_sat_end_minutes)
+            inGraceSat = (currentMinutes >= g_cached_sat_end_minutes || currentMinutes < endPlusS);
       }
-      // If within grace window after scheduled end, force OFF; otherwise keep manual state
-      if(inGrace)
+      if(inGraceGeneral || inGraceSat)
       {
          g_close_only_mode = false;
       }
-      // else: do not change g_close_only_mode to preserve manual toggle
    }
    
-   // Log state changes only (reduce log spam)
    if(wasActive != g_scheduled_close_only_active)
    {
-      LogEvent("SCHEDULED_CLOSE_ONLY", StringFormat("active=%s;start=%s;end=%s;current=%02d:%02d;mode=%s", 
-               g_scheduled_close_only_active ? "true" : "false",
+      LogEvent("SCHEDULED_CLOSE_ONLY", StringFormat("active=%s;general=%s-%s;saturday=%s-%s;current=%02d:%02d;mode=%s",
+               g_scheduled_close_only_active?"true":"false",
                input_close_only_start_time, input_close_only_end_time,
-               dt.hour, dt.min, g_close_only_mode ? "ON" : "OFF"));
+               input_sat_close_only_start_time, input_sat_close_only_end_time,
+               dt.hour, dt.min, g_close_only_mode?"ON":"OFF"));
    }
 }
 
 // Check if user can manually toggle close only mode (not during scheduled period)
 bool CanUserToggleCloseOnly()
 {
-   if(!input_scheduled_close_only_enabled) return true;
+   if(!input_scheduled_close_only_enabled && !input_sat_close_only_enabled) return true;
    return !g_scheduled_close_only_active;
 }
 
@@ -933,6 +1044,7 @@ void MasterReconcilePositions()
 {
    if(!(input_role==ROLE_MASTER)) return;
    if(!g_peer_alive) return; // require peer alive to avoid acting on stale files
+   if(IsInSaturdayQuietWindow()) return; // Saturday quiet window: skip reconcile
    
    // CRITICAL: Skip reconcile during grace period to prevent immediate close after open
    if(NowMs() < g_open_grace_until_ms) { 
@@ -1091,6 +1203,7 @@ void SlaveLocalReconcile()
 {
    if(input_role==ROLE_MASTER) return;
    if(!g_peer_alive) return;
+   if(IsInSaturdayQuietWindow()) return; // Saturday quiet window: skip local reconcile
    if((NowMs()-g_last_reconcile_ms) < (ulong)EffectiveHeartbeatTimeoutMs()/2) return; // light throttle
    g_last_reconcile_ms = NowMs();
    int self = CountOpenPairs(); int peer = PeerOpenCount(); if(peer<0) return;
@@ -1481,6 +1594,8 @@ void MaybeOpenPair()
    UpdateScheduledCloseOnlyMode();
    // Close Only mode: prevent new orders
    if(g_close_only_mode) return;
+   // Saturday quiet window: block any opens
+   if(IsInSaturdayQuietWindow()) return;
    // When debug hold is active (user forced open), do not auto-open more pairs
    if(input_debug_buttons_enabled && g_debug_hold_open) return;
    if(!g_peer_alive) return; // do not operate without peer
@@ -1511,10 +1626,48 @@ void MaybeOpenPair()
    double diffOpen = DiffOpenPoints();
    bool triggerOpen = false;
    
-   // PRIORITY: Raw Stability > Averaging > Simple
-   if(input_raw_stability_enabled)
+   // PRIORITY: Averaging > Raw Stability > Simple
+   if(input_avg_filter_enabled)
    {
-      // Raw stability logic (highest priority)
+      // Averaging logic (highest priority)
+      if(input_avg_signal_cooldown_ms > 0 && (NowMs() - g_last_avg_open_signal_ms) < (ulong)input_avg_signal_cooldown_ms) return;
+      double avgOpen = SmoothedOpenDiff(diffOpen);
+      double thrEff = (double)(input_open_threshold_points + input_diff_hysteresis_points);
+      if(!g_open_pending)
+      {
+         if(avgOpen >= thrEff)
+         {
+            g_open_pending = true; g_open_snapshot_avg = avgOpen; g_open_ok_count = 0; g_open_deadline_ms = NowMs() + (ulong)input_confirm_timeout_ms;
+         }
+         return;
+      }
+      else
+      {
+         bool ok = true;
+         if(input_real_confirm_enabled)
+         {
+            double need = MathMax(g_open_snapshot_avg, thrEff) + (double)input_epsilon_diff_points;
+            ok = (diffOpen >= need);
+         }
+         else
+         {
+            ok = (avgOpen >= thrEff);
+         }
+         if(ok) g_open_ok_count++; else g_open_ok_count = 0;
+         if(g_open_ok_count >= input_confirm_ticks)
+         {
+            triggerOpen = true; g_open_pending = false; g_last_avg_open_signal_ms = NowMs();
+         }
+         else
+         {
+            if(input_confirm_timeout_ms>0 && NowMs() > g_open_deadline_ms) { g_open_pending = false; g_open_ok_count = 0; }
+            if(!triggerOpen) return;
+         }
+      }
+   }
+   else if(input_raw_stability_enabled)
+   {
+      // Raw stability logic (second priority)
       double enterThreshold = (double)input_open_threshold_points;
       double resetThreshold = (double)(input_open_threshold_points - input_raw_hysteresis_offset);
       
@@ -1562,44 +1715,6 @@ void MaybeOpenPair()
          }
          
          if(!triggerOpen) return;
-      }
-   }
-   else if(input_avg_filter_enabled)
-   {
-      // Original averaging logic (medium priority)
-      if(input_avg_signal_cooldown_ms > 0 && (NowMs() - g_last_avg_open_signal_ms) < (ulong)input_avg_signal_cooldown_ms) return;
-      double avgOpen = SmoothedOpenDiff(diffOpen);
-      double thrEff = (double)(input_open_threshold_points + input_diff_hysteresis_points);
-      if(!g_open_pending)
-      {
-         if(avgOpen >= thrEff)
-         {
-            g_open_pending = true; g_open_snapshot_avg = avgOpen; g_open_ok_count = 0; g_open_deadline_ms = NowMs() + (ulong)input_confirm_timeout_ms;
-         }
-         return;
-      }
-      else
-      {
-         bool ok = true;
-         if(input_real_confirm_enabled)
-         {
-            double need = MathMax(g_open_snapshot_avg, thrEff) + (double)input_epsilon_diff_points;
-            ok = (diffOpen >= need);
-         }
-         else
-         {
-            ok = (avgOpen >= thrEff);
-         }
-         if(ok) g_open_ok_count++; else g_open_ok_count = 0;
-         if(g_open_ok_count >= input_confirm_ticks)
-         {
-            triggerOpen = true; g_open_pending = false; g_last_avg_open_signal_ms = NowMs();
-         }
-         else
-         {
-            if(input_confirm_timeout_ms>0 && NowMs() > g_open_deadline_ms) { g_open_pending = false; g_open_ok_count = 0; }
-            if(!triggerOpen) return;
-         }
       }
    }
    else
@@ -1822,6 +1937,8 @@ void MaybeClosePair()
    if(!(input_role==ROLE_MASTER)) return;
    // In debug mode, keep positions open until user clicks Close Now
    if(input_debug_buttons_enabled && g_debug_hold_open) return;
+   // Saturday quiet window: block any closes
+   if(IsInSaturdayQuietWindow()) return;
    
    // CRITICAL: Enhanced protection against immediate close after open
    // Do not auto-close while waiting for slave to acknowledge an open
@@ -1851,10 +1968,48 @@ void MaybeClosePair()
    double diffClose = DiffClosePoints();
    bool triggerClose = false;
    
-   // PRIORITY: Raw Stability > Averaging > Simple
-   if(input_raw_stability_enabled)
+   // PRIORITY: Averaging > Raw Stability > Simple
+   if(input_avg_filter_enabled)
    {
-      // Raw stability logic for close
+      // Averaging logic for close (highest priority)
+      if(input_avg_signal_cooldown_ms > 0 && (NowMs() - g_last_avg_close_signal_ms) < (ulong)input_avg_signal_cooldown_ms) return;
+      double avgClose = SmoothedCloseDiff(diffClose);
+      double thrEff = (double)(input_close_threshold_points + input_diff_hysteresis_points);
+      if(!g_close_pending)
+      {
+         if(avgClose >= thrEff)
+         {
+            g_close_pending = true; g_close_snapshot_avg = avgClose; g_close_ok_count = 0; g_close_deadline_ms = NowMs() + (ulong)input_confirm_timeout_ms;
+         }
+         return;
+      }
+      else
+      {
+         bool ok = true;
+         if(input_real_confirm_enabled)
+         {
+            double need = MathMax(g_close_snapshot_avg, thrEff) + (double)input_epsilon_diff_points;
+            ok = (diffClose >= need);
+         }
+         else
+         {
+            ok = (avgClose >= thrEff);
+         }
+         if(ok) g_close_ok_count++; else g_close_ok_count = 0;
+         if(g_close_ok_count >= input_confirm_ticks)
+         {
+            triggerClose = true; g_close_pending = false; g_last_avg_close_signal_ms = NowMs();
+         }
+         else
+         {
+            if(input_confirm_timeout_ms>0 && NowMs() > g_close_deadline_ms) { g_close_pending = false; g_close_ok_count = 0; }
+            if(!triggerClose) return;
+         }
+      }
+   }
+   else if(input_raw_stability_enabled)
+   {
+      // Raw stability logic for close (second priority)
       double enterThreshold = (double)input_close_threshold_points;
       double resetThreshold = (double)(input_close_threshold_points - input_raw_hysteresis_offset);
       
@@ -1902,44 +2057,6 @@ void MaybeClosePair()
          }
          
          if(!triggerClose) return;
-      }
-   }
-   else if(input_avg_filter_enabled)
-   {
-      // Original averaging logic for close
-      if(input_avg_signal_cooldown_ms > 0 && (NowMs() - g_last_avg_close_signal_ms) < (ulong)input_avg_signal_cooldown_ms) return;
-      double avgClose = SmoothedCloseDiff(diffClose);
-      double thrEff = (double)(input_close_threshold_points + input_diff_hysteresis_points);
-      if(!g_close_pending)
-      {
-         if(avgClose >= thrEff)
-         {
-            g_close_pending = true; g_close_snapshot_avg = avgClose; g_close_ok_count = 0; g_close_deadline_ms = NowMs() + (ulong)input_confirm_timeout_ms;
-         }
-         return;
-      }
-      else
-      {
-         bool ok = true;
-         if(input_real_confirm_enabled)
-         {
-            double need = MathMax(g_close_snapshot_avg, thrEff) + (double)input_epsilon_diff_points;
-            ok = (diffClose >= need);
-         }
-         else
-         {
-            ok = (avgClose >= thrEff);
-         }
-         if(ok) g_close_ok_count++; else g_close_ok_count = 0;
-         if(g_close_ok_count >= input_confirm_ticks)
-         {
-            triggerClose = true; g_close_pending = false; g_last_avg_close_signal_ms = NowMs();
-         }
-         else
-         {
-            if(input_confirm_timeout_ms>0 && NowMs() > g_close_deadline_ms) { g_close_pending = false; g_close_ok_count = 0; }
-            if(!triggerClose) return;
-         }
       }
    }
    else
@@ -2018,6 +2135,16 @@ void SlaveProcessOpenCmd()
    double lot_slave = StrToDouble(fields[7]);
    ulong created_ms = (ulong)StrToInteger(fields[9]);
    int expire_ms    = (int)StrToInteger(fields[10]);
+
+   // Saturday quiet window: ACK fail to let master rollback
+   if(IsInSaturdayQuietWindow())
+   {
+      string ackSat = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 0, 451);
+      FileWriteAllAtomic(PathOpenAckSelf(), ackSat);
+      LogEvent("OPEN_ACK_SLAVE", StringFormat("cmd_id=%s;ok=0;err=%d;reason=SATURDAY_QUIET", cmd_id, 451));
+      if(input_verbose_journal_logs) Print("[Slave] Saturday quiet window, reject open cmd_id=", cmd_id);
+      return;
+   }
 
    // Idempotency: skip if already acknowledged/processed this cmd
    string sAckOpen;
@@ -2114,6 +2241,15 @@ void SlaveProcessCloseCmd()
    string pair_id = fields[3];
    ulong created_ms = (ulong)StrToInteger(fields[5]);
    int expire_ms = (int)StrToInteger(fields[6]);
+
+    // Saturday quiet window: do not close; ack with fail
+   if(IsInSaturdayQuietWindow())
+   {
+      string ackSat = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 0, 451);
+      FileWriteAll(PathCloseAckSelf(), ackSat);
+      LogEvent("CLOSE_ACK_SLAVE", StringFormat("cmd_id=%s;ok=0;err=%d;reason=SATURDAY_QUIET", cmd_id, 451));
+      return;
+   }
 
     // Idempotency: skip if already acknowledged/processed this close
     string sAckClose;
@@ -2416,6 +2552,18 @@ void DisplayUpdate()
    double dClose = DiffClosePoints();
    double aOpen = input_avg_filter_enabled ? SmoothedOpenDiff(dOpen) : dOpen;
    double aClose = input_avg_filter_enabled ? SmoothedCloseDiff(dClose) : dClose;
+   // Update peaks and histograms only on master with fresh quotes (lightweight O(1))
+   if(input_role==ROLE_MASTER && QuotesFresh())
+   {
+      if(dOpen > g_peak_open_real) g_peak_open_real = dOpen;
+      if(dClose > g_peak_close_real) g_peak_close_real = dClose;
+      int idxO = (int)MathFloor(MathMax(0.0, dOpen)); if(idxO>DIFF_HIST_MAX_POINTS) idxO = DIFF_HIST_MAX_POINTS;
+      int idxC = (int)MathFloor(MathMax(0.0, dClose)); if(idxC>DIFF_HIST_MAX_POINTS) idxC = DIFF_HIST_MAX_POINTS;
+      g_hist_open_counts[idxO]++;
+      if(g_hist_open_counts[idxO] > g_mode_open_count) { g_mode_open_count = g_hist_open_counts[idxO]; g_mode_open_index = idxO; }
+      g_hist_close_counts[idxC]++;
+      if(g_hist_close_counts[idxC] > g_mode_close_count) { g_mode_close_count = g_hist_close_counts[idxC]; g_mode_close_index = idxC; }
+   }
    int line = 0;
    DisplaySetLine(line++, StringFormat("role=%s  channel=%s  symbol=%s", role, input_channel_id, g_symbol));
    string syncTxt = g_peer_alive?"OK":"WAITING";
@@ -2444,54 +2592,20 @@ void DisplayUpdate()
    if(input_role==ROLE_MASTER)
    {
             string modeStr = "";
-      if(input_raw_stability_enabled)
-         modeStr = StringFormat("RAW STABILITY | Ticks=%d Offset=%d Timeout=%dms", 
-                               input_raw_stability_ticks, input_raw_hysteresis_offset, input_raw_stability_timeout_ms);
-      else if(input_avg_filter_enabled)
+      if(input_avg_filter_enabled)
          modeStr = StringFormat("AVG ON | EMA-%d%s | H=%d E=%d CF=%d CD=%dms",
                                input_avg_period, (input_use_prefilter_median?StringFormat(" + Med-%d", input_prefilter_window):""),
                                input_diff_hysteresis_points, input_epsilon_diff_points, input_confirm_ticks, input_avg_signal_cooldown_ms);
+      else if(input_raw_stability_enabled)
+         modeStr = StringFormat("RAW STABILITY | Ticks=%d Offset=%d Timeout=%dms", 
+                               input_raw_stability_ticks, input_raw_hysteresis_offset, input_raw_stability_timeout_ms);
       else
          modeStr = "SIMPLE | RealOnly";
 
       DisplaySetLine(line++, modeStr);
       
       // Enhanced status display with detailed info
-      if(input_raw_stability_enabled)
-      {
-         // Raw stability status display with realtime count
-         string stOpen = "READY";
-         string stClose = "READY";
-         
-         if(g_raw_open_pending)
-         {
-            int timeLeft = (int)((g_raw_open_start_ms + (ulong)input_raw_stability_timeout_ms > NowMs()) ? 
-                                (g_raw_open_start_ms + (ulong)input_raw_stability_timeout_ms - NowMs()) : 0);
-            stOpen = StringFormat("COUNT %d/%d (%.0fms)", g_raw_open_stable_count, input_raw_stability_ticks, timeLeft);
-         }
-         else if(dOpen >= input_open_threshold_points)
-         {
-            stOpen = "TRIGGERED";
-         }
-         
-         if(g_raw_close_pending)
-         {
-            int timeLeft = (int)((g_raw_close_start_ms + (ulong)input_raw_stability_timeout_ms > NowMs()) ? 
-                                (g_raw_close_start_ms + (ulong)input_raw_stability_timeout_ms - NowMs()) : 0);
-            stClose = StringFormat("COUNT %d/%d (%.0fms)", g_raw_close_stable_count, input_raw_stability_ticks, timeLeft);
-         }
-         else if(dClose >= input_close_threshold_points)
-         {
-            stClose = "TRIGGERED";
-         }
-         
-         // Show realtime diff and count status prominently
-         DisplaySetLine(line++, StringFormat("Open: %.1f (Thr=%d Reset=%d) | %s", 
-            dOpen, input_open_threshold_points, (input_open_threshold_points - input_raw_hysteresis_offset), stOpen));
-         DisplaySetLine(line++, StringFormat("Close: %.1f (Thr=%d Reset=%d) | %s", 
-            dClose, input_close_threshold_points, (input_close_threshold_points - input_raw_hysteresis_offset), stClose));
-      }
-      else if(input_avg_filter_enabled)
+      if(input_avg_filter_enabled)
       {
          double thrOpenEff = (double)(input_open_threshold_points + input_diff_hysteresis_points);
          double thrCloseEff = (double)(input_close_threshold_points + input_diff_hysteresis_points);
@@ -2553,6 +2667,40 @@ void DisplayUpdate()
             if(cooldownStatus != "") DisplaySetLine(line++, "Signal Cooldown: " + cooldownStatus);
          }
       }
+      else if(input_raw_stability_enabled)
+      {
+         // Raw stability status display with realtime count
+         string stOpen = "READY";
+         string stClose = "READY";
+         
+         if(g_raw_open_pending)
+         {
+            int timeLeft = (int)((g_raw_open_start_ms + (ulong)input_raw_stability_timeout_ms > NowMs()) ? 
+                                (g_raw_open_start_ms + (ulong)input_raw_stability_timeout_ms - NowMs()) : 0);
+            stOpen = StringFormat("COUNT %d/%d (%.0fms)", g_raw_open_stable_count, input_raw_stability_ticks, timeLeft);
+         }
+         else if(dOpen >= input_open_threshold_points)
+         {
+            stOpen = "TRIGGERED";
+         }
+         
+         if(g_raw_close_pending)
+         {
+            int timeLeft = (int)((g_raw_close_start_ms + (ulong)input_raw_stability_timeout_ms > NowMs()) ? 
+                                (g_raw_close_start_ms + (ulong)input_raw_stability_timeout_ms - NowMs()) : 0);
+            stClose = StringFormat("COUNT %d/%d (%.0fms)", g_raw_close_stable_count, input_raw_stability_ticks, timeLeft);
+         }
+         else if(dClose >= input_close_threshold_points)
+         {
+            stClose = "TRIGGERED";
+         }
+         
+         // Show realtime diff and count status prominently
+         DisplaySetLine(line++, StringFormat("Open: %.1f (Thr=%d Reset=%d) | %s", 
+            dOpen, input_open_threshold_points, (input_open_threshold_points - input_raw_hysteresis_offset), stOpen));
+         DisplaySetLine(line++, StringFormat("Close: %.1f (Thr=%d Reset=%d) | %s", 
+            dClose, input_close_threshold_points, (input_close_threshold_points - input_raw_hysteresis_offset), stClose));
+      }
       else
       {
          // Simple display for non-averaging mode
@@ -2591,6 +2739,18 @@ void DisplayUpdate()
          DisplaySetLine(line++, StringFormat("Success Rate: %.1f%% (%I64u/%I64u) AvgAck: %I64ums", 
                         success_rate, g_successful_opens, g_total_opens, avg_ack));
          DisplaySetLine(line++, StringFormat("Rollbacks: %I64u", g_rollback_count));
+
+      // Peak real diffs and histogram-based suggestions
+      int peakOpenPts = (int)MathFloor(MathMax(0.0, g_peak_open_real));
+      int peakClosePts = (int)MathFloor(MathMax(0.0, g_peak_close_real));
+      DisplaySetLine(line++, StringFormat("Peak Real: open=%.1f close=%.1f", g_peak_open_real, g_peak_close_real));
+      DisplaySetLine(line++, StringFormat("Mode Open[0..%d]=%d cnt=%I64u (suggest=%d)", peakOpenPts, g_mode_open_index, g_mode_open_count, g_mode_open_index));
+      DisplaySetLine(line++, StringFormat("Mode Close[0..%d]=%d cnt=%I64u (suggest=%d)", peakClosePts, g_mode_close_index, g_mode_close_count, g_mode_close_index));
+      if(g_weighted_open_suggest>0 || g_weighted_close_suggest>0)
+      {
+         DisplaySetLine(line++, StringFormat("Weighted Suggest: open=%d close=%d (alpha=%.1f W=%d min=%d)",
+            g_weighted_open_suggest, g_weighted_close_suggest, g_weighted_alpha, g_weighted_window, g_weighted_min_count));
+      }
    }
    int effMode = DryMode();
    string effModeStr = (effMode==DRY_NONE?"NONE":(effMode==DRY_WRITE_CMD_ONLY?"WRITE_CMD_ONLY":"WRITE_CMD_AND_FAKE_ACK"));
@@ -2824,6 +2984,15 @@ int OnInit()
    g_point  = MarketInfo(g_symbol, MODE_POINT);
    g_magic  = input_magic_number_base + (int)StringGetCharacter(input_channel_id, 0);
 
+   // Require Auto Trading enabled at terminal and EA levels
+   bool terminalAuto = (bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
+   bool programAuto = (bool)MQLInfoInteger(MQL_TRADE_ALLOWED);
+   if(!terminalAuto || !programAuto)
+   {
+      if(input_verbose_journal_logs) Print("Auto Trading is disabled. Enable AutoTrading and 'Allow live trading'.");
+      return(INIT_FAILED);
+   }
+
    FolderEnsure();
    if(!AcquireRoleLock()) { g_role_conflict = true; }
    DisplayInit();
@@ -2871,12 +3040,51 @@ void OnTimer()
       ReadMasterConfigForSlave();
    }
    
+   // Weighted suggest refresh (master only, infrequent)
+   if(input_role==ROLE_MASTER)
+   {
+      ulong noww = NowMs();
+      if(noww - g_last_weighted_suggest_ms >= (ulong)g_weighted_refresh_ms)
+      {
+         g_last_weighted_suggest_ms = noww;
+         int peakO = (int)MathFloor(MathMax(0.0, g_peak_open_real));
+         int peakC = (int)MathFloor(MathMax(0.0, g_peak_close_real));
+         int W = (g_weighted_window<1?1:g_weighted_window);
+         if((W % 2)==0) W++;
+         // Open weighted suggest
+         double bestScoreO = -1.0; int bestIdxO = 0;
+         for(int i=1;i<=peakO && i<=DIFF_HIST_MAX_POINTS;i++)
+         {
+            int lo = i - W; if(lo<1) lo=1; int hi = i + W; if(hi>DIFF_HIST_MAX_POINTS) hi=DIFF_HIST_MAX_POINTS; if(hi>peakO) hi=peakO;
+            ulong sum=0; for(int j=lo;j<=hi;j++) sum += g_hist_open_counts[j];
+            if(sum < (ulong)g_weighted_min_count) continue;
+            double score = MathPow((double)i, g_weighted_alpha) * (double)sum;
+            if(score > bestScoreO){ bestScoreO=score; bestIdxO=i; }
+         }
+         g_weighted_open_suggest = bestIdxO;
+         // Close weighted suggest
+         double bestScoreC = -1.0; int bestIdxC = 0;
+         for(int i=1;i<=peakC && i<=DIFF_HIST_MAX_POINTS;i++)
+         {
+            int lo = i - W; if(lo<1) lo=1; int hi = i + W; if(hi>DIFF_HIST_MAX_POINTS) hi=DIFF_HIST_MAX_POINTS; if(hi>peakC) hi=peakC;
+            ulong sum=0; for(int j=lo;j<=hi;j++) sum += g_hist_close_counts[j];
+            if(sum < (ulong)g_weighted_min_count) continue;
+            double score = MathPow((double)i, g_weighted_alpha) * (double)sum;
+            if(score > bestScoreC){ bestScoreC=score; bestIdxC=i; }
+         }
+         g_weighted_close_suggest = bestIdxC;
+      }
+   }
+   
    // === SCHEDULED CLOSE ONLY - ทุก 30 วินาที (เพื่อประสิทธิภาพ) ===
-   if(timer_count % 30 == 0 && input_role==ROLE_MASTER && input_scheduled_close_only_enabled)
+   if(timer_count % 30 == 0 && input_role==ROLE_MASTER && (input_scheduled_close_only_enabled || input_sat_close_only_enabled))
    {
       UpdateScheduledCloseOnlyMode();
    }
    
+   // Check end-of-day histogram write
+   MaybeWriteDailyHistogram();
+
    DisplayUpdate();
 }
 
