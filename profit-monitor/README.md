@@ -154,7 +154,7 @@ docker-compose --profile production up -d
 #### Vercel
 ```bash
 yarn build
-vercel deploy
+npx vercel deploy
 ```
 
 ##### Switching Vercel Account/Team
@@ -166,16 +166,16 @@ CLI (from the `profit-monitor` directory):
 rm -rf .vercel
 
 # Switch to desired team/account (optional)
-vercel switch
+npx vercel switch
 
 # Re-authenticate if needed
-vercel logout && vercel login
+npx vercel logout && npx vercel login
 
 # Link to the new scope/team
-vercel link
+npx vercel link
 
 # Deploy
-vercel deploy
+npx vercel deploy
 ```
 
 Git Integration (Dashboard):

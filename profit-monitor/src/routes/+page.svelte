@@ -296,7 +296,7 @@
 	function isInsufficientBalance(account: AccountSummary): boolean {
 		const min = getBrokerMinFor(account.broker_name);
 		if (min === undefined) return false;
-		return account.latest_balance <= min;
+		return account.latest_equity <= min;
 	}
 
 	// PIN Protection Functions
@@ -949,7 +949,7 @@
 						</button>
 					</div>
 					<p class="text-xs text-gray-500 mt-1">
-						Map broker (case-insensitive) to minimum margin. Used to flag low balance rows.
+						Map broker (case-insensitive) to minimum margin. Used to flag low equity rows.
 					</p>
 				</fieldset>
 			</div>
