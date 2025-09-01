@@ -2133,7 +2133,7 @@ void SlaveProcessOpenCmd()
    string sym    = fields[4];
    string mside  = fields[5];
    double lot_slave = StrToDouble(fields[7]);
-   ulong created_ms = (ulong)StrToInteger(fields[9]);
+   ulong created_ms = (ulong)StrToDouble(fields[9]);
    int expire_ms    = (int)StrToInteger(fields[10]);
 
    // Saturday quiet window: ACK fail to let master rollback
@@ -2239,7 +2239,7 @@ void SlaveProcessCloseCmd()
    if(n < 7) return;
    string cmd_id = fields[1];
    string pair_id = fields[3];
-   ulong created_ms = (ulong)StrToInteger(fields[5]);
+   ulong created_ms = (ulong)StrToDouble(fields[5]);
    int expire_ms = (int)StrToInteger(fields[6]);
 
     // Saturday quiet window: do not close; ack with fail
