@@ -18,6 +18,17 @@ export const POST: RequestHandler = async ({ request }) => {
 			data.unit = 1;
 		}
 
+		// Normalize last position info
+		const side = (data.lastPositionSide || 'UNKNOWN').toUpperCase();
+		if (side !== 'BUY' && side !== 'SELL') {
+			data.lastPositionSide = 'UNKNOWN';
+		} else {
+			data.lastPositionSide = side as any;
+		}
+		if (typeof data.lastPositionEntryPrice !== 'number' || !isFinite(data.lastPositionEntryPrice)) {
+			data.lastPositionEntryPrice = 0;
+		}
+
 		// Add timestamp if not provided (store in UTC; format to Asia/Bangkok on UI)
 		if (!data.timestamp) {
 			data.timestamp = new Date().toISOString();

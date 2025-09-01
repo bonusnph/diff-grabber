@@ -8,13 +8,15 @@ export const GET: RequestHandler = async () => {
 		capital_per_unit: await storage.getCapitalPerUnit(),
 		total_active_accounts: await storage.getTotalActiveAccounts(),
 		unit_mappings: await storage.getUnitMappings(),
-		broker_min_margins: await storage.getBrokerMinMargins()
+		broker_min_margins: await storage.getBrokerMinMargins(),
+		unit_withdrawals: await storage.getUnitWithdrawals(),
+		account_withdrawals: await storage.getAccountWithdrawals()
 	});
 };
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
-		const { initial_capital, capital_per_unit, total_active_accounts, unit_mappings, broker_min_margins } = await request.json();
+		const { initial_capital, capital_per_unit, total_active_accounts, unit_mappings, broker_min_margins, unit_withdrawals, account_withdrawals } = await request.json();
 		
 		if (initial_capital !== undefined) {
 			if (typeof initial_capital !== 'number' || initial_capital < 0) {
@@ -56,6 +58,32 @@ export const POST: RequestHandler = async ({ request }) => {
 			}
 			await storage.setBrokerMinMargins(broker_min_margins);
 		}
+
+		if (unit_withdrawals !== undefined) {
+			if (typeof unit_withdrawals !== 'object' || Array.isArray(unit_withdrawals)) {
+				return json({ error: 'Invalid unit withdrawals' }, { status: 400 });
+			}
+			const normalized: Record<number, number> = {};
+			for (const [k, v] of Object.entries(unit_withdrawals)) {
+				const unit = parseInt(k as string);
+				const num = typeof v === 'number' && isFinite(v) ? v : 0;
+				if (!isNaN(unit)) normalized[unit] = num;
+			}
+			await storage.setUnitWithdrawals(normalized);
+		}
+
+		if (account_withdrawals !== undefined) {
+			if (typeof account_withdrawals !== 'object' || Array.isArray(account_withdrawals)) {
+				return json({ error: 'Invalid account withdrawals' }, { status: 400 });
+			}
+			const normalizedAcc: Record<string, number> = {};
+			for (const [k, v] of Object.entries(account_withdrawals)) {
+				const key = String(k);
+				const num = typeof v === 'number' && isFinite(v) ? v : 0;
+				normalizedAcc[key] = num;
+			}
+			await storage.setAccountWithdrawals(normalizedAcc);
+		}
 		
 		return json({ 
 			status: 'success',
@@ -63,7 +91,9 @@ export const POST: RequestHandler = async ({ request }) => {
 			capital_per_unit: await storage.getCapitalPerUnit(),
 			total_active_accounts: await storage.getTotalActiveAccounts(),
 			unit_mappings: await storage.getUnitMappings(),
-			broker_min_margins: await storage.getBrokerMinMargins()
+			broker_min_margins: await storage.getBrokerMinMargins(),
+			unit_withdrawals: await storage.getUnitWithdrawals(),
+			account_withdrawals: await storage.getAccountWithdrawals()
 		});
 		
 	} catch (error) {

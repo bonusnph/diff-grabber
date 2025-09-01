@@ -75,12 +75,36 @@ void SendAccountData()
     double balance = AccountInfoDouble(ACCOUNT_BALANCE);
     double equity = AccountInfoDouble(ACCOUNT_EQUITY);
     
+    // Determine latest open position side and entry price (BUY/SELL only)
+    string lastSide = "UNKNOWN";
+    double lastPrice = 0.0;
+    long latestTime = 0;
+    int symCount = SymbolsTotal(true);
+    for(int s = 0; s < symCount; s++)
+    {
+        string sym = SymbolName(s, true);
+        if(PositionSelect(sym))
+        {
+            long pType = (long)PositionGetInteger(POSITION_TYPE);
+            if(pType == POSITION_TYPE_BUY || pType == POSITION_TYPE_SELL)
+            {
+                long openTime = (long)PositionGetInteger(POSITION_TIME);
+                if(openTime >= latestTime)
+                {
+                    latestTime = openTime;
+                    lastSide = (pType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+                    lastPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+                }
+            }
+        }
+    }
+    
     // Create GMT+7 timestamp using local time for consistency
     datetime localTime = TimeLocal();
     string timestamp = CreateGMT7Timestamp(localTime);
     
     // Create JSON payload
-    string jsonData = CreateJSONPayload(accountNumber, accountName, brokerName, balance, equity, timestamp, Unit);
+    string jsonData = CreateJSONPayload(accountNumber, accountName, brokerName, balance, equity, timestamp, Unit, lastSide, lastPrice);
     
     if(EnableLogging) {
         Print("Sending account data:");
@@ -99,7 +123,7 @@ void SendAccountData()
 //+------------------------------------------------------------------+
 //| Create JSON payload                                              |
 //+------------------------------------------------------------------+
-string CreateJSONPayload(string accountNum, string accountName, string broker, double balance, double equity, string timestamp, int unit)
+string CreateJSONPayload(string accountNum, string accountName, string broker, double balance, double equity, string timestamp, int unit, string lastSide, double lastPrice)
 {
     string json = "{";
     json += "\"account_number\":\"" + accountNum + "\",";
@@ -108,7 +132,9 @@ string CreateJSONPayload(string accountNum, string accountName, string broker, d
     json += "\"balance\":" + DoubleToString(balance, 2) + ",";
     json += "\"equity\":" + DoubleToString(equity, 2) + ",";
     json += "\"unit\":" + IntegerToString(unit) + ",";
-    json += "\"timestamp\":\"" + timestamp + "\"";
+    json += "\"timestamp\":\"" + timestamp + "\",";
+    json += "\"lastPositionSide\":\"" + lastSide + "\",";
+    json += "\"lastPositionEntryPrice\":" + DoubleToString(lastPrice, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
     json += "}";
     
     return json;

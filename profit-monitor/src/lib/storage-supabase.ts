@@ -30,6 +30,8 @@ class SupabaseStorage {
 			equity DECIMAL(15,2) NOT NULL,
 			unit INTEGER NOT NULL DEFAULT 1,
 			timestamp TIMESTAMPTZ NOT NULL,
+			lastPositionSide VARCHAR(10) DEFAULT 'UNKNOWN',
+			lastPositionEntryPrice DECIMAL(15,5) DEFAULT 0,
 			created_at TIMESTAMPTZ DEFAULT NOW(),
 			UNIQUE(account_number, timestamp)
 		);
@@ -67,7 +69,9 @@ class SupabaseStorage {
 				balance: data.balance,
 				equity: data.equity,
 				unit: data.unit,
-				timestamp: data.timestamp
+				timestamp: data.timestamp,
+				lastPositionSide: data.lastPositionSide ?? 'UNKNOWN',
+				lastPositionEntryPrice: data.lastPositionEntryPrice ?? 0
 			}, {
 				onConflict: 'account_number,timestamp'
 			});
@@ -81,7 +85,7 @@ class SupabaseStorage {
 	async getAllAccountData(): Promise<AccountData[]> {
 		const { data, error } = await supabase
 			.from('accounts')
-			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp')
+			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, lastPositionSide, lastPositionEntryPrice')
 			.order('timestamp', { ascending: false });
 
 		if (error) {
@@ -93,16 +97,8 @@ class SupabaseStorage {
 	}
 
 	async getAccountSummaries(): Promise<AccountSummary[]> {
-		// Get latest record for each account using a window function
-		const { data, error } = await supabase.rpc('get_account_summaries');
-
-		if (error) {
-			console.error('Error getting account summaries:', error);
-			// Fallback to manual grouping if RPC function doesn't exist
-			return this.getAccountSummariesFallback();
-		}
-
-		return data || [];
+		// Use fallback method to ensure new fields (lastPositionSide, lastPositionEntryPrice) are included
+		return this.getAccountSummariesFallback();
 	}
 
 	private async getAccountSummariesFallback(): Promise<AccountSummary[]> {
@@ -125,7 +121,9 @@ class SupabaseStorage {
 					latest_balance: record.balance,
 					latest_equity: record.equity,
 					unit: record.unit,
-					last_update: record.timestamp
+					last_update: record.timestamp,
+					lastPositionSide: record.lastPositionSide ?? 'UNKNOWN',
+					lastPositionEntryPrice: record.lastPositionEntryPrice ?? 0
 				});
 			}
 		});
@@ -224,12 +222,14 @@ class SupabaseStorage {
 	async getUnitStats(): Promise<Array<{unit: number, totalBalance: number, profitLoss: number, accountCount: number}>> {
 		const groupedAccounts = await this.getAccountsByUnit();
 		const capitalPerUnit = await this.getCapitalPerUnit();
+		const accountWithdrawals = await this.getAccountWithdrawals();
 		const stats: Array<{unit: number, totalBalance: number, profitLoss: number, accountCount: number}> = [];
 		
 		Object.entries(groupedAccounts).forEach(([unitStr, accounts]) => {
 			const unit = parseInt(unitStr);
 			const totalBalance = accounts.reduce((sum, account) => sum + account.latest_balance, 0);
-			const profitLoss = totalBalance - capitalPerUnit;
+			const withdrawalAdjust = accounts.reduce((sum, acc) => sum + (accountWithdrawals[acc.account_number] ?? 0), 0);
+			const profitLoss = totalBalance - capitalPerUnit + withdrawalAdjust;
 			const accountCount = accounts.length;
 			
 			stats.push({
@@ -243,10 +243,86 @@ class SupabaseStorage {
 		return stats.sort((a, b) => a.unit - b.unit);
 	}
 
+	async setAccountWithdrawals(mappings: Record<string, number>): Promise<void> {
+		const { error } = await supabase
+			.from('settings')
+			.upsert({
+				setting_key: 'account_withdrawals',
+				setting_value: JSON.stringify(mappings),
+				updated_at: new Date().toISOString()
+			});
+
+		if (error) {
+			console.error('Error setting account withdrawals:', error);
+			throw error;
+		}
+	}
+
+	async getAccountWithdrawals(): Promise<Record<string, number>> {
+		const { data, error } = await supabase
+			.from('settings')
+			.select('setting_value')
+			.eq('setting_key', 'account_withdrawals')
+			.single();
+
+		if (error && error.code !== 'PGRST116') {
+			console.error('Error getting account withdrawals:', error);
+			throw error;
+		}
+
+		if (data) {
+			try {
+				return JSON.parse(data.setting_value);
+			} catch (parseError) {
+				console.error('Error parsing account withdrawals:', parseError);
+			}
+		}
+
+		return {};
+	}
+
+	async setUnitWithdrawals(mappings: Record<number, number>): Promise<void> {
+		const { error } = await supabase
+			.from('settings')
+			.upsert({
+				setting_key: 'unit_withdrawals',
+				setting_value: JSON.stringify(mappings),
+				updated_at: new Date().toISOString()
+			});
+
+		if (error) {
+			console.error('Error setting unit withdrawals:', error);
+			throw error;
+		}
+	}
+
+	async getUnitWithdrawals(): Promise<Record<number, number>> {
+		const { data, error } = await supabase
+			.from('settings')
+			.select('setting_value')
+			.eq('setting_key', 'unit_withdrawals')
+			.single();
+
+		if (error && error.code !== 'PGRST116') {
+			console.error('Error getting unit withdrawals:', error);
+			throw error;
+		}
+
+		if (data) {
+			try {
+				return JSON.parse(data.setting_value);
+			} catch (parseError) {
+				console.error('Error parsing unit withdrawals:', parseError);
+			}
+		}
+
+		return {};
+	}
+
 	async getAccountHistory(accountNumber: string, limit: number = 100): Promise<AccountData[]> {
 		const { data, error } = await supabase
 			.from('accounts')
-			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp')
+			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, lastPositionSide, lastPositionEntryPrice')
 			.eq('account_number', accountNumber)
 			.order('timestamp', { ascending: false })
 			.limit(limit);

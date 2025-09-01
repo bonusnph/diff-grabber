@@ -8,12 +8,14 @@ export const GET: RequestHandler = async () => {
 		const summaries = await storage.getAccountSummaries();
 		const unitGroups = await storage.getAccountsByUnit();
 		const unitStats = await storage.getUnitStats();
+		const accountWithdrawals = await storage.getAccountWithdrawals();
 		
 		return json({
 			stats,
 			summaries,
 			unitGroups,
-			unitStats
+			unitStats,
+			accountWithdrawals
 		});
 		
 	} catch (error) {
