@@ -126,6 +126,9 @@ bool g_has_slave_balance = false;
 int    g_digits;
 double g_point;
 int    g_magic;
+// Peer pricing granularity
+int    g_peer_digits = -1;
+double g_peer_point = 0.0;
 // Anchor time when both sides confirmed open (used for close cooldown)
 datetime g_last_pair_both_open_time = 0;
 
@@ -647,6 +650,14 @@ double PointsFromPriceDiff(double priceDiff)
 {
    if(g_point <= 0.0) return 0.0;
    return priceDiff / g_point;
+}
+
+// Choose coarser point between self and peer for cross-broker consistency
+double EffectivePoint()
+{
+   if(g_peer_point > 0.0)
+      return MathMax(g_point, g_peer_point);
+   return g_point;
 }
 
 bool IsMasterSideBuyEffective()
@@ -1387,7 +1398,7 @@ void WriteHeartbeat()
    if(DrySuppressHeartbeat()) return;
    // Include basic account metrics so peer can read balance
    double bal = AccountBalance(); double eq = AccountEquity();
-   string line = StringFormat("%I64u,%d,%d,%d,%s,%.2f,%.2f\n", NowMs(), __MQLBUILD__, AccountNumber(), g_magic, "1.0.0", bal, eq);
+   string line = StringFormat("%I64u,%d,%d,%d,%s,%.2f,%.2f,%d,%.10f\n", NowMs(), __MQLBUILD__, AccountNumber(), g_magic, "1.0.0", bal, eq, g_digits, g_point);
    FileWriteAll(PathHeartbeatSelf(), line);
 
    // Also write a compact account status file
@@ -1465,11 +1476,18 @@ bool ReadPeerHeartbeat(ulong &peer_ms)
 {
    string s;
    if(!FileReadAll(PathHeartbeatPeer(), s)) return false;
-   int p = StringFind(s, ",");
-   if(p<0) return false;
-   string ts = StringSubstr(s, 0, p);
+   string f[]; int n = StringSplit(TrimAll(s), ',', f);
+   if(n < 1) return false;
    // Use floating conversion to preserve 64-bit millisecond timestamp
-   peer_ms = (ulong)StrToDouble(ts);
+   peer_ms = (ulong)StrToDouble(f[0]);
+   // Optional: peer digits/point appended by the other side
+   if(n >= 9)
+   {
+      int pd = (int)StrToInteger(f[7]);
+      double pp = StrToDouble(f[8]);
+      if(pd >= 0) g_peer_digits = pd;
+      if(pp > 0.0) g_peer_point = pp;
+   }
    return true;
 }
 
@@ -1601,7 +1619,8 @@ double DiffOpenPoints()
    bool masterBuy = IsMasterSideBuyEffective();
    double m_bid,m_ask,s_bid,s_ask; GetMasterSlaveQuotes(m_bid,m_ask,s_bid,s_ask);
    double diff = masterBuy ? (s_bid - m_ask) : (m_bid - s_ask);
-   return PointsFromPriceDiff(diff);
+   double pt = EffectivePoint(); if(pt <= 0.0) pt = g_point;
+   return diff / pt;
 }
 
 double DiffClosePoints()
@@ -1610,7 +1629,8 @@ double DiffClosePoints()
    bool masterBuy = IsMasterSideBuyEffective();
    double m_bid,m_ask,s_bid,s_ask; GetMasterSlaveQuotes(m_bid,m_ask,s_bid,s_ask);
    double diff = masterBuy ? (m_bid - s_ask) : (s_bid - m_ask);
-   return PointsFromPriceDiff(diff);
+   double pt = EffectivePoint(); if(pt <= 0.0) pt = g_point;
+   return diff / pt;
 }
 
 // -----------------------------

@@ -130,6 +130,9 @@ bool g_has_slave_balance = false;
 int    g_digits;
 double g_point;
 long   g_magic;
+// Peer pricing granularity
+int    g_peer_digits = -1;
+double g_peer_point = 0.0;
 
 double g_self_bid = 0.0, g_self_ask = 0.0;
 double g_peer_bid = 0.0, g_peer_ask = 0.0;
@@ -1353,7 +1356,8 @@ void WriteHeartbeat()
 {
    if(DrySuppressHeartbeat()) return;
    double bal = AccountInfoDouble(ACCOUNT_BALANCE); double eq = AccountInfoDouble(ACCOUNT_EQUITY);
-   string line = StringFormat("%I64u,%d,%I64d,%I64d,%s,%.2f,%.2f\n", NowMs(), __MQL5BUILD__, (long)AccountInfoInteger(ACCOUNT_LOGIN), (long)g_magic, "1.0.0", bal, eq);
+   // Append local digits/point for cross-broker normalization
+   string line = StringFormat("%I64u,%d,%I64d,%I64d,%s,%.2f,%.2f,%d,%.10f\n", NowMs(), __MQL5BUILD__, (long)AccountInfoInteger(ACCOUNT_LOGIN), (long)g_magic, "1.0.0", bal, eq, g_digits, g_point);
    FileWriteAll(PathHeartbeatSelf(), line);
    string acc = StringFormat("1,%.2f,%.2f,%I64u\n", bal, eq, NowMs());
    FileWriteAll(PathAccountStatusSelf(), acc);
@@ -1451,9 +1455,17 @@ void WriteMasterConfig()
 bool ReadPeerHeartbeat(ulong &peer_ms)
 {
    string s; if(!FileReadAll(PathHeartbeatPeer(), s)) return false;
-   int p = StringFind(s, ","); if(p<0) return false;
-   string ts = StringSubstr(s, 0, p);
-   peer_ms = (ulong)StringToInteger(ts);
+   string f[]; int n = StringSplit(TrimAll(s), ',', f);
+   if(n < 1) return false;
+   peer_ms = (ulong)StringToInteger(f[0]);
+   // Optional: peer digits/point appended by the other side
+   if(n >= 9)
+   {
+      int pd = (int)StringToInteger(f[7]);
+      double pp = StringToDouble(f[8]);
+      if(pd >= 0) g_peer_digits = pd;
+      if(pp > 0.0) g_peer_point = pp;
+   }
    return true;
 }
 
@@ -1557,7 +1569,8 @@ double DiffOpenPoints()
    bool masterBuy = IsMasterSideBuyEffective();
    double m_bid,m_ask,s_bid,s_ask; GetMasterSlaveQuotes(m_bid,m_ask,s_bid,s_ask);
    double diff = masterBuy ? (s_bid - m_ask) : (m_bid - s_ask);
-   return diff / g_point;
+   double pt = (g_peer_point > 0.0 ? MathMax(g_point, g_peer_point) : g_point);
+   return diff / pt;
 }
 
 double DiffClosePoints()
@@ -1565,7 +1578,8 @@ double DiffClosePoints()
    bool masterBuy = IsMasterSideBuyEffective();
    double m_bid,m_ask,s_bid,s_ask; GetMasterSlaveQuotes(m_bid,m_ask,s_bid,s_ask);
    double diff = masterBuy ? (m_bid - s_ask) : (s_bid - m_ask);
-   return diff / g_point;
+   double pt = (g_peer_point > 0.0 ? MathMax(g_point, g_peer_point) : g_point);
+   return diff / pt;
 }
 
 // -----------------------------
