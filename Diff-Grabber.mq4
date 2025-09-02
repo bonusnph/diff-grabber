@@ -94,7 +94,7 @@ int    input_dry_run_override_cmd_expire_ms = 0;       // Scope: Master — over
 bool   input_dry_run_suppress_heartbeat   = false;     // Scope: Master — suppress heartbeat for testing
 
 // Debug UI (Master only)
-bool   input_debug_buttons_enabled     = false;        // Scope: Master — show Open/Close test buttons (simulates diffOpen/diffClose)
+bool   input_debug_buttons_enabled     = true;        // Scope: Master — show Open/Close test buttons (simulates diffOpen/diffClose)
 
 // Extended controls (Master-only; synced to Slave via config):
 input double input_min_balance_master_usd    = 0.00;         // Scope: Master — minimum balance required on Master to allow new open
