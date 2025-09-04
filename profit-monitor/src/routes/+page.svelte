@@ -43,6 +43,10 @@
 	let activeBrokers: Set<string> = new Set();
 	let activeAccountNames: Set<string> = new Set();
 	let filtersInitialized = false;
+	let showFilters = false;
+
+	// Unit visibility state (default all visible)
+	let unitVisibility: Record<number, boolean> = {};
 
 	$: uniqueBrokersList = (() => {
 		const counts = new Map<string, number>();
@@ -104,12 +108,41 @@
 		activeAccountNames = new Set();
 	}
 
+	function toggleUnitVisibility(unit: number) {
+		const newValue = !isUnitVisible(unit);
+		unitVisibility = { ...unitVisibility, [unit]: newValue };
+	}
+
+	function isUnitVisible(unit: number): boolean {
+		// Default to true (visible) if undefined, otherwise use the stored value
+		return unitVisibility[unit] !== false;
+	}
+
+	function collapseAllUnits() {
+		const newVisibility: Record<number, boolean> = {};
+		Object.keys(unitGroups || {}).forEach(unitStr => {
+			const unit = parseInt(unitStr);
+			newVisibility[unit] = false;
+		});
+		unitVisibility = { ...unitVisibility, ...newVisibility };
+	}
+
+	function expandAllUnits() {
+		const newVisibility: Record<number, boolean> = {};
+		Object.keys(unitGroups || {}).forEach(unitStr => {
+			const unit = parseInt(unitStr);
+			newVisibility[unit] = true;
+		});
+		unitVisibility = { ...unitVisibility, ...newVisibility };
+	}
+
+
 	// PIN Protection
 	let isAuthenticated = false;
 	let showPinModal = true;
 	let pinInput = '';
 	let pinError = '';
-	let correctPin = '759637';
+	let correctPin = '250514';
 	let pinLoading = false;
 
 	const AUTH_COOKIE_NAME = 'pm_auth_v1';
@@ -229,12 +262,16 @@
 		return { unit, delta, tradingCount };
 	});
 
-	$: positivePairs = unitDeltaSummaries.filter((d) => d.delta !== null && (d.delta as number) > 0);
+	$: positivePairs = unitDeltaSummaries.filter((d) => d.delta !== null && (d.delta as number) >= 0);
 	$: negativePairs = unitDeltaSummaries.filter((d) => d.delta !== null && (d.delta as number) < 0);
 	$: positivePairsCount = positivePairs.length;
 	$: negativePairsCount = negativePairs.length;
 	$: positiveTradingAccountsCount = positivePairs.reduce((sum, d) => sum + d.tradingCount, 0);
 	$: negativeTradingAccountsCount = negativePairs.reduce((sum, d) => sum + d.tradingCount, 0);
+
+	// Count accounts with insufficient balance
+	$: insufficientBalanceAccounts = summaries.filter(isInsufficientBalance);
+	$: insufficientBalanceCount = insufficientBalanceAccounts.length;
 
 	async function fetchData() {
 		const showRefreshing = !loading;
@@ -609,12 +646,12 @@
 		pinLoading = true;
 		try {
 			// Load PIN from Supabase if not already loaded
-			if (correctPin === '759637') {
+			if (correctPin === '250514') {
 				const response = await fetch('/api/settings');
 				if (response.ok) {
 					const settings = await response.json();
 					// For now, use hardcoded PIN since we don't have PIN API endpoint yet
-					correctPin = '759637';
+					correctPin = '250514';
 				}
 			}
 
@@ -888,49 +925,50 @@
 	</div>
 {/if}
 
-<div class="min-h-screen bg-gray-900 p-6" class:hidden={showPinModal}>
+<div class="min-h-screen bg-gray-900 p-3" class:hidden={showPinModal}>
 	<div class="max-w-7xl mx-auto">
 		<!-- Header -->
-		<div class="mb-8">
-			<div class="flex flex-col md:flex-row md:justify-between md:items-center mb-4 gap-3">
-				<div class="flex items-center gap-2 mt-1 md:mt-0 w-full justify-between flex-nowrap md:w-auto md:justify-end md:flex-wrap">
-					<button
-						on:click={() => (showSettingsModal = true)}
-						class="bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white p-2 rounded-md transition-colors"
-						title="Settings"
-						aria-label="Open Settings"
-					>
-						<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-							/>
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-							/>
-						</svg>
-					</button>
-					<button
-						on:click={logout}
-						class="bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white p-2 rounded-md transition-colors"
-						title="Logout"
-						aria-label="Logout"
-					>
-						<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 11-6 0V7a3 3 0 116 0v1"
-							/>
-						</svg>
-					</button>
-				</div>
+		<div class="mb-2">
+			<div class="flex justify-between items-center mb-2">
+				<!-- Settings Button (Left) -->
+				<button
+					on:click={() => (showSettingsModal = true)}
+					class="bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white p-2 rounded-md transition-colors"
+					title="Settings"
+					aria-label="Open Settings"
+				>
+					<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="2"
+							d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+						/>
+						<path
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="2"
+							d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+						/>
+					</svg>
+				</button>
+
+				<!-- Logout Button (Right) -->
+				<button
+					on:click={logout}
+					class="bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white p-2 rounded-md transition-colors"
+					title="Logout"
+					aria-label="Logout"
+				>
+					<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="2"
+							d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 11-6 0V7a3 3 0 116 0v1"
+						/>
+					</svg>
+				</button>
 			</div>
 		</div>
 
@@ -939,196 +977,244 @@
 				<div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-400"></div>
 			</div>
 		{:else}
-			<!-- Profit/Loss Highlight Card -->
-			<div
-				class="bg-gradient-to-r from-gray-800 to-gray-700 border border-gray-600 rounded-xl shadow-2xl p-8 mb-8 text-white"
-			>
-				<div class="flex flex-col gap-1 md:flex-row md:items-center md:justify-between mb-4">
-					<h2 class="text-lg font-medium text-gray-300 uppercase tracking-wide">
-						Total Profit/Loss
-					</h2>
-					<div
-						class="flex flex-row flex-wrap items-center text-xs text-gray-400 gap-2 md:gap-3 md:whitespace-nowrap"
-					>
-						{#if latestUpdate}
-							<span>Updated: {formatDateTime(new Date(latestUpdate).toISOString())}</span>
-						{/if}
-						<span class="flex items-center gap-1" title="Next refresh">
-							<svg
-								class="w-3.5 h-3.5 text-gray-300"
-								fill="none"
-								stroke="currentColor"
-								viewBox="0 0 24 24"
-								aria-hidden="true"
-							>
-								<path
-									stroke-linecap="round"
-									stroke-linejoin="round"
-									stroke-width="2"
-									d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-								/>
-							</svg>
-							<span>{String(countdownSeconds).padStart(2, '0')}s</span>
-						</span>
-						<div
-							class="flex items-center justify-between md:justify-start gap-2 w-full md:w-auto md:ml-2 mt-1 md:mt-0"
-						>
-							<span
-								class="px-2 py-0.5 rounded-full text-xs font-semibold bg-yellow-700 border border-yellow-500 text-yellow-100"
-								>Active: {stats.account_count}</span
-							>
-							<button
-								on:click={fetchData}
-								class="p-2 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed ml-auto md:ml-0"
-								title="Refresh"
-								aria-label="Refresh"
-								disabled={loading || isRefreshing}
-							>
-								{#if isRefreshing}
-									<svg class="animate-spin -ml-0.5 w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-										<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-										<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-									</svg>
-								{:else}
-									<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-										<path
-											stroke-linecap="round"
-											stroke-linejoin="round"
-											stroke-width="2"
-											d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-										/>
-									</svg>
-								{/if}
-							</button>
-						</div>
-					</div>
-				</div>
+					<!-- Profit/Loss Highlight Card -->
+		<div
+			class="bg-gradient-to-r from-gray-800 to-gray-700 border border-gray-600 rounded-lg shadow-lg p-4 mb-4 text-white"
+		>
+			<div class="flex flex-col gap-1 md:flex-row md:items-center md:justify-between mb-3">
 				<div
-					class="text-center transition-all duration-500 ease-out filter"
+					class="flex flex-row flex-wrap items-center text-xs text-gray-400 gap-2 md:gap-3 md:whitespace-nowrap"
 				>
-					
-					<p
-						class="text-5xl font-bold {!isDataComplete ? 'opacity-60' : ''}"
-						class:text-green-400={adjustedProfitLoss >= 0}
-						class:text-red-400={adjustedProfitLoss < 0}
-					>
-						{adjustedProfitLoss >= 0 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
-					</p>
-					{#if totalWaitingWD !== 0}
-						<p class="text-xs text-gray-400">
-							<span class="text-gray-400">
-								Real P/L: {stats.profit_loss >= 0 ? '+' : ''}{formatNumber(stats.profit_loss)}
-							</span>
-							<span class="mx-2">|</span>
-							<span class="text-gray-400">
-								Waiting WD: {totalWaitingWD >= 0 ? '+' : ''}{formatNumber(totalWaitingWD)}
-							</span>
-						</p>
+					{#if latestUpdate}
+						<span>Updated: {formatDateTime(new Date(latestUpdate).toISOString())}</span>
 					{/if}
-					<p
-						class="text-sm"
-						class:text-green-400={adjustedProfitLossPercent >= 0}
-						class:text-red-400={adjustedProfitLossPercent < 0}
-					>
-						{adjustedProfitLossPercent >= 0 ? '+' : ''}{formatPercent(adjustedProfitLossPercent)}
-					</p>
-					<div class="mt-2 flex items-center justify-center gap-2">
-						<span
-							class="px-2 py-0.5 rounded-full text-xs font-medium"
-							class:bg-green-700={adjustedProfitLoss >= 0}
-							class:bg-red-700={adjustedProfitLoss < 0}
+					<span class="flex items-center gap-1" title="Next refresh">
+						<svg
+							class="w-3 h-3 text-gray-300"
+							fill="none"
+							stroke="currentColor"
+							viewBox="0 0 24 24"
+							aria-hidden="true"
 						>
-							{adjustedProfitLoss >= 0 ? 'Profitable' : 'Loss'}
-						</span>
-						{#if !isDataComplete}
-							<span
-								class="px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-900 border border-yellow-600 text-yellow-200"
-								>Partial Data</span
-							>
+							<path
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								stroke-width="2"
+								d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+							/>
+						</svg>
+						<span>{String(countdownSeconds).padStart(2, '0')}s</span>
+					</span>
+					<div
+						class="flex items-center justify-between md:justify-start gap-2 w-full md:w-auto md:ml-2 mt-1 md:mt-0"
+					>
+						<span
+							class="px-2 py-0.5 rounded-full text-xs font-semibold bg-yellow-700 border border-yellow-500 text-yellow-100"
+							>Active: {stats.account_count}</span
+						>
+						<button
+							on:click={fetchData}
+							class="p-1.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed ml-auto md:ml-0"
+							title="Refresh"
+							aria-label="Refresh"
+							disabled={loading || isRefreshing}
+						>
+							{#if isRefreshing}
+								<svg class="animate-spin w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+									<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+									<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+								</svg>
+							{:else}
+								<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+									<path
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										stroke-width="2"
+										d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+									/>
+								</svg>
+							{/if}
+						</button>
+					</div>
+				</div>
+				<!-- Open Pairs Summary (moved inside Total Profit/Loss card) -->
+				<div class="grid grid-cols-3 gap-2 mt-3">
+					<div class="bg-gray-800 border border-gray-700 rounded-md shadow p-2">
+						<h3 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Positive Open Points</h3>
+						<div class="mt-1 flex flex-wrap gap-1">
+							{#each positivePairs as d}
+								<span class="inline-flex items-center justify-center min-w-6 h-5 px-1 rounded-full text-[9px] font-bold bg-green-900/40 border border-green-600 text-green-300">
+									{(d.delta as number) >= 0 ? '+' : ''}{Math.round(d.delta as number)}
+								</span>
+							{/each}
+						</div>
+					</div>
+					<div class="bg-gray-800 border border-gray-700 rounded-md shadow p-2">
+						<h3 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Negative Open Points</h3>
+						<div class="mt-1 flex flex-wrap gap-1">
+							{#each negativePairs as d}
+								<span class="inline-flex items-center justify-center min-w-6 h-5 px-1 rounded-full text-[9px] font-bold bg-red-900/40 border border-red-600 text-red-300">
+									{Math.round(d.delta as number)}
+								</span>
+							{/each}
+						</div>
+					</div>
+					<div class="bg-gray-800 border border-gray-700 rounded-md shadow p-2">
+						<h3 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Insufficient Balance</h3>
+						<div class="mt-1 flex items-center justify-between">
+							<div class="flex items-center gap-1">
+								<span class="text-xl font-bold text-red-400">{insufficientBalanceCount}</span>
+							</div>
+							{#if insufficientBalanceCount > 0}
+								<div class="flex items-center gap-1">
+									<svg class="w-3 h-3 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+									</svg>
+									<span class="text-xs text-red-400 font-medium">Alert</span>
+								</div>
+							{/if}
+						</div>
+						{#if insufficientBalanceCount > 0}
+							<div class="mt-1 text-xs text-gray-500">
+								Accounts below minimum margin requirement
+							</div>
 						{/if}
 					</div>
 				</div>
 			</div>
-
-			<!-- Summary Cards -->
-			<div class="grid grid-cols-2 gap-6 mb-8">
-				<div class="bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-6">
-					<h3 class="text-sm font-medium text-gray-400 uppercase tracking-wide">
-						Positive Open Pairs
-					</h3>
-					<p class="text-2xl font-bold text-green-400 mt-2">
-						{positivePairsCount}
+			<div
+				class="text-center transition-all duration-500 ease-out filter"
+			>
+				
+				<p
+					class="text-4xl font-black {!isDataComplete ? 'opacity-60' : ''}"
+					class:text-green-400={adjustedProfitLoss >= 0}
+					class:text-red-400={adjustedProfitLoss < 0}
+				>
+					{adjustedProfitLoss >= 0 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
+				</p>
+				{#if totalWaitingWD !== 0}
+					<p class="text-xs text-gray-400">
+						<span class="text-gray-400">
+							Real P/L: {stats.profit_loss >= 0 ? '+' : ''}{formatNumber(stats.profit_loss)}
+						</span>
+						<span class="mx-2">|</span>
+						<span class="text-gray-400">
+							Waiting WD: {totalWaitingWD >= 0 ? '+' : ''}{formatNumber(totalWaitingWD)}
+						</span>
 					</p>
-					<p class="text-xs text-gray-500 mt-1">
-						{positiveTradingAccountsCount} accounts trading
-					</p>
+				{/if}
+				<p
+					class="text-sm"
+					class:text-green-400={adjustedProfitLossPercent >= 0}
+					class:text-red-400={adjustedProfitLossPercent < 0}
+				>
+					{adjustedProfitLossPercent >= 0 ? '+' : ''}{formatPercent(adjustedProfitLossPercent)}
+				</p>
+				<div class="mt-1 flex items-center justify-center gap-2">
+					<span
+						class="px-2 py-0.5 rounded-full text-xs font-medium"
+						class:bg-green-700={adjustedProfitLoss >= 0}
+						class:bg-red-700={adjustedProfitLoss < 0}
+					>
+						{adjustedProfitLoss >= 0 ? 'Profitable' : 'Loss'}
+					</span>
+					{#if !isDataComplete}
+						<span
+							class="px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-900 border border-yellow-600 text-yellow-200"
+							>Partial Data</span
+						>
+					{/if}
 				</div>
-				<div class="bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-6">
-					<h3 class="text-sm font-medium text-gray-400 uppercase tracking-wide">
-						Negative Open Pairs
-					</h3>
-					<p class="text-2xl font-bold text-red-400 mt-2">
-						{negativePairsCount}
-					</p>
-					<p class="text-xs text-gray-500 mt-1">
-						{negativeTradingAccountsCount} accounts trading
-					</p>
+			</div>
+		</div>
+
+			<!-- Summary Cards moved into Total Profit/Loss card -->
+
+					<!-- Account Summaries by Unit -->
+		<div class="bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-3 mb-4">
+			<div class="flex items-center justify-between mb-2">
+				<div class="flex items-center gap-1 ml-auto">
+					<button 
+						on:click={collapseAllUnits}
+						class="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-gray-200 hover:text-white border border-gray-500 transition-colors flex items-center gap-1"
+						title="Collapse all unit groups"
+					>
+						<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+						</svg>
+						Collapse All
+					</button>
+					<button 
+						on:click={expandAllUnits}
+						class="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-gray-200 hover:text-white border border-gray-500 transition-colors flex items-center gap-1"
+						title="Expand all unit groups"
+					>
+						<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+						</svg>
+						Expand All
+					</button>
+					<button on:click={() => (showFilters = !showFilters)} class="text-xs px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 border border-gray-600 flex items-center gap-1">
+						<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+						</svg>
+						{showFilters ? 'Hide Filters' : 'Show Filters'}
+					</button>
 				</div>
 			</div>
 
-			<!-- Account Summaries by Unit -->
-			<div class="bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-6 mb-8">
-				<h2 class="text-xl font-semibold text-white mb-4">Account Summary by Unit</h2>
-
-				<!-- Filters: Broker / Account Name -->
-				<div class="mb-6 space-y-2">
-					<div class="flex items-center gap-2 flex-wrap">
-						<span class="text-xs text-gray-400">Broker:</span>
-						{#each uniqueBrokersList as b}
-							<button
-								on:click={() => toggleBroker(b.name)}
-								class="px-2 py-1 rounded-full border text-xs transition-colors"
-								class:bg-blue-600={activeBrokers.has(b.name)}
-								class:text-white={activeBrokers.has(b.name)}
-								class:border-blue-400={activeBrokers.has(b.name)}
-								class:bg-gray-700={!activeBrokers.has(b.name)}
-								class:text-gray-300={!activeBrokers.has(b.name)}
-								class:border-gray-600={!activeBrokers.has(b.name)}
-								title={`Toggle broker ${b.name}`}
-							>
-								{b.name}
-								<span class="opacity-70">({b.count})</span>
-							</button>
-						{/each}
-						<div class="ml-auto flex items-center gap-2">
-							<button on:click={selectAllBrokers} class="text-xs px-2 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">All</button>
-							<button on:click={clearAllBrokers} class="text-xs px-2 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">Clear</button>
-						</div>
-					</div>
-					<div class="flex items-center gap-2 flex-wrap">
-						<span class="text-xs text-gray-400">Account:</span>
-						{#each uniqueAccountNamesList as a}
-							<button
-								on:click={() => toggleAccountName(a.name)}
-								class="px-2 py-1 rounded-full border text-xs transition-colors"
-								class:bg-blue-600={activeAccountNames.has(a.name)}
-								class:text-white={activeAccountNames.has(a.name)}
-								class:border-blue-400={activeAccountNames.has(a.name)}
-								class:bg-gray-700={!activeAccountNames.has(a.name)}
-								class:text-gray-300={!activeAccountNames.has(a.name)}
-								class:border-gray-600={!activeAccountNames.has(a.name)}
-								title={`Toggle account ${a.name}`}
-							>
-								{shortName(a.name)}
-								<span class="opacity-70">({a.count})</span>
-							</button>
-						{/each}
-						<div class="ml-auto flex items-center gap-2">
-							<button on:click={selectAllAccountNames} class="text-xs px-2 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">All</button>
-							<button on:click={clearAllAccountNames} class="text-xs px-2 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">Clear</button>
-						</div>
+							{#if showFilters}
+			<!-- Filters: Broker / Account Name -->
+			<div class="mb-3 space-y-2">
+				<div class="flex items-center gap-1 flex-wrap">
+					<span class="text-xs text-gray-400">Broker:</span>
+					{#each uniqueBrokersList as b}
+						<button
+							on:click={() => toggleBroker(b.name)}
+							class="px-1.5 py-0.5 rounded-full border text-xs transition-colors"
+							class:bg-blue-600={activeBrokers.has(b.name)}
+							class:text-white={activeBrokers.has(b.name)}
+							class:border-blue-400={activeBrokers.has(b.name)}
+							class:bg-gray-700={!activeBrokers.has(b.name)}
+							class:text-gray-300={!activeBrokers.has(b.name)}
+							class:border-gray-600={!activeBrokers.has(b.name)}
+							title={`Toggle broker ${b.name}`}
+						>
+							{b.name}
+							<span class="opacity-70">({b.count})</span>
+						</button>
+					{/each}
+					<div class="ml-auto flex items-center gap-1">
+						<button on:click={selectAllBrokers} class="text-xs px-1.5 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">All</button>
+						<button on:click={clearAllBrokers} class="text-xs px-1.5 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">Clear</button>
 					</div>
 				</div>
+				<div class="flex items-center gap-1 flex-wrap">
+					<span class="text-xs text-gray-400">Account:</span>
+					{#each uniqueAccountNamesList as a}
+						<button
+							on:click={() => toggleAccountName(a.name)}
+							class="px-1.5 py-0.5 rounded-full border text-xs transition-colors"
+							class:bg-blue-600={activeAccountNames.has(a.name)}
+							class:text-white={activeAccountNames.has(a.name)}
+							class:border-blue-400={activeAccountNames.has(a.name)}
+							class:bg-gray-700={!activeAccountNames.has(a.name)}
+							class:text-gray-300={!activeAccountNames.has(a.name)}
+							class:border-gray-600={!activeAccountNames.has(a.name)}
+							title={`Toggle account ${a.name}`}
+						>
+							{shortName(a.name)}
+							<span class="opacity-70">({a.count})</span>
+						</button>
+					{/each}
+					<div class="ml-auto flex items-center gap-1">
+						<button on:click={selectAllAccountNames} class="text-xs px-1.5 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">All</button>
+						<button on:click={clearAllAccountNames} class="text-xs px-1.5 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">Clear</button>
+					</div>
+				</div>
+			</div>
+			{/if}
 
 				{#each Object.entries(unitGroups) as [unitStr, accounts]}
 					{@const unit = parseInt(unitStr)}
@@ -1140,26 +1226,52 @@
 							a.account_number.localeCompare(b.account_number)
 					)}
 					{@const visibleAccounts = sortedAccounts.filter((a) => activeBrokers.has(a.broker_name) && activeAccountNames.has(a.account_name))}
+					
+					{#if visibleAccounts.length > 0}
 					<div
-						class="mb-6 rounded-md"
+						class="mb-3 rounded-md"
 						class:bg-blue-700={groupIsTrading}
 						class:border-2={groupIsTrading}
 						class:border-blue-400={groupIsTrading}
-						class:p-2={groupIsTrading}
+						class:p-1={groupIsTrading}
 					>
-						{#if visibleAccounts.length > 0}
-						<div class="flex justify-between items-center mb-3 border-b border-gray-600 pb-2">
-							<div class="flex items-center space-x-2">
-								<h3 class="text-lg font-medium text-gray-200">
+						<!-- Unit Header (always visible) -->
+						<div 
+							class="flex justify-between items-center mb-2 border-b border-gray-600 pb-1 cursor-pointer hover:bg-gray-700 hover:bg-opacity-50 rounded px-1 py-0.5 transition-colors"
+							on:click={() => {
+								unitVisibility = { ...unitVisibility, [unit]: !(unitVisibility[unit] !== false) };
+							}}
+							on:keydown={(e) => {
+								if (e.key === 'Enter' || e.key === ' ') {
+									e.preventDefault();
+									unitVisibility = { ...unitVisibility, [unit]: !(unitVisibility[unit] !== false) };
+								}
+							}}
+							role="button"
+							tabindex="0"
+							title="Click to expand/collapse unit group"
+						>
+							<div class="flex items-center space-x-1">
+								<!-- Expand/Collapse Icon -->
+								<svg 
+									class="w-4 h-4 text-gray-400 transition-transform duration-200"
+									class:rotate-90={unitVisibility[unit] !== false}
+									fill="none" 
+									stroke="currentColor" 
+									viewBox="0 0 24 24"
+								>
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+								</svg>
+								<h3 class="text-base font-medium text-gray-200">
 									{unit === 0 ? 'Unknown Unit' : getUnitDisplayName(unit)}
 								</h3>
-								<span class="text-xs text-gray-500 bg-gray-600 px-2 py-1 rounded">
+								<span class="text-xs text-gray-500 bg-gray-600 px-1 py-0.5 rounded">
 									#{unit}
 								</span>
 								{#if computeUnitDelta(accounts) !== null}
 									{@const delta = computeUnitDelta(accounts) as number}
 									<span
-										class="text-xs px-2 py-0.5 rounded font-semibold text-white"
+										class="text-xs px-1 py-0.5 rounded font-semibold text-white"
 										class:bg-green-600={delta > 0}
 										class:bg-red-600={delta < 0}
 										class:border={delta !== 0}
@@ -1172,7 +1284,7 @@
 							</div>
 							{#if unitStat}
 								<div
-									class="flex flex-col md:flex-row items-start md:items-center space-y-1 md:space-y-0 md:space-x-4 text-sm"
+									class="flex flex-col md:flex-row items-start md:items-center space-y-0.5 md:space-y-0 md:space-x-2 text-xs"
 								>
 									<span class="text-gray-400">
 										Total: {formatNumber(unitStat.totalBalance)}
@@ -1197,18 +1309,20 @@
 								</div>
 							{/if}
 						</div>
+						
+						{#if unitVisibility[unit] !== false}
 						<!-- Compact Table View -->
 						<div class="overflow-x-auto">
-							<table class="w-full text-sm">
+							<table class="w-full text-xs">
 								<thead>
 									<tr class="border-b border-gray-600">
-										<th class="text-left py-2 px-3 text-gray-400 font-medium">Account / Name</th>
-										<th class="text-right py-2 px-3 text-gray-400 font-medium">Balance</th>
-										<th class="text-right py-2 px-3 text-gray-400 font-medium">Equity</th>
-										<th class="text-left py-2 px-3 text-gray-400 font-medium">Broker</th>
-										<th class="text-right py-2 px-3 text-gray-400 font-medium">Adjust</th>
-										<th class="text-right py-2 px-3 text-gray-400 font-medium">WD Note</th>
-										<th class="text-left py-2 px-3 text-gray-400 font-medium">Updated</th>
+										<th class="text-right py-1 px-2 text-gray-400 font-medium">Adjust</th>
+										<th class="text-left py-1 px-2 text-gray-400 font-medium">Account / Name</th>
+										<th class="text-left py-1 px-2 text-gray-400 font-medium">Broker</th>
+										<th class="text-right py-1 px-2 text-gray-400 font-medium">Balance</th>
+										<th class="text-right py-1 px-2 text-gray-400 font-medium">Equity</th>
+										<th class="text-right py-1 px-2 text-gray-400 font-medium">WD Note</th>
+										<th class="text-left py-1 px-2 text-gray-400 font-medium">Updated</th>
 									</tr>
 								</thead>
 								<tbody>
@@ -1220,26 +1334,8 @@
 											class:bg-red-900={dataAge.status === 'danger'}
 											class:bg-red-950={isInsufficientBalance(account)}
 										>
-											<td class="py-2 px-3">
-												<div class="flex flex-col leading-tight">
-													<span class="font-mono font-semibold text-white">
-														{#if isInsufficientBalance(account)}<span class="text-red-400">*</span>
-														{/if}{account.account_number}
-													</span>
-													<span class="text-gray-400 text-xs truncate" title={account.account_name}
-														>{shortName(account.account_name)}</span
-													>
-												</div>
-											</td>
-											<td class="py-2 px-3 text-right font-medium text-white"
-												>{formatNumber(account.latest_balance)}</td
-											>
-											<td class="py-2 px-3 text-right font-medium text-white"
-												>{formatNumber(account.latest_equity)}</td
-											>
-											<td class="py-2 px-3 text-gray-400 text-xs">{account.broker_name}</td>
 											<td
-												class="py-2 px-3 text-right font-medium"
+												class="py-1 px-2 text-right font-medium text-xs"
 												class:text-red-400={capitalPerUnit / 2 - account.latest_equity < 0}
 												class:text-green-400={capitalPerUnit / 2 - account.latest_equity > 0}
 											>
@@ -1251,7 +1347,25 @@
 													{formatNumber(0)}
 												{/if}
 											</td>
-											<td class="py-2 px-3 text-right">
+											<td class="py-1 px-2">
+												<div class="flex flex-col leading-tight">
+													<span class="font-mono font-semibold text-white text-xs">
+														{#if isInsufficientBalance(account)}<span class="text-red-400">*</span>
+														{/if}{account.account_number}
+													</span>
+													<span class="text-gray-400 text-xs truncate" title={account.account_name}
+														>{shortName(account.account_name)}</span
+													>
+												</div>
+											</td>
+											<td class="py-1 px-2 text-gray-400 text-xs">{account.broker_name}</td>
+											<td class="py-1 px-2 text-right font-medium text-white text-xs"
+												>{formatNumber(account.latest_balance)}</td
+											>
+											<td class="py-1 px-2 text-right font-medium text-white text-xs"
+												>{formatNumber(account.latest_equity)}</td
+											>
+											<td class="py-1 px-2 text-right">
 												<input
 													type="number"
 													min="0"
@@ -1259,10 +1373,10 @@
 													value={accountWithdrawals[account.account_number] ?? 0}
 													on:change={(e) =>
 														handleAccountWithdrawalChange(account.account_number, e)}
-													class="w-28 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+													class="w-20 border border-gray-600 bg-gray-700 text-white rounded px-1 py-0.5 text-right text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
 												/>
 											</td>
-											<td class="py-2 px-3 text-gray-400 text-xs"
+											<td class="py-1 px-2 text-gray-400 text-xs"
 												>{formatDateTime(account.last_update)}</td
 											>
 										</tr>
@@ -1272,6 +1386,7 @@
 						</div>
 						{/if}
 					</div>
+					{/if}
 				{/each}
 			</div>
 

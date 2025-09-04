@@ -45,12 +45,12 @@ int    input_display_width_pixels      = 520;           // Scope: Both — width
 // Master decision parameters
 int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
 input MasterSide input_master_side          = SIDE_SELL;     // Scope: Master — master direction (Slave auto-opposite)
-input double input_lot_master               = 0.01;          // Scope: Master — lot size for master orders
-input double input_lot_slave                = 0.01;          // Scope: Master — advised lot for Slave; Slave ignores local lot input
-input int    input_open_threshold_points    = 30;            // Scope: Master — open threshold (points)
-input int    input_close_threshold_points   = 30;            // Scope: Master — close threshold (points)
-int    input_open_cooldown_seconds    = 300;           // Scope: Master — open cooldown after an open
-int    input_close_cooldown_seconds   = 60;            // Scope: Master — close cooldown after both sides opened
+double input_lot_master               = 0.01;          // Scope: Master — lot size for master orders
+double input_lot_slave                = 0.01;          // Scope: Master — advised lot for Slave; Slave ignores local lot input
+int    input_open_threshold_points    = -50;            // Scope: Master — open threshold (points)
+int    input_close_threshold_points   = -50;            // Scope: Master — close threshold (points)
+int    input_open_cooldown_seconds    = 60;           // Scope: Master — open cooldown after an open
+int    input_close_cooldown_seconds   = 10;            // Scope: Master — close cooldown after both sides opened
 int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
 
 // Raw stability check (alternative to averaging - Master only)
@@ -72,8 +72,8 @@ int    input_epsilon_diff_points      = 1;             // Scope: Master — smal
 int    input_avg_signal_cooldown_ms   = 400;           // Scope: Master — signal-level cooldown after order (ms)
 
 // Quality guards
-int    input_max_spread_points_self   = 10;            // Scope: Master — block if own spread exceeds (points)
-int    input_max_spread_points_peer   = 20;            // Scope: Master — check peer spread before opening (points)
+int    input_max_spread_points_self   = 50;            // Scope: Master — block if own spread exceeds (points)
+int    input_max_spread_points_peer   = 50;            // Scope: Master — check peer spread before opening (points)
 int    input_quotes_fresh_ms          = 400;           // Scope: Master — maximum acceptable quote age (ms)
 int    input_file_poll_ms             = 5;             // Scope: Master — background file polling cadence (ms)
 int    input_magic_number_base        = 900100;        // Scope: Master — magic base per channel/symbol
@@ -101,8 +101,8 @@ bool   input_dry_run_suppress_heartbeat   = false;     // Scope: Master — supp
 bool   input_debug_buttons_enabled     = true;         // Scope: Master — show Open/Close test buttons (simulate diffOpen/diffClose)
 
 // Extended controls (Master-only; synced to Slave via config)
-input double input_min_balance_master_usd    = 0.00;          // Scope: Master — minimum balance required on Master to allow new open
-input double input_min_balance_slave_usd     = 0.00;          // Scope: Master — minimum balance required on Slave to allow new open
+double input_min_balance_master_usd    = 0.00;          // Scope: Master — minimum balance required on Master to allow new open
+double input_min_balance_slave_usd     = 0.00;          // Scope: Master — minimum balance required on Slave to allow new open
 input double input_initial_capital_usd       = 0.00;          // Scope: Master — initial capital for profit calculation
 
 // Scheduled Close Only Mode (Master only)
@@ -110,10 +110,10 @@ input bool   input_scheduled_close_only_enabled = true;     // Scope: Master —
 string input_close_only_start_time        = "00:57";   // Scope: Master — start time for close only mode (HH:mm format)
 string input_close_only_end_time          = "08:03";   // Scope: Master — end time for close only mode (HH:mm format)
 
-// Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
-bool   input_sat_close_only_enabled       = true;           // Scope: Master — enable weekend close-only (Sat start -> Mon end)
+// Saturday-only Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
+bool   input_sat_close_only_enabled       = true;           // Scope: Master — enable Saturday-only close-only schedule
 string input_sat_close_only_start_time    = "00:57";   // Scope: Master — Saturday start time (HH:mm)
-string input_mon_close_only_end_time      = "08:03";   // Scope: Master — Monday end time (HH:mm)
+string input_sat_close_only_end_time      = "08:03";   // Scope: Master — Saturday end time (HH:mm)
 
 // -----------------------------
 // Globals
@@ -177,11 +177,11 @@ int     g_cached_start_minutes = -1;
 int     g_cached_end_minutes = -1;
 string  g_cached_start_time = "";
 string  g_cached_end_time = "";
-// Cache for weekend close-only optimization (Sat start -> Mon end)
+// Cache for Saturday-only close-only optimization
 int     g_cached_sat_start_minutes = -1;
-int     g_cached_mon_end_minutes = -1;
+int     g_cached_sat_end_minutes = -1;
 string  g_cached_sat_start_time = "";
-string  g_cached_mon_end_time = "";
+string  g_cached_sat_end_time = "";
 // Reconcile timer
 ulong  g_last_reconcile_ms = 0;
 // Master reconcile grace period tracking
@@ -746,15 +746,15 @@ void UpdateScheduledCloseOnlyMode()
          g_cached_end_minutes = ParseTimeToMinutes(input_close_only_end_time);
       }
    }
-   // Cache weekend schedule (Sat start -> Mon end)
+   // Cache Saturday schedule (if enabled)
    if(input_sat_close_only_enabled)
    {
-      if(g_cached_sat_start_time != input_sat_close_only_start_time || g_cached_mon_end_time != input_mon_close_only_end_time)
+      if(g_cached_sat_start_time != input_sat_close_only_start_time || g_cached_sat_end_time != input_sat_close_only_end_time)
       {
          g_cached_sat_start_time = input_sat_close_only_start_time;
-         g_cached_mon_end_time = input_mon_close_only_end_time;
+         g_cached_sat_end_time = input_sat_close_only_end_time;
          g_cached_sat_start_minutes = ParseTimeToMinutes(input_sat_close_only_start_time);
-         g_cached_mon_end_minutes = ParseTimeToMinutes(input_mon_close_only_end_time);
+         g_cached_sat_end_minutes = ParseTimeToMinutes(input_sat_close_only_end_time);
       }
    }
    
@@ -772,34 +772,20 @@ void UpdateScheduledCloseOnlyMode()
       else
          generalActive = (currentMinutes >= g_cached_start_minutes || currentMinutes < g_cached_end_minutes);
    }
-   // Weekend active window: from Saturday start time through all Sunday until Monday end time
-   bool weekendActive = false;
-   if(input_sat_close_only_enabled && g_cached_sat_start_minutes >= 0 && g_cached_mon_end_minutes >= 0)
+   bool saturdayActive = false;
+   if(input_sat_close_only_enabled && IsSaturday() && g_cached_sat_start_minutes >= 0 && g_cached_sat_end_minutes >= 0)
    {
-      int dow = dt.day_of_week; // 1=Monday ... 7=Sunday in MQL5? Using MqlDateTime: 0=Sunday..6=Saturday (same as MT4)
-      if(dow == 6)
-      {
-         // Saturday: active from start time onward
-         if(g_cached_sat_start_minutes == g_cached_mon_end_minutes) weekendActive = false;
-         else weekendActive = (currentMinutes >= g_cached_sat_start_minutes);
-      }
-      else if(dow == 0)
-      {
-         // Sunday: always active
-         weekendActive = true;
-      }
-      else if(dow == 1)
-      {
-         // Monday: active until end time
-         if(g_cached_sat_start_minutes == g_cached_mon_end_minutes) weekendActive = false;
-         else weekendActive = (currentMinutes < g_cached_mon_end_minutes);
-      }
+      if(g_cached_sat_start_minutes == g_cached_sat_end_minutes) saturdayActive = false;
+      else if(g_cached_sat_start_minutes < g_cached_sat_end_minutes)
+         saturdayActive = (currentMinutes >= g_cached_sat_start_minutes && currentMinutes < g_cached_sat_end_minutes);
+      else
+         saturdayActive = (currentMinutes >= g_cached_sat_start_minutes || currentMinutes < g_cached_sat_end_minutes);
    }
    
-   g_scheduled_close_only_active = (generalActive || weekendActive);
+   g_scheduled_close_only_active = (generalActive || saturdayActive);
    if(g_scheduled_close_only_active) g_close_only_mode = true; else {
       int graceMin = 5;
-      bool inGraceGeneral=false, inGraceWeekend=false;
+      bool inGraceGeneral=false, inGraceSat=false;
       if(input_scheduled_close_only_enabled && g_cached_start_minutes >= 0 && g_cached_end_minutes >= 0)
       {
          int endPlus = (g_cached_end_minutes + graceMin) % 1440;
@@ -808,21 +794,23 @@ void UpdateScheduledCloseOnlyMode()
          else if(g_cached_start_minutes > g_cached_end_minutes)
             inGraceGeneral = (currentMinutes >= g_cached_end_minutes || currentMinutes < endPlus);
       }
-      // Weekend grace only applies after Monday end time
-      if(input_sat_close_only_enabled && dt.day_of_week == 1 && g_cached_mon_end_minutes >= 0)
+      if(input_sat_close_only_enabled && IsSaturday() && g_cached_sat_start_minutes >= 0 && g_cached_sat_end_minutes >= 0)
       {
-         int endPlusM = (g_cached_mon_end_minutes + graceMin) % 1440;
-         inGraceWeekend = (currentMinutes >= g_cached_mon_end_minutes && currentMinutes < endPlusM);
+         int endPlusS = (g_cached_sat_end_minutes + graceMin) % 1440;
+         if(g_cached_sat_start_minutes < g_cached_sat_end_minutes)
+            inGraceSat = (currentMinutes >= g_cached_sat_end_minutes && currentMinutes < (g_cached_sat_end_minutes + graceMin));
+         else if(g_cached_sat_start_minutes > g_cached_sat_end_minutes)
+            inGraceSat = (currentMinutes >= g_cached_sat_end_minutes || currentMinutes < endPlusS);
       }
-      if(inGraceGeneral || inGraceWeekend) g_close_only_mode = false;
+      if(inGraceGeneral || inGraceSat) g_close_only_mode = false;
    }
    
    if(wasActive != g_scheduled_close_only_active)
    {
-      LogEvent("SCHEDULED_CLOSE_ONLY", StringFormat("active=%s;general=%s-%s;weekend=%s-%s;current=%02d:%02d;mode=%s", 
+      LogEvent("SCHEDULED_CLOSE_ONLY", StringFormat("active=%s;general=%s-%s;saturday=%s-%s;current=%02d:%02d;mode=%s", 
                g_scheduled_close_only_active ? "true" : "false",
                input_close_only_start_time, input_close_only_end_time,
-               input_sat_close_only_start_time, input_mon_close_only_end_time,
+               input_sat_close_only_start_time, input_sat_close_only_end_time,
                dt.hour, dt.min, g_close_only_mode ? "ON" : "OFF"));
    }
 }
@@ -1719,6 +1707,8 @@ void MaybeOpenPair()
    if(IsInSaturdayQuietWindow()) return;
    // Close Only mode: prevent new orders
    if(g_close_only_mode) return;
+   // When debug hold is active (user forced open), do not auto-open more pairs
+   if(input_debug_buttons_enabled && g_debug_hold_open) return;
    if(!g_peer_alive) return; // do not operate without peer
    if((int)(TimeCurrent() - g_last_open_time) < input_open_cooldown_seconds) return;
    if(CountOpenPairs() >= input_max_open_pairs) return;
@@ -1911,6 +1901,8 @@ void MaybeClosePair()
 {
    if(g_role_conflict) return;
    if(!(input_role==ROLE_MASTER)) return;
+   // In debug mode, keep positions open until user clicks Close Now
+   if(input_debug_buttons_enabled && g_debug_hold_open) return;
    
    // CRITICAL: Enhanced protection against immediate close after open (consistent with MT4)
    // Do not auto-close while waiting for slave to acknowledge an open
@@ -2792,7 +2784,7 @@ void MasterOpenNow()
        FileWriteAllAtomic(PathOpenAckSelf(), ackSelf);
        LogEvent("OPEN_ACK_MASTER", StringFormat("cmd_id=%s;ok=1;price=0.0;err=0", cmd_id));
      }
-     if(input_debug_buttons_enabled) g_debug_hold_open = false; // allow auto-close logic to run
+     if(input_debug_buttons_enabled) g_debug_hold_open = true; // keep open until Close Now
      return;
    }
 
@@ -2825,7 +2817,7 @@ void MasterOpenNow()
    // Consolidated grace: prevent immediate reconcile/close
    g_open_grace_until_ms = NowMs() + (ulong)MathMax(input_ack_timeout_ms + 2000, input_close_cooldown_seconds * 1000);
    g_early_warning_sent = false;
-   if(input_debug_buttons_enabled) g_debug_hold_open = false; // allow auto-close logic to run
+   if(input_debug_buttons_enabled) g_debug_hold_open = true; // keep open until Close Now
 }
 
 void MasterCloseNow()
