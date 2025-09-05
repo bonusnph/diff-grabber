@@ -37,6 +37,10 @@
 	let savingSettings = false;
 	let latestUpdate: number = 0;
 
+	// Delete data confirmation
+	let showDeleteConfirmModal = false;
+	let deletingData = false;
+
 	let profitLossPercent = 0;
 	let isRefreshing = false;
 	// Filters (Broker / Account Name)
@@ -794,6 +798,37 @@
 			savingSettings = false;
 		}
 	}
+
+	async function clearAllAccountData() {
+		if (deletingData) return;
+		deletingData = true;
+		try {
+			console.log('Sending DELETE request to /api/data/clear');
+			const response = await fetch('/api/data/clear', {
+				method: 'DELETE'
+			});
+			
+			const result = await response.json();
+			console.log('Delete response:', result);
+			
+			if (response.ok) {
+				console.log('Delete successful, refreshing data...');
+				// Refresh data after clearing
+				await fetchData();
+				showDeleteConfirmModal = false;
+				showSettingsModal = false;
+				console.log('Data refreshed successfully');
+			} else {
+				console.error('Failed to clear account data:', result);
+				alert(`เกิดข้อผิดพลาด: ${result.error || 'ไม่สามารถลบข้อมูลได้'}`);
+			}
+		} catch (error) {
+			console.error('Error clearing account data:', error);
+			alert(`เกิดข้อผิดพลาด: ${error.message || 'ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้'}`);
+		} finally {
+			deletingData = false;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -1433,6 +1468,7 @@
 			class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl w-full max-w-md mx-4 my-8 flex flex-col max-h-[85vh]"
 			role="document"
 			on:click|stopPropagation
+			on:keydown|stopPropagation
 			on:mousedown|stopPropagation
 		>
 			<div class="flex justify-between items-center p-6 pb-4">
@@ -1701,7 +1737,33 @@
 					</fieldset>
 				</div>
 
-				<!-- Auto Refresh Info removed per new 10s countdown policy -->
+				<!-- Delete Account Data Section -->
+				<div class="border-t border-gray-700 pt-6">
+					<fieldset>
+						<legend class="block text-sm font-medium text-red-400 mb-2">
+							Danger Zone
+						</legend>
+						<div class="bg-red-900/20 border border-red-700 rounded-md p-4">
+							<div class="flex items-start space-x-3">
+								<svg class="w-5 h-5 text-red-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+								</svg>
+								<div class="flex-1">
+									<h4 class="text-sm font-medium text-red-300 mb-1">ลบข้อมูลบัญชีทั้งหมด</h4>
+									<p class="text-xs text-red-200 mb-3">
+										การดำเนินการนี้จะลบข้อมูลบัญชีทั้งหมดจาก Supabase แต่จะไม่ลบการตั้งค่าอื่นๆ เช่น Initial Capital, Unit Mappings เป็นต้น
+									</p>
+									<button
+										on:click={() => (showDeleteConfirmModal = true)}
+										class="px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors"
+									>
+										ลบข้อมูลบัญชีทั้งหมด
+									</button>
+								</div>
+							</div>
+						</div>
+					</fieldset>
+				</div>
 			</div>
 
 			<div
@@ -1720,6 +1782,78 @@
 				>
 					{savingSettings ? 'Saving...' : 'Save'}
 				</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- Delete Confirmation Modal -->
+{#if showDeleteConfirmModal}
+	<div
+		class="fixed inset-0 bg-black bg-opacity-80 z-60 flex items-center justify-center p-6"
+		on:click={() => (showDeleteConfirmModal = false)}
+		on:keydown={(e) => e.key === 'Escape' && (showDeleteConfirmModal = false)}
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="delete-confirm-title"
+		tabindex="-1"
+	>
+		<div
+			class="bg-gray-800 border border-red-600 rounded-lg shadow-2xl w-full max-w-md mx-4"
+			role="document"
+			on:click|stopPropagation
+			on:keydown|stopPropagation
+			on:mousedown|stopPropagation
+		>
+			<div class="p-6">
+				<div class="flex items-center mb-4">
+					<div class="w-12 h-12 bg-red-600 rounded-full flex items-center justify-center mr-4">
+						<svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+						</svg>
+					</div>
+					<div>
+						<h3 id="delete-confirm-title" class="text-lg font-semibold text-white">ยืนยันการลบข้อมูล</h3>
+						<p class="text-sm text-gray-400">การดำเนินการนี้ไม่สามารถย้อนกลับได้</p>
+					</div>
+				</div>
+
+				<div class="mb-6">
+					<p class="text-sm text-gray-300 mb-3">
+						คุณแน่ใจหรือไม่ที่จะลบข้อมูลบัญชีทั้งหมดจาก Supabase?
+					</p>
+					<div class="bg-red-900/20 border border-red-700 rounded-md p-3">
+						<p class="text-xs text-red-200">
+							<strong>หมายเหตุ:</strong> การดำเนินการนี้จะลบเฉพาะข้อมูลบัญชีที่เข้ามาจาก EA เท่านั้น 
+							การตั้งค่าอื่นๆ เช่น Initial Capital, Unit Mappings, WD Notes จะไม่ถูกลบ
+						</p>
+					</div>
+				</div>
+
+				<div class="flex items-center justify-end gap-3">
+					<button
+						on:click={() => (showDeleteConfirmModal = false)}
+						class="px-4 py-2 rounded-md bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors"
+						disabled={deletingData}
+					>
+						ยกเลิก
+					</button>
+					<button
+						on:click={clearAllAccountData}
+						disabled={deletingData}
+						class="px-4 py-2 rounded-md bg-red-600 text-white hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+					>
+						{#if deletingData}
+							<svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+								<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+								<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+							</svg>
+							กำลังลบ...
+						{:else}
+							ลบข้อมูลทั้งหมด
+						{/if}
+					</button>
+				</div>
 			</div>
 		</div>
 	</div>

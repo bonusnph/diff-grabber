@@ -349,15 +349,32 @@ class SupabaseStorage {
 	}
 
 	async clearData(): Promise<void> {
-		const { error } = await supabase
+		console.log('Starting to clear all account data...');
+		
+		// First, check how many records exist
+		const { count: beforeCount } = await supabase
+			.from('accounts')
+			.select('*', { count: 'exact', head: true });
+		
+		console.log(`Found ${beforeCount} records before deletion`);
+		
+		const { data, error } = await supabase
 			.from('accounts')
 			.delete()
-			.neq('id', 0); // Delete all records
+			.not('id', 'is', null); // Delete all records
 
 		if (error) {
 			console.error('Error clearing data:', error);
 			throw error;
 		}
+		
+		// Check how many records remain
+		const { count: afterCount } = await supabase
+			.from('accounts')
+			.select('*', { count: 'exact', head: true });
+		
+		console.log(`Records remaining after deletion: ${afterCount}`);
+		console.log('Account data cleared successfully');
 	}
 
 	async cleanupOldData(): Promise<void> {
