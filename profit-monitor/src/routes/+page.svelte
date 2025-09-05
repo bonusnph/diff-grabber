@@ -52,6 +52,15 @@
 	// Unit visibility state (default all visible)
 	let unitVisibility: Record<number, boolean> = {};
 
+	// Pause auto fetch when settings modal is open
+	$: (() => {
+		if (showSettingsModal) {
+			autoFetchEnabled = false;
+		} else if (isAuthenticated) {
+			autoFetchEnabled = true;
+		}
+	})();
+
 	$: uniqueBrokersList = (() => {
 		const counts = new Map<string, number>();
 		for (const a of summaries || []) {
@@ -789,8 +798,10 @@
 				capitalPerUnit = data.capital_per_unit;
 				totalActiveAccounts = data.total_active_accounts;
 				unitMappings = data.unit_mappings || unitMappings;
-				await fetchData();
+				// await loadInitialCapital();
+				// await fetchData();
 				showSettingsModal = false;
+				location.reload();
 			}
 		} catch (e) {
 			console.error('Error saving settings:', e);
@@ -822,9 +833,10 @@
 				console.error('Failed to clear account data:', result);
 				alert(`เกิดข้อผิดพลาด: ${result.error || 'ไม่สามารถลบข้อมูลได้'}`);
 			}
-		} catch (error) {
-			console.error('Error clearing account data:', error);
-			alert(`เกิดข้อผิดพลาด: ${error.message || 'ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้'}`);
+		} catch (e) {
+			console.error('Error clearing account data:', e);
+			const msg = e instanceof Error ? e.message : 'ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้';
+			alert(`เกิดข้อผิดพลาด: ${msg}`);
 		} finally {
 			deletingData = false;
 		}
@@ -1559,7 +1571,17 @@
 								>
 									<div class="flex items-center space-x-2">
 										<span class="text-sm font-medium text-gray-300">Unit {unit}:</span>
-										<span class="text-sm text-white">{name}</span>
+										<input
+											type="text"
+											value={name}
+											on:change={(e) => {
+												const v = (e.target as HTMLInputElement).value.trim();
+												const u = parseInt(unit);
+												unitMappings = { ...unitMappings, [u]: v };
+												updateUnitMappings();
+											}}
+											class="border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+										/>
 									</div>
 									<button
 										on:click={() => removeUnitMapping(parseInt(unit))}
@@ -1622,7 +1644,20 @@
 								>
 									<div class="flex items-center space-x-2">
 										<span class="text-sm font-medium text-gray-300">{broker}</span>
-										<span class="text-sm text-white">= {formatNumber(margin)}</span>
+										<span class="text-sm text-gray-400">=</span>
+										<input
+											type="number"
+											min="0"
+											step="100"
+											value={margin}
+											on:change={(e) => {
+												const parsed = parseFloat((e.target as HTMLInputElement).value);
+												const value = isNaN(parsed) || parsed < 0 ? 0 : parsed;
+												brokerMinMargins = { ...brokerMinMargins, [broker]: value };
+												updateBrokerMinMargins();
+											}}
+											class="w-32 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+										/>
 									</div>
 									<button
 										on:click={() => removeBrokerMinMargin(broker)}
