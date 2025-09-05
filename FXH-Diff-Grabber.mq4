@@ -2751,6 +2751,12 @@ int    BTN_Y2 = 48;
 int    BTN_W = 96;
 int    BTN_H = 18;
 
+// Sum Equity display geometry (beside debug buttons)
+int    EQUITY_X = 650;
+int    EQUITY_Y = 24;
+int    EQUITY_W = 200;
+int    EQUITY_H = 42;
+
 // Close Only button geometry (below display monitor)
 int    CLOSE_ONLY_BTN_X = 6;
 int    CLOSE_ONLY_BTN_Y = 240; // Will be adjusted dynamically based on monitor height
@@ -2819,6 +2825,31 @@ void DisplayInit()
       ObjectSet(b2, OBJPROP_XSIZE, BTN_W);
       ObjectSet(b2, OBJPROP_YSIZE, BTN_H);
       ObjectSetText(b2, "Close Now", 8, "Arial", clrBlack);
+      
+      // Sum Equity Display (beside debug buttons)
+      string eq_bg = OBJ_PREFIX + "EQUITY_BG";
+      ObjectCreate(0, eq_bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+      ObjectSet(eq_bg, OBJPROP_CORNER, 0);
+      ObjectSet(eq_bg, OBJPROP_XDISTANCE, EQUITY_X);
+      ObjectSet(eq_bg, OBJPROP_YDISTANCE, EQUITY_Y);
+      ObjectSet(eq_bg, OBJPROP_XSIZE, EQUITY_W);
+      ObjectSet(eq_bg, OBJPROP_YSIZE, EQUITY_H);
+      ObjectSet(eq_bg, OBJPROP_COLOR, clrLightGray);
+      ObjectSet(eq_bg, OBJPROP_BACK, true);
+      
+      string eq_label = OBJ_PREFIX + "EQUITY_LABEL";
+      ObjectCreate(0, eq_label, OBJ_LABEL, 0, 0, 0);
+      ObjectSet(eq_label, OBJPROP_CORNER, 0);
+      ObjectSet(eq_label, OBJPROP_XDISTANCE, EQUITY_X + 10);
+      ObjectSet(eq_label, OBJPROP_YDISTANCE, EQUITY_Y + 5);
+      ObjectSetText(eq_label, "Sum Equity", 9, "Arial Bold", clrBlack);
+      
+      string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
+      ObjectCreate(0, eq_value, OBJ_LABEL, 0, 0, 0);
+      ObjectSet(eq_value, OBJPROP_CORNER, 0);
+      ObjectSet(eq_value, OBJPROP_XDISTANCE, EQUITY_X + 10);
+      ObjectSet(eq_value, OBJPROP_YDISTANCE, EQUITY_Y + 22);
+      ObjectSetText(eq_value, "$0.00", 12, "Arial Bold", clrDarkGreen);
    }
 
    // Close Only button (Master only)
@@ -2937,6 +2968,37 @@ void UpdateCachedSlaveBalance()
       g_cached_slave_balance = slave_balance;
       g_has_slave_balance = true;
    }
+}
+
+// Get fresh equity from peer account status file
+bool ReadPeerEquityFresh(double &equity_out, ulong &ts_out)
+{
+   equity_out = 0.0; ts_out = 0;
+   string s; if(!FileReadAll(PathAccountStatusPeer(), s)) return false;
+   string f[]; int n = StringSplit(TrimAll(s), ',', f);
+   if(n<4) return false;
+   // format: version,balance,equity,updated_ms
+   equity_out = StrToDouble(f[2]);
+   ts_out = (ulong)StrToDouble(f[3]);
+   // freshness: require within EffectiveHeartbeatTimeoutMs
+   if((NowMs()-ts_out) > (ulong)EffectiveHeartbeatTimeoutMs()) return false;
+   return true;
+}
+
+// Get sum of master and slave equity (realtime)
+double GetSumEquity()
+{
+   double master_equity = AccountEquity();
+   double slave_equity = 0.0;
+   ulong slave_ts = 0;
+   
+   if(ReadPeerEquityFresh(slave_equity, slave_ts))
+   {
+      return master_equity + slave_equity;
+   }
+   
+   // If slave equity not available, return only master equity
+   return master_equity;
 }
 
 // Get cached slave balance (returns last known value, never shows STALE)
@@ -3221,6 +3283,29 @@ void DisplayUpdate()
       DisplaySetLine(line++, StringFormat("Net Profit: $%.2f", net_profit)); */
    }
    
+   // Update Sum Equity Display (Master only, when debug buttons enabled)
+   if(input_debug_buttons_enabled && input_role==ROLE_MASTER)
+   {
+      string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
+      if(ObjectFind(0, eq_value) != -1)
+      {
+         double sum_equity = GetSumEquity();
+         string equity_text = StringFormat("$%.2f", sum_equity);
+         
+         // Change color based on profit/loss (optional visual enhancement)
+         color equity_color = clrDarkGreen;
+         double effective_initial = GetEffectiveInitialCapital();
+         if(effective_initial > 0.0)
+         {
+            if(sum_equity < effective_initial) equity_color = clrDarkRed;
+            else if(sum_equity > effective_initial) equity_color = clrDarkGreen;
+            else equity_color = clrBlack;
+         }
+         
+         ObjectSetText(eq_value, equity_text, 12, "Arial Bold", equity_color);
+      }
+   }
+   
    DisplayTrimLines(line);
 
    // Resize background to cover lines
@@ -3442,7 +3527,7 @@ int OnInit()
    bool programAuto = (bool)MQLInfoInteger(MQL_TRADE_ALLOWED);
    if(!terminalAuto || !programAuto)
    {
-      if(input_verbose_journal_logs) Print("Auto Trading is disabled. Enable AutoTrading and 'Allow live trading'.");
+      if(input_verbose_journal_logs) Alert("Auto Trading is disabled. Enable AutoTrading and 'Allow live trading'.");
       return(INIT_FAILED);
    }
 
