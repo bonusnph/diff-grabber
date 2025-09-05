@@ -1,0 +1,19 @@
+**MT4:**
+1. ไปที่ Tools → Options → Expert Advisors
+2. เลือก "Allow WebRequest for listed URL"
+3. เพิ่ม URL ต่อไปนี้:
+   ```
+   https://script.google.com
+   https://script.googleusercontent.com
+   ```
+4. คลิก OK
+
+**MT5:**
+1. ไปที่ Tools → Options → Expert Advisors
+2. เลือก "Allow WebRequest for listed URL"
+3. เพิ่ม URL ต่อไปนี้:
+   ```
+   https://script.google.com
+   https://script.googleusercontent.com
+   ```
+4. คลิก OK
