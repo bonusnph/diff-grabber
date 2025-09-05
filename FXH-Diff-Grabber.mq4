@@ -127,6 +127,9 @@ bool g_auto_capital_detected = false;
 // Cached slave balance (to avoid STALE flickering)
 double g_cached_slave_balance = 0.0;
 bool g_has_slave_balance = false;
+// Cached slave equity (to avoid flicker when peer inactive)
+double g_cached_slave_equity = 0.0;
+bool g_has_slave_equity = false;
 int    g_digits;
 double g_point;
 int    g_magic;
@@ -2985,6 +2988,25 @@ bool ReadPeerEquityFresh(double &equity_out, ulong &ts_out)
    return true;
 }
 
+// Update cached slave equity if fresh data is available
+void UpdateCachedSlaveEquity()
+{
+   double slave_equity = 0.0;
+   ulong slave_ts = 0;
+   bool slave_ok = ReadPeerEquityFresh(slave_equity, slave_ts);
+   if(slave_ok && slave_equity > 0.0)
+   {
+      g_cached_slave_equity = slave_equity;
+      g_has_slave_equity = true;
+   }
+}
+
+// Get cached slave equity (returns last known value, never shows STALE)
+double GetCachedSlaveEquity()
+{
+   return g_has_slave_equity ? g_cached_slave_equity : 0.0;
+}
+
 // Get sum of master and slave equity (realtime)
 double GetSumEquity()
 {
@@ -2992,12 +3014,22 @@ double GetSumEquity()
    double slave_equity = 0.0;
    ulong slave_ts = 0;
    
+   // Prefer fresh equity; when fresh, also refresh cache
    if(ReadPeerEquityFresh(slave_equity, slave_ts))
    {
+      if(slave_equity > 0.0)
+      {
+         g_cached_slave_equity = slave_equity;
+         g_has_slave_equity = true;
+      }
       return master_equity + slave_equity;
    }
    
-   // If slave equity not available, return only master equity
+   // Fallback to cached slave equity to avoid flicker when peer inactive
+   if(g_has_slave_equity)
+      return master_equity + g_cached_slave_equity;
+   
+   // If no cache yet, return only master equity
    return master_equity;
 }
 
@@ -3289,6 +3321,8 @@ void DisplayUpdate()
       string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
       if(ObjectFind(0, eq_value) != -1)
       {
+         // Keep cache fresh opportunistically to reduce flicker when peer inactive
+         UpdateCachedSlaveEquity();
          double sum_equity = GetSumEquity();
          string equity_text = StringFormat("$%.2f", sum_equity);
          

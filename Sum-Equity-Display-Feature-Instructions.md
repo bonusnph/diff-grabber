@@ -49,6 +49,12 @@ bool ReadPeerEquityFresh(double &equity_out, ulong &ts_out)
 
 // Get sum of master and slave equity (realtime)
 double GetSumEquity()
+ 
+// Update cached slave equity if fresh data is available
+void UpdateCachedSlaveEquity()
+ 
+// Get cached slave equity (returns last known value)
+double GetCachedSlaveEquity()
 ```
 
 #### 3. Display Objects
@@ -58,13 +64,14 @@ double GetSumEquity()
 
 ### Data Sources
 - **Master Equity**: `AccountEquity()` (MT4) / `AccountInfoDouble(ACCOUNT_EQUITY)` (MT5)
-- **Slave Equity**: Read from `account_slave.csv` file via `ReadPeerEquityFresh()`
+- **Slave Equity (Fresh)**: Read from `account_slave.csv` via `ReadPeerEquityFresh()`
 - **Freshness Check**: Data must be within `EffectiveHeartbeatTimeoutMs()` to be considered valid
+- **Slave Equity (Cache Fallback)**: When fresh data is unavailable (peer inactive), fallback to the last known value stored in cache to avoid flickering
 
 ### Update Frequency
 - **Real-time**: Updated on every `DisplayUpdate()` call
 - **Performance**: Minimal impact - only file read and simple calculations
-- **Fallback**: Shows Master equity only if Slave data unavailable
+- **Anti-flicker Fallback**: If Slave equity is stale, the display uses cached Slave equity to keep the Sum Equity stable
 
 ## Usage Instructions
 
@@ -100,9 +107,10 @@ double GetSumEquity()
 **Cause**: `input_debug_buttons_enabled = false`
 **Solution**: Enable debug buttons in EA inputs
 
-#### 2. Shows Only Master Equity
-**Cause**: Slave data not available or stale
-**Check**: 
+#### 2. Display Jumps or Flickers when Peer Inactive
+**Cause**: Previously due to missing Slave equity
+**Resolution**: Now mitigated by cache fallback. Verify that the cache updates when the peer becomes active again.
+**Check**:
 - Slave EA running and connected
 - File sync working properly
 - Heartbeat timeout settings

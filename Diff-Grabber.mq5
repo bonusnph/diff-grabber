@@ -111,9 +111,9 @@ string input_close_only_start_time        = "00:57";   // Scope: Master — star
 string input_close_only_end_time          = "08:03";   // Scope: Master — end time for close only mode (HH:mm format)
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
-bool   input_sat_close_only_enabled       = true;           // Scope: Master — enable weekend close-only (Sat start -> Mon end)
-string input_sat_close_only_start_time    = "00:57";   // Scope: Master — Saturday start time (HH:mm)
-string input_mon_close_only_end_time      = "08:03";   // Scope: Master — Monday end time (HH:mm)
+input bool   input_sat_close_only_enabled       = true;           // Scope: Master — enable weekend close-only (Sat start -> Mon end)
+input string input_sat_close_only_start_time    = "00:57";   // Scope: Master — Saturday start time (HH:mm)
+input string input_mon_close_only_end_time      = "08:03";   // Scope: Master — Monday end time (HH:mm)
 
 // -----------------------------
 // Globals
