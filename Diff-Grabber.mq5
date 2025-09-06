@@ -60,7 +60,7 @@ int    input_raw_stability_timeout_ms = 500;          // Scope: Master — max w
 int    input_raw_hysteresis_offset   = 10;           // Scope: Master — hysteresis offset below threshold for reset (points)
 
 // Averaged diff gating (Master-only)
-input bool   input_avg_filter_enabled       = false;         // Scope: Master — enable EMA-based averaged diff gating
+input bool   input_avg_filter_enabled       = true;         // Scope: Master — enable EMA-based averaged diff gating
 int    input_avg_period               = 9;             // Scope: Master — EMA period (ticks)
 bool   input_use_prefilter_median     = true;          // Scope: Master — apply median pre-filter before EMA
 int    input_prefilter_window         = 3;             // Scope: Master — median window (odd 3/5)
@@ -107,8 +107,8 @@ input double input_initial_capital_usd       = 0.00;          // Scope: Master �
 
 // Scheduled Close Only Mode (Master only)
 input bool   input_scheduled_close_only_enabled = true;     // Scope: Master — enable scheduled close only mode
-string input_close_only_start_time        = "00:57";   // Scope: Master — start time for close only mode (HH:mm format)
-string input_close_only_end_time          = "08:03";   // Scope: Master — end time for close only mode (HH:mm format)
+input string input_close_only_start_time        = "00:57";   // Scope: Master — start time for close only mode (HH:mm format)
+input string input_close_only_end_time          = "08:03";   // Scope: Master — end time for close only mode (HH:mm format)
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
 input bool   input_sat_close_only_enabled       = true;           // Scope: Master — enable weekend close-only (Sat start -> Mon end)
