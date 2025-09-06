@@ -3483,6 +3483,13 @@ void MasterCloseNow()
    if(!(input_role==ROLE_MASTER)) return;
    g_debug_hold_open = false;
    
+   // Block manual close during Saturday quiet window to avoid side-only close
+   if(IsInSaturdayQuietWindow())
+   {
+      LogEvent("CLOSE_CMD_BLOCKED", "reason=SATURDAY_QUIET");
+      return;
+   }
+   
    LogEvent("CLOSE_TRIGGER", "source=MANUAL_BUTTON");
 
    string cmd_id = NewCmdId(); ulong created_ms = NowMs();

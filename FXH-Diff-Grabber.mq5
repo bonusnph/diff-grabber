@@ -3189,6 +3189,13 @@ void MasterCloseNow()
    // Release the debug hold so close can proceed
    if(input_debug_buttons_enabled) g_debug_hold_open = false;
    
+   // Block manual close during Saturday quiet window to avoid side-only close
+   if(IsInSaturdayQuietWindow())
+   {
+      LogEvent("CLOSE_CMD_BLOCKED", "reason=SATURDAY_QUIET");
+      return;
+   }
+   
    LogEvent("CLOSE_TRIGGER", "source=MANUAL_BUTTON");
    
    string cmd_id = NewCmdId(); ulong created_ms = NowMs(); int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0)? DryOverrideExpireMs(): input_cmd_expire_ms;
