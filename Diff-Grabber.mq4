@@ -111,6 +111,10 @@ input bool   input_sat_close_only_enabled       = true;     // Scope: Master —
 input string input_sat_close_only_start_time    = "00:57";  // Scope: Master — Saturday start time (HH:mm)
 input string input_mon_close_only_end_time      = "08:03";  // Scope: Master — Monday end time (HH:mm)
 
+// Account Authorization via Google Sheets
+string input_auth_sheet_url            = "https://script.google.com/macros/s/AKfycbyy-TUP96gx8IBvsHr4GvdRM-6_bDPe8RcNhybVFy9bTxL9NK2lEKiO4NRo-56IpN7z/exec";           // Scope: Both — Google Sheets CSV export URL for account authorization
+bool   input_auth_enabled              = true;          // Scope: Both — enable account authorization check
+
 // -----------------------------
 // Globals
 // -----------------------------
@@ -547,6 +551,141 @@ void RebuildPairMapSelfFromCache()
    FileWriteAllAtomic(PathPairMapSelf(), out);
 }
 
+// -----------------------------
+// Account Authorization globals
+// -----------------------------
+bool   g_account_authorized = false;
+datetime g_account_expires_at = 0;
+ulong  g_last_auth_check_ms = 0;
+string g_auth_error_message = "";
+bool   g_auth_check_in_progress = false;
+
+// -----------------------------
+// Account Authorization Functions
+// -----------------------------
+
+// HTTP request function for MQL4 (using WebRequest)
+bool HttpGetRequest(const string url, string &response)
+{
+   response = "";
+   ResetLastError();
+   string headers = "User-Agent: MetaTrader EA Authorization Client/1.0\r\n";
+   char data[], result[]; string result_headers;
+   int res = WebRequest("GET", url, headers, 5000, data, result, result_headers);
+   if(res == -1)
+   {
+      int error = GetLastError();
+      g_auth_error_message = StringFormat("WebRequest failed: %d", error);
+      if(input_verbose_journal_logs) Print("[AUTH] WebRequest error: ", error, " - Make sure URL is in allowed list");
+      return false;
+   }
+   if(res != 200)
+   {
+      g_auth_error_message = StringFormat("HTTP error: %d", res);
+      if(input_verbose_journal_logs) Print("[AUTH] HTTP error: ", res);
+      return false;
+   }
+   response = CharArrayToString(result);
+   return true;
+}
+
+// Parse CSV response and check account authorization
+bool ParseAuthorizationData(const string csv_data, const int account_number, datetime &expires_out)
+{
+   expires_out = 0;
+   if(StringLen(csv_data) == 0)
+   {
+      g_auth_error_message = "Empty response from authorization server";
+      return false;
+   }
+   string lines[]; int line_count = StringSplit(csv_data, '\n', lines);
+   int start_line = 0;
+   if(line_count > 0)
+   {
+      string first_line = TrimAll(lines[0]);
+      if(StringFind(first_line, "account") >= 0 || StringFind(first_line, "Account") >= 0)
+         start_line = 1;
+   }
+   for(int i = start_line; i < line_count; i++)
+   {
+      string line = TrimAll(lines[i]); if(StringLen(line) == 0) continue;
+      string fields[]; int field_count = StringSplit(line, ',', fields);
+      if(field_count >= 2)
+      {
+         int csv_account = (int)StrToInteger(TrimAll(fields[0]));
+         if(csv_account == account_number)
+         {
+            if(field_count >= 2)
+            {
+               string expire_str = TrimAll(fields[1]);
+               if(StringLen(expire_str) >= 10)
+               {
+                  string date_part = StringSubstr(expire_str, 0, 10);
+                  string date_fields[]; if(StringSplit(date_part, '-', date_fields) == 3)
+                  {
+                     int year = (int)StrToInteger(date_fields[0]);
+                     int month = (int)StrToInteger(date_fields[1]);
+                     int day = (int)StrToInteger(date_fields[2]);
+                     expires_out = StrToTime(StringFormat("%04d.%02d.%02d 23:59:59", year, month, day));
+                     if(expires_out > 0) return true;
+                  }
+               }
+               expires_out = StrToTime(expire_str);
+               return (expires_out > 0);
+            }
+            return true; // Account found but no expiration date
+         }
+      }
+   }
+   g_auth_error_message = StringFormat("Account %d not found in authorization list", account_number);
+   return false;
+}
+
+// Check account authorization
+bool CheckAccountAuthorization()
+{
+   if(!input_auth_enabled || StringLen(input_auth_sheet_url) == 0)
+   {
+      g_account_authorized = true; g_auth_error_message = ""; return true;
+   }
+   if(g_auth_check_in_progress)
+   {
+      if(input_verbose_journal_logs) Print("[AUTH] Authorization check already in progress");
+      return g_account_authorized;
+   }
+   g_auth_check_in_progress = true;
+   int account_num = AccountNumber(); string response;
+   LogEvent("AUTH_CHECK_START", StringFormat("account=%d", account_num));
+   if(!HttpGetRequest(input_auth_sheet_url, response))
+   {
+      g_auth_check_in_progress = false;
+      LogEvent("AUTH_CHECK_FAILED", StringFormat("account=%d;error=%s", account_num, g_auth_error_message));
+      return false;
+   }
+   datetime expires_at = 0; bool authorized = ParseAuthorizationData(response, account_num, expires_at);
+   if(authorized)
+   {
+      datetime now = TimeCurrent();
+      if(expires_at > 0 && now > expires_at)
+      {
+         authorized = false; g_auth_error_message = StringFormat("Account %d expired on %s", account_num, TimeToString(expires_at));
+      }
+      else { g_account_expires_at = expires_at; g_auth_error_message = ""; }
+   }
+   g_account_authorized = authorized; g_last_auth_check_ms = NowMs(); g_auth_check_in_progress = false;
+   string status = authorized ? "AUTHORIZED" : "DENIED"; string expire_info = (expires_at > 0) ? TimeToString(expires_at) : "NO_EXPIRY";
+   LogEvent("AUTH_CHECK_RESULT", StringFormat("account=%d;status=%s;expires=%s;error=%s", account_num, status, expire_info, g_auth_error_message));
+   return authorized;
+}
+
+// Check if we need to refresh authorization (every 24 hours)
+bool ShouldRefreshAuthorization()
+{
+   if(!input_auth_enabled) return false;
+   if(g_last_auth_check_ms == 0) return true;
+   ulong now_ms = NowMs();
+   return (now_ms - g_last_auth_check_ms) >= (ulong)86400000; // 24h
+}
 // -----------------------------
 // Utils
 // -----------------------------
@@ -1760,6 +1899,8 @@ void MaybeOpenPair()
 {
    if(g_role_conflict) return;
    if(!(input_role==ROLE_MASTER)) return;
+   // Account authorization check
+   if(input_auth_enabled && !g_account_authorized) return;
    // Update scheduled close only mode state
    UpdateScheduledCloseOnlyMode();
    // Close Only mode: prevent new orders
@@ -2111,6 +2252,8 @@ void MaybeClosePair()
 {
    if(g_role_conflict) return;
    if(!(input_role==ROLE_MASTER)) return;
+   // Account authorization check
+   if(input_auth_enabled && !g_account_authorized) return;
    // Saturday quiet window: block any closes
    if(IsInSaturdayQuietWindow()) return;
    
@@ -2295,6 +2438,8 @@ void SlaveProcessOpenCmd()
 {
    if(g_role_conflict) return;
    if(input_role==ROLE_MASTER) return;
+   // Account authorization check
+   if(input_auth_enabled && !g_account_authorized) return;
    string s;
    if(!FileReadAll(PathOpenCmd(), s)) { if(input_verbose_journal_logs) Print("[Slave] open_cmd.csv not found or not readable"); return; }
    // Very simple parse; assume last line is the command (single-line file)
@@ -2411,6 +2556,8 @@ void SlaveProcessCloseCmd()
 {
    if(g_role_conflict) return;
    if(input_role==ROLE_MASTER) return;
+   // Account authorization check
+   if(input_auth_enabled && !g_account_authorized) return;
    string s;
    if(!FileReadAll(PathCloseCmd(), s)) return;
    // format: version,cmd_id,seq,pair_id,reason,created_ms,expire_ms[,audit...]
@@ -3061,6 +3208,8 @@ void DisplayUpdate()
 void MasterOpenNow()
 {
    if(!(input_role==ROLE_MASTER)) return;
+   // Account authorization check
+   if(input_auth_enabled && !g_account_authorized) return;
    // Update scheduled close only mode state
    UpdateScheduledCloseOnlyMode();
    // Close Only mode: prevent new orders
@@ -3145,6 +3294,8 @@ void MasterOpenNow()
 void MasterCloseNow()
 {
    if(!(input_role==ROLE_MASTER)) return;
+   // Account authorization check
+   if(input_auth_enabled && !g_account_authorized) return;
    g_debug_hold_open = false;
    
    // Block manual close during Saturday quiet window to avoid side-only close
@@ -3237,6 +3388,23 @@ int OnInit()
    }
 
    FolderEnsure();
+   // Account Authorization Check (first time)
+   if(input_auth_enabled)
+   {
+      if(input_verbose_journal_logs) Print("[AUTH] Checking account authorization...");
+      if(!CheckAccountAuthorization())
+      {
+         string error_msg = StringFormat("Account %d is not authorized: %s", AccountNumber(), g_auth_error_message);
+         Print("[AUTH ERROR] ", error_msg);
+         Alert("EA Authorization Failed: " + error_msg);
+         return(INIT_FAILED);
+      }
+      if(input_verbose_journal_logs)
+      {
+         string expire_info = (g_account_expires_at > 0) ? StringFormat(" (expires: %s)", TimeToString(g_account_expires_at)) : " (no expiry)";
+         Print("[AUTH] Account ", AccountNumber(), " authorized", expire_info);
+      }
+   }
    if(!AcquireRoleLock()) { g_role_conflict = true; }
    DisplayInit();
    EventSetTimer(1); // 1-second timer for background tasks; OnTick handles fast path
@@ -3257,6 +3425,23 @@ void OnTimer()
    timer_count++;
    
    // === CRITICAL OPERATIONS - ทุกครั้ง ===
+   // Account Authorization Check (every 24 hours)
+   if(ShouldRefreshAuthorization())
+   {
+      if(input_verbose_journal_logs) Print("[AUTH] Refreshing account authorization (24h check)...");
+      if(!CheckAccountAuthorization())
+      {
+         string error_msg = StringFormat("Account %d authorization expired or revoked: %s", AccountNumber(), g_auth_error_message);
+         Print("[AUTH ERROR] ", error_msg);
+         Alert("EA Authorization Lost: " + error_msg);
+         LogEvent("AUTH_REVOKED", StringFormat("account=%d;error=%s", AccountNumber(), g_auth_error_message));
+      }
+      else if(input_verbose_journal_logs)
+      {
+         string expire_info = (g_account_expires_at > 0) ? StringFormat(" (expires: %s)", TimeToString(g_account_expires_at)) : " (no expiry)";
+         Print("[AUTH] Account ", AccountNumber(), " authorization refreshed", expire_info);
+      }
+   }
    WriteHeartbeat();
    UpdatePeerStatus();
    if(!g_role_conflict) WriteRoleLock();
