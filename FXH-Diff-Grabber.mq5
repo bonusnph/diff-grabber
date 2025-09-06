@@ -1618,7 +1618,7 @@ bool ReadMasterConfigForSlave()
       g_master_dry_suppress_heartbeat = (StringToInteger(f[15])!=0);
    }
    // Guards/Timeouts starting from index 16 if present
-   if(n >= 27)
+   if(n >= 30)
    {
       g_master_max_spread_self = (int)StringToInteger(f[16]);
       g_master_max_spread_peer = (int)StringToInteger(f[17]);
@@ -1631,9 +1631,7 @@ bool ReadMasterConfigForSlave()
       g_master_heartbeat_timeout_ms = (int)StringToInteger(f[24]);
       g_master_reconcile_mode = (int)StringToInteger(f[25]);
       g_master_reconcile_interval_ms = (int)StringToInteger(f[26]);
-   }
-   if(n >= 30)
-   {
+      // New fields
       g_master_close_cooldown_seconds = (int)StringToInteger(f[27]);
       g_master_min_balance_master_usd = StringToDouble(f[28]);
       g_master_min_balance_slave_usd = StringToDouble(f[29]);
@@ -2803,11 +2801,11 @@ void DisplayUpdate()
       DisplaySetLine(line++, StringFormat("auth=%s%s", auth_status, expire_info));
    }
    
-   line = DisplaySetWrappedLines(line, StringFormat("sync_path=%s", PathChannelRootAbs()));
    string syncTxt = g_peer_alive?"OK":"WAITING";
    int hb_age = (int)(NowMs() - g_peer_hb_ms);
    string activeTxt = g_peer_alive?"YES":"NO";
    DisplaySetLine(line++, StringFormat("sync=%s  peer_hb_age=%dms  active=%s", syncTxt, hb_age, activeTxt));
+   line = DisplaySetWrappedLines(line, StringFormat("sync_path=%s", PathChannelRootAbs()));
    if(input_role==ROLE_MASTER)
    {
       DisplaySetLine(line++, StringFormat("lot(m/s)=%.2f/%.2f  side(M)=%s", input_lot_master, input_lot_slave, ((input_master_side==SIDE_BUY)?"BUY":"SELL")));
@@ -2850,7 +2848,7 @@ void DisplayUpdate()
       }
       DisplaySetLine(line++, StringFormat("spread=%d", spread));
       int closeLeftS=-1; if(g_last_pair_both_open_time>0){ int el=(int)(TimeCurrent()-g_last_pair_both_open_time); int rem=g_master_close_cooldown_seconds-el; if(rem<0) rem=0; closeLeftS=rem; }
-      DisplaySetLine(line++, StringFormat("close_cooldown=%ds left=%s", g_master_close_cooldown_seconds, (closeLeftS>=0?IntegerToString(closeLeftS):"-")));
+      // DisplaySetLine(line++, StringFormat("close_cooldown=%ds left=%s", g_master_close_cooldown_seconds, (closeLeftS>=0?IntegerToString(closeLeftS):"-")));
    }
    if(input_role==ROLE_MASTER)
    {
@@ -2969,15 +2967,15 @@ void DisplayUpdate()
          // Simple display for non-averaging mode
          string stOpen = "READY";
          string stClose = "READY";
-         DisplaySetLine(line++, StringFormat("Open: Real=%.1f Thr=%d | %s", dOpen, input_open_threshold_points, stOpen));
-         DisplaySetLine(line++, StringFormat("Close: Real=%.1f Thr=%d | %s", dClose, input_close_threshold_points, stClose));
+         DisplaySetLine(line++, StringFormat("Open: %.1f (Thr=%d) | %s", dOpen, input_open_threshold_points, stOpen));
+         DisplaySetLine(line++, StringFormat("Close: %.1f (Thr=%d) | %s", dClose, input_close_threshold_points, stClose));
       }
    }
          else
       {
          // Simple display for Slave or non-averaging Master
          string freshStatus = QuotesFresh() ? "OK" : "STALE";
-         DisplaySetLine(line++, StringFormat("Open: %.1f  Close: %.1f  Fresh: %s", dOpen, dClose, freshStatus));
+         DisplaySetLine(line++, StringFormat("diffOpen=%.1f  diffClose=%.1f  fresh=%s", dOpen, dClose, freshStatus));
       }
    if(g_role_conflict) DisplaySetLine(line++, "role_conflict=YES (single-instance per channel)" );
    int effMode = DryMode();
@@ -3550,6 +3548,7 @@ void OnTick()
    }
    else 
    { 
+      ReadMasterConfigForSlave();
       SlaveProcessOpenCmd(); 
       SlaveProcessCloseCmd(); 
    }

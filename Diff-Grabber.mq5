@@ -1413,7 +1413,7 @@ bool ReadMasterConfigForSlave()
       g_master_dry_suppress_heartbeat = (StringToInteger(f[15])!=0);
    }
    // Guards/Timeouts starting from index 16 if present
-   if(n >= 27)
+   if(n >= 30)
    {
       g_master_max_spread_self = (int)StringToInteger(f[16]);
       g_master_max_spread_peer = (int)StringToInteger(f[17]);
@@ -1426,9 +1426,7 @@ bool ReadMasterConfigForSlave()
       g_master_heartbeat_timeout_ms = (int)StringToInteger(f[24]);
       g_master_reconcile_mode = (int)StringToInteger(f[25]);
       g_master_reconcile_interval_ms = (int)StringToInteger(f[26]);
-   }
-   if(n >= 30)
-   {
+      // New fields
       g_master_close_cooldown_seconds = (int)StringToInteger(f[27]);
       g_master_min_balance_master_usd = StringToDouble(f[28]);
       g_master_min_balance_slave_usd = StringToDouble(f[29]);
@@ -3148,6 +3146,7 @@ void OnTick()
    }
    else 
    { 
+      ReadMasterConfigForSlave();
       SlaveProcessOpenCmd(); 
       SlaveProcessCloseCmd(); 
    }

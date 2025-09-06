@@ -1567,6 +1567,16 @@ bool ReadMasterConfigForSlave()
    string s; if(!FileReadAll(PathConfigMaster(), s)) return false;
    string f[]; int n = StringSplit(TrimAll(s), ',', f);
    if(n < 10) return false;
+   // f[0]=version, f[1]=symbol, f[2]=side, f[3]=lotM, f[4]=lotS, f[5]=open_th, f[6]=close_th, f[7]=cooldown, f[8]=max_pairs, f[9]=updated_ms
+   g_have_master_cmd = true;
+   g_last_cmd_side = f[2];
+   g_last_cmd_lot_master = StringToDouble(f[3]);
+   g_last_cmd_lot_slave  = StringToDouble(f[4]);
+   g_have_master_th = true;
+   g_last_cmd_open_th = (int)StringToInteger(f[5]);
+   g_last_cmd_close_th = (int)StringToInteger(f[6]);
+   g_last_cmd_seen_ms = NowMs();
+   // Optional dry-run fields from master
    if(n >= 16)
    {
       g_master_dry_enabled = (StrToInteger(f[10])!=0);
@@ -1576,6 +1586,7 @@ bool ReadMasterConfigForSlave()
       g_master_dry_override_expire_ms = (int)StrToInteger(f[14]);
       g_master_dry_suppress_heartbeat = (StrToInteger(f[15])!=0);
    }
+   // Guards/Timeouts starting from index 16 if present
    if(n >= 30)
    {
       g_master_max_spread_self = (int)StrToInteger(f[16]);
@@ -2769,7 +2780,7 @@ void DisplayUpdate()
    }
    else
    {
-      // Slave: prefer showing authoritative values from master open_cmd if available; otherwise hide
+      if(!g_have_master_cmd) ReadMasterConfigForSlave();
       if(g_have_master_cmd)
       {
          string sideS = (g_last_cmd_side=="BUY")?"SELL":"BUY";
@@ -3272,7 +3283,7 @@ void OnTimer()
    {
       LogsCleanupRetention();
       WriteMasterConfig();
-      ReadMasterConfigForSlave();
+      if(!(input_role==ROLE_MASTER)) ReadMasterConfigForSlave();
    }
    
    // Weighted suggest refresh (master only, infrequent)
