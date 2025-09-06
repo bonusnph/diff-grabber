@@ -73,8 +73,8 @@ int    input_epsilon_diff_points      = 1;             // Scope: Master — smal
 int    input_avg_signal_cooldown_ms   = 400;           // Scope: Master — signal-level cooldown after order (ms)
 
 // Quality guards
-int    input_max_spread_points_self   = 10;            // Scope: Master — block if own spread exceeds (points)
-int    input_max_spread_points_peer   = 20;            // Scope: Master — check peer spread before opening (points)
+int    input_max_spread_points_self   = 30;            // Scope: Master — block if own spread exceeds (points)
+int    input_max_spread_points_peer   = 30;            // Scope: Master — check peer spread before opening (points)
 int    input_quotes_fresh_ms          = 400;           // Scope: Master — maximum acceptable quote age (ms)
 int    input_file_poll_ms             = 5;             // Scope: Master — background file polling cadence (ms)
 int    input_magic_number_base        = 900100;        // Scope: Master — magic base per channel/symbol
@@ -118,7 +118,7 @@ input string input_mon_close_only_end_time      = "08:03";   // Scope: Master �
 
 // Account Authorization via Google Sheets
 string input_auth_sheet_url            = "https://script.google.com/macros/s/AKfycbyy-TUP96gx8IBvsHr4GvdRM-6_bDPe8RcNhybVFy9bTxL9NK2lEKiO4NRo-56IpN7z/exec";           // Scope: Both — Google Sheets CSV export URL for account authorization
-bool   input_auth_enabled              = true;          // Scope: Both — enable account authorization check
+bool   input_auth_enabled              = false;          // Scope: Both — enable account authorization check
 
 // -----------------------------
 // Globals
