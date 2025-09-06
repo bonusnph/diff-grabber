@@ -45,8 +45,9 @@ int    input_display_width_pixels      = 520;           // Scope: Both — width
 // Master decision parameters
 int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
 input MasterSide input_master_side          = SIDE_SELL;     // Scope: Master — master direction (Slave auto-opposite)
-input double input_lot_master               = 0.01;          // Scope: Master — lot size for master orders
-input double input_lot_slave                = 0.01;          // Scope: Master — advised lot for Slave; Slave ignores local lot input
+input double input_lot                      = 0.01;          // Scope: Both — lot size for orders (applies to Master and Slave)
+#define input_lot_master input_lot
+#define input_lot_slave  input_lot
 input int    input_open_threshold_points    = 30;            // Scope: Master — open threshold (points)
 input int    input_close_threshold_points   = 30;            // Scope: Master — close threshold (points)
 int    input_open_cooldown_seconds    = 300;           // Scope: Master — open cooldown after an open
