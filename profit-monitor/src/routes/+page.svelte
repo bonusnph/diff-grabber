@@ -9,10 +9,11 @@
 		account_count: 0
 	};
 	let summaries: AccountSummary[] = [];
-	let initialCapital = 60000;
-	let capitalPerUnit = 7500;
-	let totalActiveAccounts = 16;
-	let unitMappings: Record<number, string> = { 1: 'xs-sell', 2: 'xs-buy', 3: 'gold-sell' };
+	let initialCapital = 64000;
+	let capitalPerUnit = 16000;
+	let totalActiveAccounts = 8;
+	let warningEquityPercentage = 30;
+	let unitMappings: Record<number, string> = { 1: '', 2: '', 3: '', 4: '' };
 	let brokerMinMargins: Record<string, number> = {};
 	let unitGroups: Record<string, AccountSummary[]> = {};
 	let unitStats: Array<{
@@ -49,7 +50,7 @@
 	let filtersInitialized = false;
 	let showFilters = false;
 
-	// Unit visibility state (default all visible)
+	// Unit visibility state (default all expanded)
 	let unitVisibility: Record<number, boolean> = {};
 
 	// Pause auto fetch when settings modal is open
@@ -127,7 +128,7 @@
 	}
 
 	function isUnitVisible(unit: number): boolean {
-		// Default to true (visible) if undefined, otherwise use the stored value
+		// Default to true (expanded) if undefined, otherwise use the stored value
 		return unitVisibility[unit] !== false;
 	}
 
@@ -286,6 +287,10 @@
 	$: insufficientBalanceAccounts = summaries.filter(isInsufficientBalance);
 	$: insufficientBalanceCount = insufficientBalanceAccounts.length;
 
+	// Count accounts with low equity warning
+	$: lowEquityWarningAccounts = summaries.filter(isLowEquityWarning);
+	$: lowEquityWarningCount = lowEquityWarningAccounts.length;
+
 	async function fetchData() {
 		const showRefreshing = !loading;
 		if (showRefreshing) {
@@ -324,6 +329,7 @@
 			initialCapital = data.initial_capital;
 			capitalPerUnit = data.capital_per_unit;
 			totalActiveAccounts = data.total_active_accounts;
+			warningEquityPercentage = data.warning_equity_percentage || 30;
 			unitMappings = data.unit_mappings || {};
 			brokerMinMargins = data.broker_min_margins || {};
 			unitWithdrawals = data.unit_withdrawals || {};
@@ -624,6 +630,12 @@
 		return account.latest_equity <= min;
 	}
 
+	function isLowEquityWarning(account: AccountSummary): boolean {
+		const targetEquity = capitalPerUnit / 2;
+		const warningThreshold = targetEquity * (warningEquityPercentage / 100);
+		return account.latest_equity < warningThreshold;
+	}
+
 	function computeUnitDelta(accounts: AccountSummary[]): number | null {
 		const buy = accounts.find(
 			(a) => a.lastPositionSide === 'BUY' && (a.lastPositionEntryPrice ?? 0) > 0
@@ -789,6 +801,7 @@
 					initial_capital: initialCapital,
 					capital_per_unit: capitalPerUnit,
 					total_active_accounts: totalActiveAccounts,
+					warning_equity_percentage: warningEquityPercentage,
 					unit_mappings: unitMappings
 				})
 			});
@@ -797,6 +810,7 @@
 				initialCapital = data.initial_capital;
 				capitalPerUnit = data.capital_per_unit;
 				totalActiveAccounts = data.total_active_accounts;
+				warningEquityPercentage = data.warning_equity_percentage || warningEquityPercentage;
 				unitMappings = data.unit_mappings || unitMappings;
 				// await loadInitialCapital();
 				// await fetchData();
@@ -1085,32 +1099,39 @@
 					</div>
 				</div>
 				<!-- Open Pairs Summary (moved inside Total Profit/Loss card) -->
-				<div class="grid grid-cols-3 gap-2 mt-3">
-					<div class="bg-gray-800 border border-gray-700 rounded-md shadow p-2">
-						<h3 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Positive Open Points</h3>
-						<div class="mt-1 flex flex-wrap gap-1">
+				<!-- Row 1: Positive and Negative Open Points -->
+				<div class="grid grid-cols-2 gap-3 mt-3">
+					<div class="rounded-lg shadow-lg p-3 {positivePairs.length > 0 ? 'bg-gradient-to-br from-green-900/60 to-green-800/40' : ''}"
+					>
+						<h3 class="text-sm font-bold text-green-300 uppercase tracking-wide">Positive Open</h3>
+						<div class="mt-2 flex flex-wrap gap-1.5">
 							{#each positivePairs as d}
-								<span class="inline-flex items-center justify-center min-w-6 h-5 px-1 rounded-full text-[9px] font-bold bg-green-900/40 border border-green-600 text-green-300">
+								<span class="inline-flex items-center justify-center min-w-7 h-6 px-1.5 rounded-full text-xs font-bold bg-green-700/60 text-green-200 shadow-sm">
 									{(d.delta as number) >= 0 ? '+' : ''}{Math.round(d.delta as number)}
 								</span>
 							{/each}
 						</div>
 					</div>
-					<div class="bg-gray-800 border border-gray-700 rounded-md shadow p-2">
-						<h3 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Negative Open Points</h3>
-						<div class="mt-1 flex flex-wrap gap-1">
+					<div class="rounded-lg shadow-lg p-3 {negativePairs.length > 0 ? 'bg-gradient-to-br from-red-900/60 to-red-800/40' : ''}"
+					>
+						<h3 class="text-sm font-bold text-red-300 uppercase tracking-wide">Negative Open</h3>
+						<div class="mt-2 flex flex-wrap gap-1.5">
 							{#each negativePairs as d}
-								<span class="inline-flex items-center justify-center min-w-6 h-5 px-1 rounded-full text-[9px] font-bold bg-red-900/40 border border-red-600 text-red-300">
+								<span class="inline-flex items-center justify-center min-w-7 h-6 px-1.5 rounded-full text-xs font-bold bg-red-700/60 text-red-200 shadow-sm">
 									{Math.round(d.delta as number)}
 								</span>
 							{/each}
 						</div>
 					</div>
-					<div class="bg-gray-800 border border-gray-700 rounded-md shadow p-2">
-						<h3 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Insufficient Balance</h3>
+				</div>
+				
+				<!-- Row 2: Warning Boxes -->
+				<div class="grid grid-cols-2 gap-3 mt-3">
+					<div class="bg-gray-800 rounded-md shadow p-2.5 opacity-90">
+						<h3 class="text-xs font-semibold text-red-300 uppercase tracking-wide">Insufficient Balance</h3>
 						<div class="mt-1 flex items-center justify-between">
 							<div class="flex items-center gap-1">
-								<span class="text-xl font-bold text-red-400">{insufficientBalanceCount}</span>
+								<span class="text-lg font-bold text-red-400">{insufficientBalanceCount}</span>
 							</div>
 							{#if insufficientBalanceCount > 0}
 								<div class="flex items-center gap-1">
@@ -1122,8 +1143,29 @@
 							{/if}
 						</div>
 						{#if insufficientBalanceCount > 0}
-							<div class="mt-1 text-xs text-gray-500">
-								Accounts below minimum margin requirement
+							<div class="mt-1 text-xs text-gray-400">
+								Below minimum margin requirement
+							</div>
+						{/if}
+					</div>
+					<div class="bg-gray-800  rounded-md shadow p-2.5 opacity-90">
+						<h3 class="text-xs font-semibold text-yellow-300 uppercase tracking-wide">Low Equity Warning</h3>
+						<div class="mt-1 flex items-center justify-between">
+							<div class="flex items-center gap-1">
+								<span class="text-lg font-bold text-yellow-400">{lowEquityWarningCount}</span>
+							</div>
+							{#if lowEquityWarningCount > 0}
+								<div class="flex items-center gap-1">
+									<svg class="w-3 h-3 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+									</svg>
+									<span class="text-xs text-yellow-400 font-medium">Warning</span>
+								</div>
+							{/if}
+						</div>
+						{#if lowEquityWarningCount > 0}
+							<div class="mt-1 text-xs text-gray-400">
+								Below {warningEquityPercentage}% equity threshold
 							</div>
 						{/if}
 					</div>
@@ -1133,44 +1175,51 @@
 				class="text-center transition-all duration-500 ease-out filter"
 			>
 				
-				<p
-					class="text-4xl font-black {!isDataComplete ? 'opacity-60' : ''}"
-					class:text-green-400={adjustedProfitLoss >= 0}
-					class:text-red-400={adjustedProfitLoss < 0}
+				<!-- Enhanced P/L Display with prominent styling -->
+				<div 
+					class="bg-gradient-to-br from-gray-800/60 to-gray-700/40 rounded-xl shadow-lg p-4 mx-2"
 				>
-					{adjustedProfitLoss >= 0 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
-				</p>
-				{#if totalWaitingWD !== 0}
-					<p class="text-xs text-gray-400">
-						<span class="text-gray-400">
-							Real P/L: {stats.profit_loss >= 0 ? '+' : ''}{formatNumber(stats.profit_loss)}
-						</span>
-						<span class="mx-2">|</span>
-						<span class="text-gray-400">
-							Waiting WD: {totalWaitingWD >= 0 ? '+' : ''}{formatNumber(totalWaitingWD)}
-						</span>
-					</p>
-				{/if}
-				<p
-					class="text-sm"
-					class:text-green-400={adjustedProfitLossPercent >= 0}
-					class:text-red-400={adjustedProfitLossPercent < 0}
-				>
-					{adjustedProfitLossPercent >= 0 ? '+' : ''}{formatPercent(adjustedProfitLossPercent)}
-				</p>
-				<div class="mt-1 flex items-center justify-center gap-2">
-					<span
-						class="px-2 py-0.5 rounded-full text-xs font-medium"
-						class:bg-green-700={adjustedProfitLoss >= 0}
-						class:bg-red-700={adjustedProfitLoss < 0}
+					<!-- Main P/L Amount -->
+					<p
+						class="text-7xl font-black {!isDataComplete ? 'opacity-60' : ''}"
+						class:text-green-300={adjustedProfitLoss >= 0}
+						class:text-red-300={adjustedProfitLoss < 0}
 					>
-						{adjustedProfitLoss >= 0 ? 'Profitable' : 'Loss'}
-					</span>
-					{#if !isDataComplete}
-						<span
-							class="px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-900 border border-yellow-600 text-yellow-200"
-							>Partial Data</span
+						{adjustedProfitLoss >= 0 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
+					</p>
+					
+					<!-- Prominent P/L Percentage -->
+					<div class="rounded-lg p-1 mb-4"
+					>
+						<p
+							class="text-4xl font-black"
+							class:text-green-200={adjustedProfitLossPercent >= 0}
+							class:text-red-200={adjustedProfitLossPercent < 0}
 						>
+							{adjustedProfitLossPercent >= 0 ? '+' : ''}{formatPercent(adjustedProfitLossPercent)}
+						</p>
+					</div>
+
+					{#if totalWaitingWD !== 0}
+						<p class="text-sm text-gray-300 mb-2 bg-gray-700/50 rounded px-2 py-1">
+							<span class="text-gray-300">
+								Real P/L: {stats.profit_loss >= 0 ? '+' : ''}{formatNumber(stats.profit_loss)}
+							</span>
+							<span class="mx-2 text-gray-500">|</span>
+							<span class="text-gray-300">
+								Waiting WD: {totalWaitingWD >= 0 ? '+' : ''}{formatNumber(totalWaitingWD)}
+							</span>
+						</p>
+					{/if}
+					
+					{#if !isDataComplete}
+					<div class="flex items-center justify-center gap-3">
+						
+							<span
+								class="px-3 py-1.5 rounded-full text-sm font-bold bg-yellow-800 text-yellow-100 shadow-md"
+								>⚠️ Partial Data</span
+							>
+					</div>
 					{/if}
 				</div>
 			</div>
@@ -1285,6 +1334,8 @@
 						<!-- Unit Header (always visible) -->
 						<div 
 							class="flex justify-between items-center mb-2 border-b border-gray-600 pb-1 cursor-pointer hover:bg-gray-700 hover:bg-opacity-50 rounded px-1 py-0.5 transition-colors"
+							class:bg-red-950={accounts.some(isInsufficientBalance)}
+							class:bg-yellow-900={!accounts.some(isInsufficientBalance) && accounts.some(isLowEquityWarning)}
 							on:click={() => {
 								unitVisibility = { ...unitVisibility, [unit]: !(unitVisibility[unit] !== false) };
 							}}
@@ -1311,6 +1362,11 @@
 								</svg>
 								<h3 class="text-base font-medium text-gray-200">
 									{unit === 0 ? 'Unknown Unit' : getUnitDisplayName(unit)}
+									{#if accounts.some(isInsufficientBalance)}
+										<span class="text-red-400 font-bold ml-1" title="มีบัญชีที่เงินไม่เพียงพอในกลุ่มนี้">*</span>
+									{:else if accounts.some(isLowEquityWarning)}
+										<span class="text-yellow-400 font-bold ml-1" title="มีบัญชีที่ equity ต่ำกว่าเกณฑ์เตือนในกลุ่มนี้">⚠</span>
+									{/if}
 								</h3>
 								<span class="text-xs text-gray-500 bg-gray-600 px-1 py-0.5 rounded">
 									#{unit}
@@ -1377,6 +1433,7 @@
 										{@const dataAge = getDataAge(account.last_update)}
 										<tr
 											class="border-b border-gray-700 hover:bg-gray-600 transition-colors"
+											class:bg-yellow-800={!isInsufficientBalance(account) && dataAge.status !== 'warning' && dataAge.status !== 'danger' && isLowEquityWarning(account)}
 											class:bg-yellow-900={dataAge.status === 'warning'}
 											class:bg-red-900={dataAge.status === 'danger'}
 											class:bg-red-950={isInsufficientBalance(account)}
@@ -1516,7 +1573,7 @@
 							step="1000"
 							min="0"
 						/>
-						<span class="text-sm text-gray-400">THB</span>
+						<span class="text-sm text-gray-400">USD</span>
 					</div>
 					<p class="text-xs text-gray-500 mt-1">This value is used to calculate profit/loss</p>
 				</div>
@@ -1536,9 +1593,29 @@
 							step="100"
 							min="0"
 						/>
-						<span class="text-sm text-gray-400">THB</span>
+						<span class="text-sm text-gray-400">USD</span>
 					</div>
 					<p class="text-xs text-gray-500 mt-1">Capital amount per unit for P/L calculation</p>
+				</div>
+
+				<!-- Warning Equity Percentage Setting -->
+				<div>
+					<label for="modal-warning-equity-percentage" class="block text-sm font-medium text-gray-300 mb-2">
+						Warning Equity Percentage
+					</label>
+					<div class="flex items-center space-x-3">
+						<input
+							id="modal-warning-equity-percentage"
+							type="number"
+							bind:value={warningEquityPercentage}
+							class="flex-1 border border-gray-600 bg-gray-700 text-white rounded-md px-3 py-2 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+							step="1"
+							min="1"
+							max="100"
+						/>
+						<span class="text-sm text-gray-400">%</span>
+					</div>
+					<p class="text-xs text-gray-500 mt-1">Show warning when equity falls below this percentage of target (capital per unit / 2)</p>
 				</div>
 
 				<!-- Total Active Accounts Setting -->

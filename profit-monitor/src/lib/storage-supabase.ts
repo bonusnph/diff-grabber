@@ -23,7 +23,7 @@ class SupabaseStorage {
 		-- Create accounts table
 		CREATE TABLE IF NOT EXISTS accounts (
 			id SERIAL PRIMARY KEY,
-			account_number VARCHAR(50) NOT NULL,
+			account_number VARCHAR(50) NOT NULL UNIQUE,
 			account_name VARCHAR(255) NOT NULL,
 			broker_name VARCHAR(255) NOT NULL,
 			balance DECIMAL(15,2) NOT NULL,
@@ -33,13 +33,25 @@ class SupabaseStorage {
 			lastPositionSide VARCHAR(10) DEFAULT 'UNKNOWN',
 			lastPositionEntryPrice DECIMAL(15,5) DEFAULT 0,
 			created_at TIMESTAMPTZ DEFAULT NOW(),
-			UNIQUE(account_number, timestamp)
+			updated_at TIMESTAMPTZ DEFAULT NOW()
 		);
 
 		-- Create indexes
 		CREATE INDEX IF NOT EXISTS idx_accounts_number ON accounts(account_number);
 		CREATE INDEX IF NOT EXISTS idx_accounts_timestamp ON accounts(timestamp);
 		CREATE INDEX IF NOT EXISTS idx_accounts_unit ON accounts(unit);
+
+		-- Create trigger to update updated_at timestamp
+		CREATE OR REPLACE FUNCTION update_updated_at_column()
+		RETURNS TRIGGER AS $$
+		BEGIN
+			NEW.updated_at = NOW();
+			RETURN NEW;
+		END;
+		$$ language 'plpgsql';
+
+		CREATE TRIGGER update_accounts_updated_at BEFORE UPDATE ON accounts
+		FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 		-- Create settings table
 		CREATE TABLE IF NOT EXISTS settings (
@@ -70,10 +82,10 @@ class SupabaseStorage {
 				equity: data.equity,
 				unit: data.unit,
 				timestamp: data.timestamp,
-				lastPositionSide: data.lastPositionSide ?? 'UNKNOWN',
-				lastPositionEntryPrice: data.lastPositionEntryPrice ?? 0
+				position_side: data.lastPositionSide ?? 'UNKNOWN',
+				position_price: data.lastPositionEntryPrice ?? 0
 			}, {
-				onConflict: 'account_number,timestamp'
+				onConflict: 'account_number'
 			});
 
 		if (error) {
@@ -85,7 +97,7 @@ class SupabaseStorage {
 	async getAllAccountData(): Promise<AccountData[]> {
 		const { data, error } = await supabase
 			.from('accounts')
-			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, lastPositionSide, lastPositionEntryPrice')
+			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price')
 			.order('timestamp', { ascending: false });
 
 		if (error) {
@@ -93,42 +105,42 @@ class SupabaseStorage {
 			throw error;
 		}
 
-		return data || [];
+		return (data || []).map(record => ({
+			account_number: record.account_number,
+			account_name: record.account_name,
+			broker_name: record.broker_name,
+			balance: record.balance,
+			equity: record.equity,
+			unit: record.unit,
+			timestamp: record.timestamp,
+			lastPositionSide: record.position_side ?? 'UNKNOWN',
+			lastPositionEntryPrice: record.position_price ?? 0
+		}));
 	}
 
 	async getAccountSummaries(): Promise<AccountSummary[]> {
-		// Use fallback method to ensure new fields (lastPositionSide, lastPositionEntryPrice) are included
-		return this.getAccountSummariesFallback();
-	}
-
-	private async getAccountSummariesFallback(): Promise<AccountSummary[]> {
 		const { data, error } = await supabase
 			.from('accounts')
-			.select('*')
+			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price')
 			.order('timestamp', { ascending: false });
 
-		if (error) throw error;
+		if (error) {
+			console.error('Error getting account summaries:', error);
+			throw error;
+		}
 
-		// Group by account_number and get latest
-		const latestByAccount = new Map<string, any>();
-		
-		data?.forEach(record => {
-			if (!latestByAccount.has(record.account_number)) {
-				latestByAccount.set(record.account_number, {
-					account_number: record.account_number,
-					account_name: record.account_name,
-					broker_name: record.broker_name,
-					latest_balance: record.balance,
-					latest_equity: record.equity,
-					unit: record.unit,
-					last_update: record.timestamp,
-					lastPositionSide: record.lastPositionSide ?? 'UNKNOWN',
-					lastPositionEntryPrice: record.lastPositionEntryPrice ?? 0
-				});
-			}
-		});
-
-		return Array.from(latestByAccount.values());
+		// Transform data to match AccountSummary interface
+		return (data || []).map(record => ({
+			account_number: record.account_number,
+			account_name: record.account_name,
+			broker_name: record.broker_name,
+			latest_balance: record.balance,
+			latest_equity: record.equity,
+			unit: record.unit,
+			last_update: record.timestamp,
+			lastPositionSide: record.position_side ?? 'UNKNOWN',
+			lastPositionEntryPrice: record.position_price ?? 0
+		}));
 	}
 
 	async getDashboardStats(): Promise<DashboardStats> {
@@ -322,7 +334,7 @@ class SupabaseStorage {
 	async getAccountHistory(accountNumber: string, limit: number = 100): Promise<AccountData[]> {
 		const { data, error } = await supabase
 			.from('accounts')
-			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, lastPositionSide, lastPositionEntryPrice')
+			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price')
 			.eq('account_number', accountNumber)
 			.order('timestamp', { ascending: false })
 			.limit(limit);
@@ -332,7 +344,17 @@ class SupabaseStorage {
 			throw error;
 		}
 
-		return data || [];
+		return (data || []).map(record => ({
+			account_number: record.account_number,
+			account_name: record.account_name,
+			broker_name: record.broker_name,
+			balance: record.balance,
+			equity: record.equity,
+			unit: record.unit,
+			timestamp: record.timestamp,
+			lastPositionSide: record.position_side ?? 'UNKNOWN',
+			lastPositionEntryPrice: record.position_price ?? 0
+		}));
 	}
 
 	async getDataCount(): Promise<number> {
@@ -496,6 +518,36 @@ class SupabaseStorage {
 		}
 
 		return {};
+	}
+
+	async setWarningEquityPercentage(percentage: number): Promise<void> {
+		const { error } = await supabase
+			.from('settings')
+			.upsert({
+				setting_key: 'warning_equity_percentage',
+				setting_value: percentage.toString(),
+				updated_at: new Date().toISOString()
+			});
+
+		if (error) {
+			console.error('Error setting warning equity percentage:', error);
+			throw error;
+		}
+	}
+
+	async getWarningEquityPercentage(): Promise<number> {
+		const { data, error } = await supabase
+			.from('settings')
+			.select('setting_value')
+			.eq('setting_key', 'warning_equity_percentage')
+			.single();
+
+		if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
+			console.error('Error getting warning equity percentage:', error);
+			throw error;
+		}
+
+		return data ? parseFloat(data.setting_value) : 30;
 	}
 
 	getUnitName(unit: number): string {
