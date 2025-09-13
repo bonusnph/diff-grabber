@@ -2459,8 +2459,8 @@ void DisplayInit()
       string b1 = OBJ_PREFIX + "BTN_OPEN";
       ObjectCreate(0, b1, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, b1, OBJPROP_CORNER, 0);
-      ObjectSetInteger(0, b1, OBJPROP_XDISTANCE, input_display_width_pixels + 20);
-      ObjectSetInteger(0, b1, OBJPROP_YDISTANCE, BTN_Y1);
+      ObjectSetInteger(0, b1, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
+      ObjectSetInteger(0, b1, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8);
       ObjectSetInteger(0, b1, OBJPROP_XSIZE, BTN_W);
       ObjectSetInteger(0, b1, OBJPROP_YSIZE, BTN_H);
       ObjectSetString(0, b1, OBJPROP_TEXT, "Open Now");
@@ -2469,8 +2469,8 @@ void DisplayInit()
       string b2 = OBJ_PREFIX + "BTN_CLOSE";
       ObjectCreate(0, b2, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, b2, OBJPROP_CORNER, 0);
-      ObjectSetInteger(0, b2, OBJPROP_XDISTANCE, input_display_width_pixels + 20);
-      ObjectSetInteger(0, b2, OBJPROP_YDISTANCE, BTN_Y2);
+      ObjectSetInteger(0, b2, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + BTN_W + 10);
+      ObjectSetInteger(0, b2, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8);
       ObjectSetInteger(0, b2, OBJPROP_XSIZE, BTN_W);
       ObjectSetInteger(0, b2, OBJPROP_YSIZE, BTN_H);
       ObjectSetString(0, b2, OBJPROP_TEXT, "Close Now");
@@ -2889,6 +2889,25 @@ void DisplayUpdate()
          {
             ObjectSetInteger(0, btnCloseOnly, OBJPROP_BGCOLOR, g_close_only_mode ? clrRed : clrWhite);
             ObjectSetString(0, btnCloseOnly, OBJPROP_TEXT, "Close Only");
+         }
+
+         // Reposition debug buttons under Close Only button on the same row (Master only)
+         if(input_debug_buttons_enabled)
+         {
+            string btnOpen = OBJ_PREFIX + "BTN_OPEN";
+            string btnClose = OBJ_PREFIX + "BTN_CLOSE";
+            int open_y = btn_y + CLOSE_ONLY_BTN_H + 8;
+            int close_y = open_y; // same row as open
+            if(ObjectFind(0, btnOpen) != -1)
+            {
+               ObjectSetInteger(0, btnOpen, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
+               ObjectSetInteger(0, btnOpen, OBJPROP_YDISTANCE, open_y);
+            }
+            if(ObjectFind(0, btnClose) != -1)
+            {
+               ObjectSetInteger(0, btnClose, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + BTN_W + 10);
+               ObjectSetInteger(0, btnClose, OBJPROP_YDISTANCE, close_y);
+            }
          }
       }
    }

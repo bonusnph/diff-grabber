@@ -2754,8 +2754,8 @@ void DisplayInit()
       string b1 = OBJ_PREFIX + "BTN_OPEN";
       ObjectCreate(0, b1, OBJ_BUTTON, 0, 0, 0);
       ObjectSet(b1, OBJPROP_CORNER, 0);
-      ObjectSet(b1, OBJPROP_XDISTANCE, BTN_X);
-      ObjectSet(b1, OBJPROP_YDISTANCE, BTN_Y1);
+      ObjectSet(b1, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
+      ObjectSet(b1, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8);
       ObjectSet(b1, OBJPROP_XSIZE, BTN_W);
       ObjectSet(b1, OBJPROP_YSIZE, BTN_H);
       ObjectSetText(b1, "Open Now", 8, "Arial", clrBlack);
@@ -2763,8 +2763,8 @@ void DisplayInit()
       string b2 = OBJ_PREFIX + "BTN_CLOSE";
       ObjectCreate(0, b2, OBJ_BUTTON, 0, 0, 0);
       ObjectSet(b2, OBJPROP_CORNER, 0);
-      ObjectSet(b2, OBJPROP_XDISTANCE, BTN_X);
-      ObjectSet(b2, OBJPROP_YDISTANCE, BTN_Y2);
+      ObjectSet(b2, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + BTN_W + 10);
+      ObjectSet(b2, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8);
       ObjectSet(b2, OBJPROP_XSIZE, BTN_W);
       ObjectSet(b2, OBJPROP_YSIZE, BTN_H);
       ObjectSetText(b2, "Close Now", 8, "Arial", clrBlack);
@@ -3198,6 +3198,25 @@ void DisplayUpdate()
          {
             ObjectSet(btnCloseOnly, OBJPROP_BGCOLOR, g_close_only_mode ? clrRed : clrWhite);
             ObjectSetText(btnCloseOnly, "Close Only", 9, "Arial", clrBlack);
+         }
+
+         // Reposition debug buttons under Close Only button on the same row (Master only)
+         if(input_debug_buttons_enabled)
+         {
+            string btnOpen = OBJ_PREFIX + "BTN_OPEN";
+            string btnClose = OBJ_PREFIX + "BTN_CLOSE";
+            int open_y = btn_y + CLOSE_ONLY_BTN_H + 8;
+            int close_y = open_y; // same row as open
+            if(ObjectFind(0, btnOpen) != -1)
+            {
+               ObjectSet(btnOpen, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
+               ObjectSet(btnOpen, OBJPROP_YDISTANCE, open_y);
+            }
+            if(ObjectFind(0, btnClose) != -1)
+            {
+               ObjectSet(btnClose, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + BTN_W + 10);
+               ObjectSet(btnClose, OBJPROP_YDISTANCE, close_y);
+            }
          }
       }
    }
