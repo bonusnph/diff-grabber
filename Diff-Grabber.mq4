@@ -267,25 +267,6 @@ bool   g_close_pending = false; double g_close_snapshot_avg = 0.0; int g_close_o
 ulong  g_last_avg_open_signal_ms = 0;
 ulong  g_last_avg_close_signal_ms = 0;
 
-// Peak diff statistics and histograms (master only)
-double g_peak_open_real = 0.0;
-double g_peak_close_real = 0.0;
-#define DIFF_HIST_MAX_POINTS 300
-ulong  g_hist_open_counts[DIFF_HIST_MAX_POINTS+1];
-ulong  g_hist_close_counts[DIFF_HIST_MAX_POINTS+1];
-int    g_mode_open_index = 0;
-ulong  g_mode_open_count = 0;
-int    g_mode_close_index = 0;
-ulong  g_mode_close_count = 0;
-// Weighted suggest parameters/state (master only)
-double g_weighted_alpha = 1.5;
-int    g_weighted_window = 5;
-int    g_weighted_min_count = 5;
-int    g_weighted_open_suggest = 0;
-int    g_weighted_close_suggest = 0;
-ulong  g_last_weighted_suggest_ms = 0;
-int    g_weighted_refresh_ms = 1800000; // 30 minutes
-
 // Raw stability state (alternative to averaging)
 bool   g_raw_open_pending = false;
 int    g_raw_open_stable_count = 0;
@@ -443,13 +424,7 @@ string PathAccountStatusPeer()  { return PathChannelRoot() + ((input_role==ROLE_
 // -----------------------------
 string PathLogsDir() { return PathChannelRoot() + "logs\\"; }
 
-// Daily histogram storage
-string PathHistogramDir() { return PathChannelRoot() + "histogram\\"; }
 
-bool HistogramEnsureDir()
-{
-   return FolderCreate(StringFormat("EAChannels\\channel_%s\\histogram", input_channel_id), FILE_COMMON);
-}
 
 string FormatDateYYYYMMDD(datetime t)
 {
@@ -457,10 +432,6 @@ string FormatDateYYYYMMDD(datetime t)
    return StringFormat("%04d%02d%02d", dt.year, dt.mon, dt.day);
 }
 
-string PathHistogramDailyFileFor(const string yyyymmdd)
-{
-   return PathHistogramDir() + StringFormat("hist_%s.csv", yyyymmdd);
-}
 
 string PathDailyLogFile()
 {
@@ -807,44 +778,6 @@ bool FileReadAll(const string relPath, string &out)
    return true;
 }
 
-// Write daily histogram once at end of day (local time), master only
-void MaybeWriteDailyHistogram()
-{
-   if(!(input_role==ROLE_MASTER)) return;
-   string today = FormatDateYYYYMMDD(TimeLocal());
-   static string last_written_day = "";
-   static datetime last_check_ts = 0;
-   if(TimeLocal() == last_check_ts) return;
-   last_check_ts = TimeLocal();
-   if(last_written_day == "") { last_written_day = today; return; }
-   if(today != last_written_day)
-   {
-      string ymd = last_written_day;
-      HistogramEnsureDir();
-      string path = PathHistogramDailyFileFor(ymd);
-      string buf = "type,index,count\n";
-      for(int i=0;i<=DIFF_HIST_MAX_POINTS;i++)
-      {
-         if(g_hist_open_counts[i]>0) buf += StringFormat("open,%d,%I64u\n", i, g_hist_open_counts[i]);
-      }
-      for(int j=0;j<=DIFF_HIST_MAX_POINTS;j++)
-      {
-         if(g_hist_close_counts[j]>0) buf += StringFormat("close,%d,%I64u\n", j, g_hist_close_counts[j]);
-      }
-      buf += StringFormat("summary,peak_open,%.1f\n", g_peak_open_real);
-      buf += StringFormat("summary,peak_close,%.1f\n", g_peak_close_real);
-      buf += StringFormat("summary,mode_open,%d\n", g_mode_open_index);
-      buf += StringFormat("summary,mode_close,%d\n", g_mode_close_index);
-      buf += StringFormat("summary,weighted_open,%d\n", g_weighted_open_suggest);
-      buf += StringFormat("summary,weighted_close,%d\n", g_weighted_close_suggest);
-      FileWriteAllAtomic(path, buf);
-      for(int k=0;k<=DIFF_HIST_MAX_POINTS;k++){ g_hist_open_counts[k]=0; g_hist_close_counts[k]=0; }
-      g_peak_open_real=0.0; g_peak_close_real=0.0;
-      g_mode_open_index=0; g_mode_open_count=0; g_mode_close_index=0; g_mode_close_count=0;
-      g_weighted_open_suggest=0; g_weighted_close_suggest=0;
-      last_written_day = today;
-   }
-}
 
 double PointsFromPriceDiff(double priceDiff)
 {
@@ -3177,17 +3110,6 @@ void DisplayUpdate()
    double aOpen = input_avg_filter_enabled ? SmoothedOpenDiff(dOpen) : dOpen;
    double aClose = input_avg_filter_enabled ? SmoothedCloseDiff(dClose) : dClose;
    // Update peaks and histograms only on master with fresh quotes (lightweight O(1))
-   if(input_role==ROLE_MASTER && QuotesFresh())
-   {
-      if(dOpen > g_peak_open_real) g_peak_open_real = dOpen;
-      if(dClose > g_peak_close_real) g_peak_close_real = dClose;
-      int idxO = (int)MathFloor(MathMax(0.0, dOpen)); if(idxO>DIFF_HIST_MAX_POINTS) idxO = DIFF_HIST_MAX_POINTS;
-      int idxC = (int)MathFloor(MathMax(0.0, dClose)); if(idxC>DIFF_HIST_MAX_POINTS) idxC = DIFF_HIST_MAX_POINTS;
-      g_hist_open_counts[idxO]++;
-      if(g_hist_open_counts[idxO] > g_mode_open_count) { g_mode_open_count = g_hist_open_counts[idxO]; g_mode_open_index = idxO; }
-      g_hist_close_counts[idxC]++;
-      if(g_hist_close_counts[idxC] > g_mode_close_count) { g_mode_close_count = g_hist_close_counts[idxC]; g_mode_close_index = idxC; }
-   }
    int line = 0;
    DisplaySetLine(line++, StringFormat("role=%s  channel=%s  symbol=%s", role, input_channel_id, g_symbol));
    string syncTxt = g_peer_alive?"OK":"WAITING";
@@ -3363,18 +3285,6 @@ void DisplayUpdate()
          DisplaySetLine(line++, StringFormat("Success Rate: %.1f%% (%I64u/%I64u) AvgAck: %I64ums", 
                         success_rate, g_successful_opens, g_total_opens, avg_ack));
          DisplaySetLine(line++, StringFormat("Rollbacks: %I64u", g_rollback_count));
-
-      // Peak real diffs and histogram-based suggestions
-      int peakOpenPts = (int)MathFloor(MathMax(0.0, g_peak_open_real));
-      int peakClosePts = (int)MathFloor(MathMax(0.0, g_peak_close_real));
-      DisplaySetLine(line++, StringFormat("Peak Real: open=%.1f close=%.1f", g_peak_open_real, g_peak_close_real));
-      DisplaySetLine(line++, StringFormat("Mode Open[0..%d]=%d cnt=%I64u (suggest=%d)", peakOpenPts, g_mode_open_index, g_mode_open_count, g_mode_open_index));
-      DisplaySetLine(line++, StringFormat("Mode Close[0..%d]=%d cnt=%I64u (suggest=%d)", peakClosePts, g_mode_close_index, g_mode_close_count, g_mode_close_index));
-      if(g_weighted_open_suggest>0 || g_weighted_close_suggest>0)
-      {
-         DisplaySetLine(line++, StringFormat("Weighted Suggest: open=%d close=%d (alpha=%.1f W=%d min=%d)",
-            g_weighted_open_suggest, g_weighted_close_suggest, g_weighted_alpha, g_weighted_window, g_weighted_min_count));
-      }
    }
    int effMode = DryMode();
    string effModeStr = (effMode==DRY_NONE?"NONE":(effMode==DRY_WRITE_CMD_ONLY?"WRITE_CMD_ONLY":"WRITE_CMD_AND_FAKE_ACK"));
@@ -3857,41 +3767,6 @@ void OnTimer()
       if(!(input_role==ROLE_MASTER)) ReadMasterConfigForSlave();
    }
    
-   // Weighted suggest refresh (master only, infrequent)
-   if(input_role==ROLE_MASTER)
-   {
-      ulong noww = NowMs();
-      if(noww - g_last_weighted_suggest_ms >= (ulong)g_weighted_refresh_ms)
-      {
-         g_last_weighted_suggest_ms = noww;
-         int peakO = (int)MathFloor(MathMax(0.0, g_peak_open_real));
-         int peakC = (int)MathFloor(MathMax(0.0, g_peak_close_real));
-         int W = (g_weighted_window<1?1:g_weighted_window);
-         if((W % 2)==0) W++;
-         // Open weighted suggest
-         double bestScoreO = -1.0; int bestIdxO = 0;
-         for(int i=1;i<=peakO && i<=DIFF_HIST_MAX_POINTS;i++)
-         {
-            int lo = i - W; if(lo<1) lo=1; int hi = i + W; if(hi>DIFF_HIST_MAX_POINTS) hi=DIFF_HIST_MAX_POINTS; if(hi>peakO) hi=peakO;
-            ulong sum=0; for(int j=lo;j<=hi;j++) sum += g_hist_open_counts[j];
-            if(sum < (ulong)g_weighted_min_count) continue;
-            double score = MathPow((double)i, g_weighted_alpha) * (double)sum;
-            if(score > bestScoreO){ bestScoreO=score; bestIdxO=i; }
-         }
-         g_weighted_open_suggest = bestIdxO;
-         // Close weighted suggest
-         double bestScoreC = -1.0; int bestIdxC = 0;
-         for(int i=1;i<=peakC && i<=DIFF_HIST_MAX_POINTS;i++)
-         {
-            int lo = i - W; if(lo<1) lo=1; int hi = i + W; if(hi>DIFF_HIST_MAX_POINTS) hi=DIFF_HIST_MAX_POINTS; if(hi>peakC) hi=peakC;
-            ulong sum=0; for(int j=lo;j<=hi;j++) sum += g_hist_close_counts[j];
-            if(sum < (ulong)g_weighted_min_count) continue;
-            double score = MathPow((double)i, g_weighted_alpha) * (double)sum;
-            if(score > bestScoreC){ bestScoreC=score; bestIdxC=i; }
-         }
-         g_weighted_close_suggest = bestIdxC;
-      }
-   }
    
    // === SCHEDULED CLOSE ONLY - ทุก 30 วินาที (เพื่อประสิทธิภาพ) ===
    if(timer_count % 30 == 0 && input_role==ROLE_MASTER && (input_scheduled_close_only_enabled || input_sat_close_only_enabled))
@@ -3910,8 +3785,6 @@ void OnTimer()
       MaybeOpenSwapThursday();
    }
    
-   // Check end-of-day histogram write
-   MaybeWriteDailyHistogram();
 
    DisplayUpdate();
 }
