@@ -42,6 +42,13 @@ int    input_display_width_pixels      = 520;          // Scope: Both — width 
 int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
 input MasterSide input_master_side          = SIDE_SELL;     // Scope: Master — master direction (Slave auto-opposite)
 input double input_lot                      = 0.01;          // Scope: Both — lot size for orders (applies to Master and Slave)
+
+// Centralized mode control (Master only)
+input bool   input_trading_positive_swap        = false;    // Scope: Master — Positive Swap mode: true=optimize for positive swap (disable scheduled/threshold/force-close; weekend only), false=enable scheduled/threshold/force-close
+
+// Positive Swap override (Master only)
+int    input_pswap_close_th_points        = 1000;     // Scope: Master — close threshold to enforce during positive swap window (03:00-05:30 local, non-Saturday)
+
 #define input_lot_master input_lot
 #define input_lot_slave  input_lot
 input int    input_open_threshold_points    = 25;            // Scope: Master — open threshold (points)
@@ -103,27 +110,31 @@ input double input_min_balance_slave_usd     = 0.00;         // Scope: Master �
 input double input_initial_capital_usd       = 0.00;         // Scope: Master — initial capital for profit calculation
 
 // Scheduled Close Only Mode (Master only)
-input bool   input_scheduled_close_only_enabled = true;    // Scope: Master — enable scheduled close only mode
-input string input_close_only_start_time        = "01:00";  // Scope: Master — start time for close only mode (HH:mm format)
-input string input_close_only_end_time          = "08:00";  // Scope: Master — end time for close only mode (HH:mm format)
+bool   input_scheduled_close_only_enabled = true;    // Scope: Master — enable scheduled close only mode
+string input_close_only_start_time        = "01:00";  // Scope: Master — start time for close only mode (HH:mm format)
+string input_close_only_end_time          = "08:00";  // Scope: Master — end time for close only mode (HH:mm format)
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
-input bool   input_sat_close_only_enabled       = true;     // Scope: Master — enable weekend close-only schedule (Sat start -> Mon end)
-input string input_sat_close_only_start_time    = "01:00";  // Scope: Master — Saturday start time (HH:mm)
-input string input_mon_close_only_end_time      = "08:00";  // Scope: Master — Monday end time (HH:mm)
+bool   input_sat_close_only_enabled       = true;     // Scope: Master — enable weekend close-only schedule (Sat start -> Mon end)
+string input_sat_close_only_start_time    = "01:00";  // Scope: Master — Saturday start time (HH:mm)
+string input_mon_close_only_end_time      = "08:00";  // Scope: Master — Monday end time (HH:mm)
 
 // Close Threshold Scheduler (Master only)
-input bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes
-input string input_close_th_time1               = "01:00";  // HH:mm — schedule slot 1
+bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes
+string input_close_th_time1               = "01:00";  // HH:mm — schedule slot 1
 input int    input_close_th_value1              = 20;       // points — threshold at time1
-input string input_close_th_time2               = "02:00";  // HH:mm — schedule slot 2
+string input_close_th_time2               = "02:00";  // HH:mm — schedule slot 2
 input int    input_close_th_value2              = 10;       // points — threshold at time2
-input string input_close_th_time3               = "03:00";  // HH:mm — schedule slot 3
+string input_close_th_time3               = "03:00";  // HH:mm — schedule slot 3
 input int    input_close_th_value3              = 0;        // points — threshold at time3
-input string input_close_th_time4               = "03:25";  // HH:mm — schedule slot 4
-input int    input_close_th_value4              = 1000;     // points — threshold at time4
-input string input_close_th_time5               = "05:30";  // HH:mm — schedule slot 5
+string input_close_th_time4               = "03:15";  // HH:mm — schedule slot 4
+int    input_close_th_value4              = 1000;     // points — threshold at time4
+string input_close_th_time5               = "05:30";  // HH:mm — schedule slot 5
 input int    input_close_th_value5              = 25;       // points — threshold at time5
+
+// Force Close at Time (Master only)
+bool   input_force_close_time_enabled     = false;    // Scope: Master — enable daily forced close at a specific time
+string input_force_close_time             = "03:15";  // Scope: Master — time to force close all (HH:mm)
 
 // Account Authorization via Google Sheets
 string input_auth_sheet_url            = "https://script.google.com/macros/s/AKfycbyy-TUP96gx8IBvsHr4GvdRM-6_bDPe8RcNhybVFy9bTxL9NK2lEKiO4NRo-56IpN7z/exec";           // Scope: Both — Google Sheets CSV export URL for account authorization
@@ -936,6 +947,83 @@ int ParseTimeToMinutes(const string timeStr)
    return hour * 60 + minute;
 }
 
+// Check and trigger force close at the configured time (Master only)
+void MaybeForceCloseByTime()
+{
+   if(!(input_role==ROLE_MASTER)) return;
+   // Centralized control: effective flag for force-close-time
+   bool eff_force_close_time_enabled = input_force_close_time_enabled;
+   if(input_trading_positive_swap)
+   {
+      eff_force_close_time_enabled = false;
+   }
+   else
+   {
+      eff_force_close_time_enabled = true;
+   }
+   // Enforce on Saturdays regardless of configs
+   if(IsSaturday()) eff_force_close_time_enabled = true;
+   if(!eff_force_close_time_enabled) return;
+   // Do not interfere with Saturday quiet window policy
+   if(IsInSaturdayQuietWindow()) return;
+   // Require there is something to close
+   if(CountOpenPairs() <= 0) return;
+   // Parse target time once and cache it
+   static int target_minutes = -2; // -2 = uninitialized; -1 = invalid
+   static string cached_time = "";
+   if(cached_time != input_force_close_time)
+   {
+      cached_time = input_force_close_time;
+      target_minutes = ParseTimeToMinutes(cached_time);
+   }
+   if(target_minutes < 0) return;
+   // Compute current local minutes and detect day change
+   static int last_day_of_year = -1;
+   static bool fired_today = false;
+   MqlDateTime dt; TimeToStruct(TimeLocal(), dt);
+   int minutes_now = dt.hour * 60 + dt.min;
+   int day_of_year = dt.day_of_year; // resets everyday
+   if(day_of_year != last_day_of_year)
+   {
+      last_day_of_year = day_of_year;
+      fired_today = false;
+   }
+   // Fire once per day when within the exact minute window
+   if(!fired_today && minutes_now == target_minutes)
+   {
+      // Generate and write CLOSE command (mirrors manual Close Now)
+      string cmd_id = NewCmdId();
+      ulong created_ms = NowMs();
+      int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0) ? DryOverrideExpireMs() : input_cmd_expire_ms;
+      if(expire_ms <= 0) expire_ms = 60000;
+      string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n",
+                                 cmd_id,
+                                 (long)g_seq,
+                                 "N/A",
+                                 "CLOSE",
+                                 created_ms,
+                                 expire_ms);
+      FileWriteAllAtomic(PathCloseCmd(), line);
+      LogEvent("CLOSE_TRIGGER", StringFormat("source=FORCE_TIME;time=%s", cached_time));
+      // Execute close locally (real mode) or fake-ack if dry
+      if(DryEnabled())
+      {
+         if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK)
+         {
+            string ackSelf = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0);
+            FileWriteAll(PathCloseAckSelf(), ackSelf);
+         }
+      }
+      else
+      {
+         bool ok = CloseAllByMagic();
+         string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:GetLastError());
+         FileWriteAll(PathCloseAckSelf(), ack);
+      }
+      fired_today = true;
+   }
+}
+
 // Saturday helpers
 bool IsSaturday()
 {
@@ -943,21 +1031,27 @@ bool IsSaturday()
    return (dt.day_of_week == 6);
 }
 
-// Quiet window on Saturday morning: block open/close between 03:00-08:00
+// Quiet window on Saturday morning: block open/close between 03:25-08:00
 bool IsInSaturdayQuietWindow()
 {
    if(!IsSaturday()) return false;
    MqlDateTime dt; TimeToStruct(TimeLocal(), dt);
    int currentMinutes = dt.hour * 60 + dt.min;
-   int startMinutes = 3*60;  // 03:00
-   int endMinutes   = 8*60;  // 08:00
+   int startMinutes = 3*60 + 25;  // 03:25
+   int endMinutes   = 8*60;       // 08:00
    return (currentMinutes >= startMinutes && currentMinutes < endMinutes);
 }
 
 // Check if current time is within scheduled close only period
 bool IsInScheduledCloseOnlyPeriod()
 {
-   if(!input_scheduled_close_only_enabled) return false;
+   // Centralized control: effective flag for scheduled close-only
+   bool eff_scheduled_close_only_enabled = input_scheduled_close_only_enabled;
+   if(input_trading_positive_swap)
+   {
+      eff_scheduled_close_only_enabled = false;
+   }
+   if(!eff_scheduled_close_only_enabled) return false;
    if(!(input_role==ROLE_MASTER)) return false;
    
    int startMinutes = ParseTimeToMinutes(input_close_only_start_time);
@@ -987,7 +1081,48 @@ bool IsInScheduledCloseOnlyPeriod()
 void ApplyCloseThresholdSchedule()
 {
    if(!(input_role==ROLE_MASTER)) return;
-   if(!input_close_th_schedule_enabled) return;
+   // Centralized control: effective schedule flag
+   bool eff_close_th_schedule_enabled = input_close_th_schedule_enabled;
+   if(input_trading_positive_swap)
+   {
+      eff_close_th_schedule_enabled = false;
+   }
+   else
+   {
+      eff_close_th_schedule_enabled = true;
+   }
+   if(!eff_close_th_schedule_enabled)
+   {
+      // Positive swap override: enforce close_th during 03:00-05:30 local, non-Saturday
+      if(input_trading_positive_swap)
+      {
+         MqlDateTime dt; TimeToStruct(TimeLocal(), dt);
+         if(dt.day_of_week != 6) // not Saturday
+         {
+            int nowMin = dt.hour*60 + dt.min;
+            int startMin = 3*60;    // 03:00
+            int endMin   = 5*60+30; // 05:30
+            if(nowMin >= startMin && nowMin < endMin)
+            {
+               if(g_close_threshold_current != input_pswap_close_th_points)
+               {
+                  SetCloseThresholdPoints(input_pswap_close_th_points);
+               }
+               return;
+            }
+            else
+            {
+               // Outside window: revert to initial input value if overridden
+               if(g_close_threshold_current != input_close_threshold_points)
+               {
+                  SetCloseThresholdPoints(input_close_threshold_points);
+               }
+               return;
+            }
+         }
+      }
+      return;
+   }
    // Build arrays of minutes and values
    int times[5]; int values[5];
    times[0]=ParseTimeToMinutes(input_close_th_time1); values[0]=input_close_th_value1;
@@ -1024,10 +1159,23 @@ void ApplyCloseThresholdSchedule()
 void UpdateScheduledCloseOnlyMode()
 {
    if(!(input_role==ROLE_MASTER)) return;
-   if(!input_scheduled_close_only_enabled && !input_sat_close_only_enabled) return;
+   // Centralized control: override feature flags based on input_trading_positive_swap
+   bool eff_scheduled_close_only_enabled = input_scheduled_close_only_enabled;
+   bool eff_sat_close_only_enabled = input_sat_close_only_enabled;
+   if(input_trading_positive_swap)
+   {
+      eff_scheduled_close_only_enabled = false;
+      eff_sat_close_only_enabled = true;
+   }
+   else
+   {
+      eff_scheduled_close_only_enabled = true;
+      eff_sat_close_only_enabled = true;
+   }
+   if(!eff_scheduled_close_only_enabled && !eff_sat_close_only_enabled) return;
    
    // Update caches for general schedule
-   if(input_scheduled_close_only_enabled)
+   if(eff_scheduled_close_only_enabled)
    {
       if(g_cached_start_time != input_close_only_start_time || g_cached_end_time != input_close_only_end_time)
       {
@@ -1038,7 +1186,7 @@ void UpdateScheduledCloseOnlyMode()
       }
    }
    // Update caches for weekend schedule (Sat start -> Mon end)
-   if(input_sat_close_only_enabled)
+   if(eff_sat_close_only_enabled)
    {
       if(g_cached_sat_start_time != input_sat_close_only_start_time || g_cached_mon_end_time != input_mon_close_only_end_time)
       {
@@ -1055,7 +1203,7 @@ void UpdateScheduledCloseOnlyMode()
    bool wasActive = g_scheduled_close_only_active;
    
    bool generalActive = false;
-   if(input_scheduled_close_only_enabled && g_cached_start_minutes >= 0 && g_cached_end_minutes >= 0)
+   if(eff_scheduled_close_only_enabled && g_cached_start_minutes >= 0 && g_cached_end_minutes >= 0)
    {
       if(g_cached_start_minutes == g_cached_end_minutes) generalActive = false;
       else if(g_cached_start_minutes < g_cached_end_minutes)
@@ -1065,7 +1213,7 @@ void UpdateScheduledCloseOnlyMode()
    }
    // Weekend active window: from Saturday start time through all Sunday until Monday end time
    bool weekendActive = false;
-   if(input_sat_close_only_enabled && g_cached_sat_start_minutes >= 0 && g_cached_mon_end_minutes >= 0)
+   if(eff_sat_close_only_enabled && g_cached_sat_start_minutes >= 0 && g_cached_mon_end_minutes >= 0)
    {
       int dow = dt.day_of_week; // 0=Sunday ... 6=Saturday (MT4)
       if(dow == 6)
@@ -1102,7 +1250,7 @@ void UpdateScheduledCloseOnlyMode()
    {
       int graceMin = 5;
       bool inGraceGeneral=false, inGraceWeekend=false;
-      if(input_scheduled_close_only_enabled && g_cached_start_minutes >= 0 && g_cached_end_minutes >= 0)
+      if(eff_scheduled_close_only_enabled && g_cached_start_minutes >= 0 && g_cached_end_minutes >= 0)
       {
          int endPlus = (g_cached_end_minutes + graceMin) % 1440;
          if(g_cached_start_minutes < g_cached_end_minutes)
@@ -1111,7 +1259,7 @@ void UpdateScheduledCloseOnlyMode()
             inGraceGeneral = (currentMinutes >= g_cached_end_minutes || currentMinutes < endPlus);
       }
       // Grace: after Monday end time only
-      if(input_sat_close_only_enabled && dt.day_of_week == 1 && g_cached_mon_end_minutes >= 0)
+      if(eff_sat_close_only_enabled && dt.day_of_week == 1 && g_cached_mon_end_minutes >= 0)
       {
          int endPlusM = (g_cached_mon_end_minutes + graceMin) % 1440;
          inGraceWeekend = (currentMinutes >= g_cached_mon_end_minutes && currentMinutes < endPlusM);
@@ -3189,8 +3337,19 @@ void DisplayUpdate()
       // Update scheduled close only mode state
       UpdateScheduledCloseOnlyMode();
       
+      // Compute effective scheduled close-only flag consistently with UpdateScheduledCloseOnlyMode
+      bool eff_scheduled_close_only_enabled = input_scheduled_close_only_enabled;
+      if(input_trading_positive_swap)
+      {
+         eff_scheduled_close_only_enabled = false;
+      }
+      else
+      {
+         eff_scheduled_close_only_enabled = true;
+      }
+      
       string closeOnlyStatus = "";
-      if(input_scheduled_close_only_enabled)
+      if(eff_scheduled_close_only_enabled)
       {
          string scheduleInfo = StringFormat("%s-%s", input_close_only_start_time, input_close_only_end_time);
          if(g_scheduled_close_only_active)
@@ -3619,6 +3778,9 @@ void OnTimer()
       UpdateScheduledCloseOnlyMode();
       // Apply close threshold schedule (every second; cheap)
       ApplyCloseThresholdSchedule();
+
+      // Forced close by time
+      MaybeForceCloseByTime();
    }
    
    // Check end-of-day histogram write
