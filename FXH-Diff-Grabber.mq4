@@ -2841,12 +2841,12 @@ void DisplayInit()
       ObjectSet(b2, OBJPROP_YSIZE, BTN_H);
       ObjectSetText(b2, "Close Now", 8, "Arial", clrBlack);
       
-      // Sum Equity Display (beside debug buttons)
+      // Sum Equity Display (below debug buttons)
       string eq_bg = OBJ_PREFIX + "EQUITY_BG";
       ObjectCreate(0, eq_bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
       ObjectSet(eq_bg, OBJPROP_CORNER, 0);
-      ObjectSet(eq_bg, OBJPROP_XDISTANCE, EQUITY_X);
-      ObjectSet(eq_bg, OBJPROP_YDISTANCE, EQUITY_Y);
+      ObjectSet(eq_bg, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
+      ObjectSet(eq_bg, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8);
       ObjectSet(eq_bg, OBJPROP_XSIZE, EQUITY_W);
       ObjectSet(eq_bg, OBJPROP_YSIZE, EQUITY_H);
       ObjectSet(eq_bg, OBJPROP_COLOR, clrLightGray);
@@ -2855,15 +2855,15 @@ void DisplayInit()
       string eq_label = OBJ_PREFIX + "EQUITY_LABEL";
       ObjectCreate(0, eq_label, OBJ_LABEL, 0, 0, 0);
       ObjectSet(eq_label, OBJPROP_CORNER, 0);
-      ObjectSet(eq_label, OBJPROP_XDISTANCE, EQUITY_X + 10);
-      ObjectSet(eq_label, OBJPROP_YDISTANCE, EQUITY_Y + 5);
-      ObjectSetText(eq_label, "Sum Equity", 9, "Arial Bold", clrBlack);
+      ObjectSet(eq_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+      ObjectSet(eq_label, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8 + 5);
+      ObjectSetText(eq_label, "Profit", 9, "Arial Bold", clrBlack);
       
       string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
       ObjectCreate(0, eq_value, OBJ_LABEL, 0, 0, 0);
       ObjectSet(eq_value, OBJPROP_CORNER, 0);
-      ObjectSet(eq_value, OBJPROP_XDISTANCE, EQUITY_X + 10);
-      ObjectSet(eq_value, OBJPROP_YDISTANCE, EQUITY_Y + 22);
+      ObjectSet(eq_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+      ObjectSet(eq_value, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8 + 22);
       ObjectSetText(eq_value, "$0.00", 12, "Arial Bold", clrDarkGreen);
    }
 
@@ -3327,28 +3327,32 @@ void DisplayUpdate()
       DisplaySetLine(line++, StringFormat("Net Profit: $%.2f", net_profit)); */
    }
    
-   // Update Sum Equity Display (Master only, when debug buttons enabled)
+   // Update Profit Display (Master only, when debug buttons enabled)
    if(input_debug_buttons_enabled && input_role==ROLE_MASTER)
    {
       string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
       if(ObjectFind(0, eq_value) != -1)
       {
-         // Keep cache fresh opportunistically to reduce flicker when peer inactive
+         // Keep caches fresh opportunistically
          UpdateCachedSlaveEquity();
-         double sum_equity = GetSumEquity();
-         string equity_text = StringFormat("$%.2f", sum_equity);
-         
-         // Change color based on profit/loss (optional visual enhancement)
-         color equity_color = clrDarkGreen;
-         double effective_initial = GetEffectiveInitialCapital();
-         if(effective_initial > 0.0)
-         {
-            if(sum_equity < effective_initial) equity_color = clrDarkRed;
-            else if(sum_equity > effective_initial) equity_color = clrDarkGreen;
-            else equity_color = clrBlack;
-         }
-         
-         ObjectSetText(eq_value, equity_text, 12, "Arial Bold", equity_color);
+         UpdateCachedSlaveBalance();
+
+         // Realtime sums
+         double master_equity = AccountEquity();
+         double master_balance = AccountBalance();
+         double slave_equity = 0.0; ulong slave_eq_ts = 0; bool eq_ok = ReadPeerEquityFresh(slave_equity, slave_eq_ts);
+         double slave_balance = 0.0; ulong slave_bal_ts = 0; bool bal_ok = ReadPeerBalanceFresh(slave_balance, slave_bal_ts);
+         if(!eq_ok && g_has_slave_equity) slave_equity = g_cached_slave_equity;
+         if(!bal_ok && g_has_slave_balance) slave_balance = g_cached_slave_balance;
+
+         double sum_equity = master_equity + slave_equity;
+         double sum_balance = master_balance + slave_balance;
+         double profit_value = sum_equity - sum_balance;
+
+         // Color by PnL
+         color profit_color = (profit_value>0.0? clrDarkGreen : (profit_value<0.0? clrDarkRed : clrBlack));
+         string profit_text = StringFormat("$%.2f", profit_value);
+         ObjectSetText(eq_value, profit_text, 12, "Arial Bold", profit_color);
       }
    }
    
