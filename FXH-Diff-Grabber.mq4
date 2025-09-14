@@ -2811,7 +2811,7 @@ void DisplayInit()
    ObjectSet(bg, OBJPROP_XSIZE, input_display_width_pixels);
    ObjectSet(bg, OBJPROP_YSIZE, 210);
    ObjectSet(bg, OBJPROP_COLOR, clrWhite);
-   ObjectSet(bg, OBJPROP_BACK, true);
+   ObjectSet(bg, OBJPROP_BACK, false);
    // Then create title label
    string name = OBJ_PREFIX + "MAIN";
    ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
@@ -2850,7 +2850,7 @@ void DisplayInit()
       ObjectSet(eq_bg, OBJPROP_XSIZE, EQUITY_W);
       ObjectSet(eq_bg, OBJPROP_YSIZE, EQUITY_H);
       ObjectSet(eq_bg, OBJPROP_COLOR, clrLightGray);
-      ObjectSet(eq_bg, OBJPROP_BACK, true);
+      ObjectSet(eq_bg, OBJPROP_BACK, false);
       
       string eq_label = OBJ_PREFIX + "EQUITY_LABEL";
       ObjectCreate(0, eq_label, OBJ_LABEL, 0, 0, 0);
@@ -2865,6 +2865,47 @@ void DisplayInit()
       ObjectSet(eq_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
       ObjectSet(eq_value, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8 + 22);
       ObjectSetText(eq_value, "$0.00", 12, "Arial Bold", clrDarkGreen);
+      
+      // Realtime diffOpen/diffClose labels and values (below Profit)
+      int diff_base_y = CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8 + EQUITY_H + 8;
+
+      // Background for diff section (white)
+      string diff_bg = OBJ_PREFIX + "DIFF_BG";
+      ObjectCreate(0, diff_bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+      ObjectSet(diff_bg, OBJPROP_CORNER, 0);
+      ObjectSet(diff_bg, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
+      ObjectSet(diff_bg, OBJPROP_YDISTANCE, diff_base_y - 6);
+      ObjectSet(diff_bg, OBJPROP_XSIZE, EQUITY_W);
+      ObjectSet(diff_bg, OBJPROP_YSIZE, 44);
+      ObjectSet(diff_bg, OBJPROP_COLOR, clrWhite);
+      ObjectSet(diff_bg, OBJPROP_BACK, false);
+      string dopen_label = OBJ_PREFIX + "DIFF_OPEN_LABEL";
+      ObjectCreate(0, dopen_label, OBJ_LABEL, 0, 0, 0);
+      ObjectSet(dopen_label, OBJPROP_CORNER, 0);
+      ObjectSet(dopen_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+      ObjectSet(dopen_label, OBJPROP_YDISTANCE, diff_base_y);
+      ObjectSetText(dopen_label, "diffOpen", 9, "Arial Bold", clrBlack);
+
+      string dopen_value = OBJ_PREFIX + "DIFF_OPEN_VALUE";
+      ObjectCreate(0, dopen_value, OBJ_LABEL, 0, 0, 0);
+      ObjectSet(dopen_value, OBJPROP_CORNER, 0);
+      ObjectSet(dopen_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 110);
+      ObjectSet(dopen_value, OBJPROP_YDISTANCE, diff_base_y);
+      ObjectSetText(dopen_value, "0.0", 12, "Arial Bold", clrBlack);
+
+      string dclose_label = OBJ_PREFIX + "DIFF_CLOSE_LABEL";
+      ObjectCreate(0, dclose_label, OBJ_LABEL, 0, 0, 0);
+      ObjectSet(dclose_label, OBJPROP_CORNER, 0);
+      ObjectSet(dclose_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+      ObjectSet(dclose_label, OBJPROP_YDISTANCE, diff_base_y + 20);
+      ObjectSetText(dclose_label, "diffClose", 9, "Arial Bold", clrBlack);
+
+      string dclose_value = OBJ_PREFIX + "DIFF_CLOSE_VALUE";
+      ObjectCreate(0, dclose_value, OBJ_LABEL, 0, 0, 0);
+      ObjectSet(dclose_value, OBJPROP_CORNER, 0);
+      ObjectSet(dclose_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 110);
+      ObjectSet(dclose_value, OBJPROP_YDISTANCE, diff_base_y + 20);
+      ObjectSetText(dclose_value, "0.0", 12, "Arial Bold", clrBlack);
    }
 
    // Close Only button (Master only)
@@ -3327,7 +3368,7 @@ void DisplayUpdate()
       DisplaySetLine(line++, StringFormat("Net Profit: $%.2f", net_profit)); */
    }
    
-   // Update Profit Display (Master only, when debug buttons enabled)
+   // Update Profit and Diff Displays (Master only, when debug buttons enabled)
    if(input_debug_buttons_enabled && input_role==ROLE_MASTER)
    {
       string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
@@ -3353,6 +3394,17 @@ void DisplayUpdate()
          color profit_color = (profit_value>0.0? clrDarkGreen : (profit_value<0.0? clrDarkRed : clrBlack));
          string profit_text = StringFormat("$%.2f", profit_value);
          ObjectSetText(eq_value, profit_text, 12, "Arial Bold", profit_color);
+
+         // Update realtime diffOpen/diffClose values with color coding
+         // Use precomputed dOpen/dClose from earlier in DisplayUpdate to avoid shadowing
+         string dopen_value = OBJ_PREFIX + "DIFF_OPEN_VALUE";
+         string dclose_value = OBJ_PREFIX + "DIFF_CLOSE_VALUE";
+         color dOpenColor = (dOpen>0.0? clrDarkGreen : (dOpen<0.0? clrRed : clrBlack));
+         color dCloseColor = (dClose>0.0? clrDarkGreen : (dClose<0.0? clrRed : clrBlack));
+         if(ObjectFind(0, dopen_value) != -1)
+            ObjectSetText(dopen_value, StringFormat("%.1f", dOpen), 12, "Arial Bold", dOpenColor);
+         if(ObjectFind(0, dclose_value) != -1)
+            ObjectSetText(dclose_value, StringFormat("%.1f", dClose), 12, "Arial Bold", dCloseColor);
       }
    }
    
