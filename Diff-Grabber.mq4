@@ -104,13 +104,13 @@ input double input_initial_capital_usd       = 0.00;         // Scope: Master �
 
 // Scheduled Close Only Mode (Master only)
 input bool   input_scheduled_close_only_enabled = true;    // Scope: Master — enable scheduled close only mode
-input string input_close_only_start_time        = "00:57";  // Scope: Master — start time for close only mode (HH:mm format)
-input string input_close_only_end_time          = "08:03";  // Scope: Master — end time for close only mode (HH:mm format)
+input string input_close_only_start_time        = "00:00";  // Scope: Master — start time for close only mode (HH:mm format)
+input string input_close_only_end_time          = "08:00";  // Scope: Master — end time for close only mode (HH:mm format)
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
 input bool   input_sat_close_only_enabled       = true;     // Scope: Master — enable weekend close-only schedule (Sat start -> Mon end)
-input string input_sat_close_only_start_time    = "00:57";  // Scope: Master — Saturday start time (HH:mm)
-input string input_mon_close_only_end_time      = "08:03";  // Scope: Master — Monday end time (HH:mm)
+input string input_sat_close_only_start_time    = "00:00";  // Scope: Master — Saturday start time (HH:mm)
+input string input_mon_close_only_end_time      = "08:00";  // Scope: Master — Monday end time (HH:mm)
 
 // Account Authorization via Google Sheets
 string input_auth_sheet_url            = "https://script.google.com/macros/s/AKfycbyy-TUP96gx8IBvsHr4GvdRM-6_bDPe8RcNhybVFy9bTxL9NK2lEKiO4NRo-56IpN7z/exec";           // Scope: Both — Google Sheets CSV export URL for account authorization
@@ -270,6 +270,35 @@ ulong  g_raw_close_start_ms = 0;
 // In-memory cache: pair_id <-> ticket (current symbol/magic)
 string g_cache_pair_ids[];
 int    g_cache_tickets[];
+
+// Dynamic open threshold (initial vs current)
+#define OPEN_TH_UNSET -9999
+int    g_open_threshold_initial = 0;
+int    g_open_threshold_current = OPEN_TH_UNSET;
+
+// Dynamic close threshold (initial vs current)
+int    g_close_threshold_initial = 0;
+int    g_close_threshold_current = OPEN_TH_UNSET;
+
+int GetOpenThresholdPoints()
+{
+   return (g_open_threshold_current != OPEN_TH_UNSET ? g_open_threshold_current : input_open_threshold_points);
+}
+
+void SetOpenThresholdPoints(const int new_threshold_points)
+{
+   g_open_threshold_current = new_threshold_points;
+}
+
+int GetCloseThresholdPoints()
+{
+   return (g_close_threshold_current != OPEN_TH_UNSET ? g_close_threshold_current : input_close_threshold_points);
+}
+
+void SetCloseThresholdPoints(const int new_threshold_points)
+{
+   g_close_threshold_current = new_threshold_points;
+}
 
 int CacheFindIndexByPairId(const string pair_id)
 {
@@ -1942,7 +1971,7 @@ void MaybeOpenPair()
       // Averaging logic (highest priority)
       if(input_avg_signal_cooldown_ms > 0 && (NowMs() - g_last_avg_open_signal_ms) < (ulong)input_avg_signal_cooldown_ms) return;
       double avgOpen = SmoothedOpenDiff(diffOpen);
-      double thrEff = (double)(input_open_threshold_points + input_diff_hysteresis_points);
+      double thrEff = (double)(GetOpenThresholdPoints() + input_diff_hysteresis_points);
       if(!g_open_pending)
       {
          if(avgOpen >= thrEff)
@@ -1978,8 +2007,8 @@ void MaybeOpenPair()
    else if(input_raw_stability_enabled)
    {
       // Raw stability logic (second priority)
-      double enterThreshold = (double)input_open_threshold_points;
-      double resetThreshold = (double)(input_open_threshold_points - input_raw_hysteresis_offset);
+      double enterThreshold = (double)GetOpenThresholdPoints();
+      double resetThreshold = (double)(GetOpenThresholdPoints() - input_raw_hysteresis_offset);
       
       if(!g_raw_open_pending)
       {
@@ -2030,7 +2059,7 @@ void MaybeOpenPair()
    else
    {
       // Simple instant logic (lowest priority)
-      if(diffOpen < input_open_threshold_points) return;
+      if(diffOpen < GetOpenThresholdPoints()) return;
       triggerOpen = true;
    }
 
@@ -2924,7 +2953,7 @@ void DisplayUpdate()
    if(input_role==ROLE_MASTER)
    {
       DisplaySetLine(line++, StringFormat("lot(m/s)=%.2f/%.2f  side(M)=%s", input_lot_master, input_lot_slave, ((input_master_side==SIDE_BUY)?"BUY":"SELL")));
-      DisplaySetLine(line++, StringFormat("open_th=%d  close_th=%d  spread=%d", input_open_threshold_points, input_close_threshold_points, spread));
+      DisplaySetLine(line++, StringFormat("open_th(init)=%d  open_th(cur)=%d  close_th=%d  spread=%d", input_open_threshold_points, GetOpenThresholdPoints(), input_close_threshold_points, spread));
    }
    else
    {
@@ -2957,7 +2986,7 @@ void DisplayUpdate()
       // Enhanced status display with detailed info
       if(input_avg_filter_enabled)
       {
-         double thrOpenEff = (double)(input_open_threshold_points + input_diff_hysteresis_points);
+         double thrOpenEff = (double)(GetOpenThresholdPoints() + input_diff_hysteresis_points);
          double thrCloseEff = (double)(input_close_threshold_points + input_diff_hysteresis_points);
          
          // Open status with detailed info
@@ -2994,11 +3023,11 @@ void DisplayUpdate()
             closeDetail = StringFormat(" AvgOK: %.1f>=%.1f", aClose, thrCloseEff);
          }
          
-         DisplaySetLine(line++, StringFormat("Open: Real=%.1f Avg=%.1f Thr=%d+%d=%.0f | %s", 
+         DisplaySetLine(line++, StringFormat("Open: Real=%.1f Avg=%.1f Thr(init=%d)+H=%d => %.0f | %s", 
             dOpen, aOpen, input_open_threshold_points, input_diff_hysteresis_points, thrOpenEff, stOpen));
          if(openDetail != "") DisplaySetLine(line++, "  " + openDetail);
          
-         DisplaySetLine(line++, StringFormat("Close: Real=%.1f Avg=%.1f Thr=%d+%d=%.0f | %s", 
+         DisplaySetLine(line++, StringFormat("Close: Real=%.1f Avg=%.1f Thr(init=%d)+H=%d => %.0f | %s", 
             dClose, aClose, input_close_threshold_points, input_diff_hysteresis_points, thrCloseEff, stClose));
          if(closeDetail != "") DisplaySetLine(line++, "  " + closeDetail);
          
@@ -3029,7 +3058,7 @@ void DisplayUpdate()
                                 (g_raw_open_start_ms + (ulong)input_raw_stability_timeout_ms - NowMs()) : 0);
             stOpen = StringFormat("COUNT %d/%d (%.0fms)", g_raw_open_stable_count, input_raw_stability_ticks, timeLeft);
          }
-         else if(dOpen >= input_open_threshold_points)
+         else if(dOpen >= GetOpenThresholdPoints())
          {
             stOpen = "TRIGGERED";
          }
@@ -3040,24 +3069,24 @@ void DisplayUpdate()
                                 (g_raw_close_start_ms + (ulong)input_raw_stability_timeout_ms - NowMs()) : 0);
             stClose = StringFormat("COUNT %d/%d (%.0fms)", g_raw_close_stable_count, input_raw_stability_ticks, timeLeft);
          }
-         else if(dClose >= input_close_threshold_points)
+         else if(dClose >= GetCloseThresholdPoints())
          {
             stClose = "TRIGGERED";
          }
          
          // Show realtime diff and count status prominently
          DisplaySetLine(line++, StringFormat("Open: %.1f (Thr=%d Reset=%d) | %s", 
-            dOpen, input_open_threshold_points, (input_open_threshold_points - input_raw_hysteresis_offset), stOpen));
+            dOpen, GetOpenThresholdPoints(), (GetOpenThresholdPoints() - input_raw_hysteresis_offset), stOpen));
          DisplaySetLine(line++, StringFormat("Close: %.1f (Thr=%d Reset=%d) | %s", 
-            dClose, input_close_threshold_points, (input_close_threshold_points - input_raw_hysteresis_offset), stClose));
+            dClose, GetCloseThresholdPoints(), (GetCloseThresholdPoints() - input_raw_hysteresis_offset), stClose));
       }
       else
       {
          // Simple display for non-averaging mode
-         string stOpen = (dOpen >= input_open_threshold_points) ? "TRIGGERED" : "READY";
-         string stClose = (dClose >= input_close_threshold_points) ? "TRIGGERED" : "READY";
-         DisplaySetLine(line++, StringFormat("Open: %.1f (Thr=%d) | %s", dOpen, input_open_threshold_points, stOpen));
-         DisplaySetLine(line++, StringFormat("Close: %.1f (Thr=%d) | %s", dClose, input_close_threshold_points, stClose));
+         string stOpen = (dOpen >= GetOpenThresholdPoints()) ? "TRIGGERED" : "READY";
+         string stClose = (dClose >= GetCloseThresholdPoints()) ? "TRIGGERED" : "READY";
+         DisplaySetLine(line++, StringFormat("Open: %.1f (Thr=%d|init=%d) | %s", dOpen, GetOpenThresholdPoints(), input_open_threshold_points, stOpen));
+         DisplaySetLine(line++, StringFormat("Close: %.1f (Thr=%d|init=%d) | %s", dClose, GetCloseThresholdPoints(), input_close_threshold_points, stClose));
       }
    }
    else
@@ -3397,6 +3426,13 @@ int OnInit()
    g_digits = (int)MarketInfo(g_symbol, MODE_DIGITS);
    g_point  = MarketInfo(g_symbol, MODE_POINT);
    g_magic  = input_magic_number_base + (int)StringGetCharacter(input_channel_id, 0);
+
+   // Initialize dynamic open threshold snapshot
+   g_open_threshold_initial = input_open_threshold_points;
+   if(g_open_threshold_current == OPEN_TH_UNSET) g_open_threshold_current = g_open_threshold_initial;
+   // Initialize dynamic close threshold snapshot
+   g_close_threshold_initial = input_close_threshold_points;
+   if(g_close_threshold_current == OPEN_TH_UNSET) g_close_threshold_current = g_close_threshold_initial;
 
    // Require Auto Trading enabled at terminal and EA levels
    bool terminalAuto = (bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
