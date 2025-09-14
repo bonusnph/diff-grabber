@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.00"
+#property version   "1.01"
 #property strict
 
 // =============================
@@ -115,13 +115,13 @@ bool   input_auth_enabled              = true;        // Scope: Both — enable 
 
 // Scheduled Close Only Mode (Master only)
 bool   input_scheduled_close_only_enabled = true;    // Scope: Master — enable scheduled close only mode
-string input_close_only_start_time        = "03:00";  // Scope: Master — start time for close only mode (HH:mm format)
+string input_close_only_start_time        = "00:00";  // Scope: Master — start time for close only mode (HH:mm format)
 string input_close_only_end_time          = "06:00";  // Scope: Master — end time for close only mode (HH:mm format)
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
 bool   input_sat_close_only_enabled       = true;     // Scope: Master — enable weekend close-only schedule (Sat start -> Mon end)
-string input_sat_close_only_start_time    = "01:00";  // Scope: Master — Saturday start time (HH:mm)
-string input_mon_close_only_end_time      = "08:00";  // Scope: Master — Monday end time (HH:mm)
+string input_sat_close_only_start_time    = "00:00";  // Scope: Master — Saturday start time (HH:mm)
+string input_mon_close_only_end_time      = "06:00";  // Scope: Master — Monday end time (HH:mm)
 
 // Close Threshold Scheduler (Master only)
 bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes

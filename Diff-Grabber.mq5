@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.00"
+#property version   "1.01"
 
 // =============================
 // EA Heading Master–Slave (MT5)
@@ -52,6 +52,10 @@ input bool   input_trading_positive_swap        = false;    // Scope: Master —
 
 // Positive Swap override (Master only)
 int    input_pswap_close_th_points        = 1000;     // Scope: Master — close threshold to enforce during positive swap window (03:00-05:30 local, non-Saturday)
+
+// Positive Swap Thursday auto-open (Master only)
+string input_swap_thursday_open_time    = "03:30";   // Scope: Master — Thursday auto-open time (HH:mm, local)
+input double input_swap_trading_lots    = 0.01;       // Scope: Master — lots for Thursday auto-open
 
 #define input_lot_master input_lot
 #define input_lot_slave  input_lot
@@ -120,7 +124,7 @@ string input_close_only_end_time          = "08:00";   // Scope: Master — end 
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
 bool   input_sat_close_only_enabled       = true;           // Scope: Master — enable weekend close-only (Sat start -> Mon end)
-string input_sat_close_only_start_time    = "01:00";   // Scope: Master — Saturday start time (HH:mm)
+string input_sat_close_only_start_time    = "00:00";   // Scope: Master — Saturday start time (HH:mm)
 string input_mon_close_only_end_time      = "08:00";   // Scope: Master — Monday end time (HH:mm)
 
 // Close Threshold Scheduler (Master only)
@@ -834,6 +838,45 @@ void MaybeForceCloseByTime()
          string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:GetLastError());
          FileWriteAll(PathCloseAckSelf(), ack);
       }
+      fired_today = true;
+   }
+}
+
+// Auto-open on Thursday at configured time when Positive Swap mode is enabled (Master only)
+void MaybeOpenSwapThursday()
+{
+   if(!(input_role==ROLE_MASTER)) return;
+   if(!input_trading_positive_swap) return;
+   // Skip if any position is open
+   if(CountOpenPairs() > 0) return;
+
+   // Parse and cache target minutes
+   static int target_minutes = -2; // -2=uninitialized; -1=invalid
+   static string cached_time = "";
+   if(cached_time != input_swap_thursday_open_time)
+   {
+      cached_time = input_swap_thursday_open_time;
+      target_minutes = ParseTimeToMinutes(cached_time);
+   }
+   if(target_minutes < 0) return;
+
+   // Fire once per day at exact minute on Thursday (MT5: 0=Sunday ... 6=Saturday)
+   static int last_day_of_year = -1;
+   static bool fired_today = false;
+   MqlDateTime dt; TimeToStruct(TimeLocal(), dt);
+   int minutes_now = dt.hour*60 + dt.min;
+   int day_of_year = dt.day_of_year;
+   if(day_of_year != last_day_of_year)
+   {
+      last_day_of_year = day_of_year;
+      fired_today = false;
+   }
+   if(dt.day_of_week != 4) return; // only Thursday
+
+   if(!fired_today && minutes_now == target_minutes)
+   {
+      LogEvent("OPEN_TRIGGER", StringFormat("source=THURSDAY_SWAP_SCHEDULE;time=%s;lots=%.2f", cached_time, input_swap_trading_lots));
+      MasterOpenNowWithLots(input_swap_trading_lots);
       fired_today = true;
    }
 }
@@ -3243,6 +3286,88 @@ void MasterCloseNow()
    bool ok = CloseAllByMagic(); CompactPairMapSelf(); WritePositions(); string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError()); FileWriteAllAtomic(PathCloseAckSelf(), ack);
 }
 
+// Open-now flow but with custom lots (used by Thursday swap auto-open)
+void MasterOpenNowWithLots(const double lots)
+{
+   if(!(input_role==ROLE_MASTER)) return;
+   // Account authorization check
+   if(input_auth_enabled && !g_account_authorized) return;
+   // Update scheduled close only mode state
+   UpdateScheduledCloseOnlyMode();
+   // Close Only mode: prevent new orders
+   if(g_close_only_mode) return;
+
+   string cmd_id = NewCmdId(); g_last_cmd_id = cmd_id; 
+   LogEvent("OPEN_TRIGGER", StringFormat("source=CUSTOM_LOTS;cmd_id=%s;lots=%.2f", cmd_id, lots));
+   
+   // Prepare timing
+   ulong created_ms = NowMs();
+   int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0)? DryOverrideExpireMs(): input_cmd_expire_ms;
+   if(expire_ms <= 0) expire_ms = 60000; // ensure sane expiry
+   
+   // Optional: comment placeholder
+   g_pending_order_comment = "MS:OPEN|PAIR:" + cmd_id;
+
+   // Dry-run path: pretend open succeeded, then notify slave with audited cmd
+   if(DryEnabled())
+   {
+     // Pretend master open succeeded
+     g_last_open_time = TimeCurrent();
+     // Include audit fields similar to auto flow
+     double diffOpenAudit = DiffOpenPoints();
+     string lineDR = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d,%.5f,%.5f,%.5f,%.5f,%.1f\n",
+        cmd_id,(long)g_seq,cmd_id,g_symbol,((input_master_side==SIDE_BUY)?"BUY":"SELL"),lots,lots,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
+        g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpenAudit);
+     FileWriteAllAtomic(PathOpenCmd(), lineDR);
+     LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((input_master_side==SIDE_BUY)?"BUY":"SELL"), lots, lots, expire_ms, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
+     g_waiting_slave_open_ack = true; g_pending_open_cmd_id=cmd_id; g_pending_open_created_ms=created_ms; g_rollback_initiated=false;
+     g_last_peer_open_ack_ms = 0; // reset grace timer
+     // Consolidated grace: prevent immediate reconcile/close
+     g_open_grace_until_ms = NowMs() + (ulong)MathMax(input_ack_timeout_ms + 2000, input_close_cooldown_seconds * 1000);
+     g_early_warning_sent = false;
+     // Ack self
+     if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK)
+     {
+       string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0);
+       FileWriteAllAtomic(PathOpenAckSelf(), ackSelf);
+       LogEvent("OPEN_ACK_MASTER", StringFormat("cmd_id=%s;ok=1;price=0.0;err=0", cmd_id));
+     }
+     if(input_debug_buttons_enabled) g_debug_hold_open = false; // allow auto-close logic to run
+     return;
+   }
+
+   // Real trading: place order first, then notify slave
+   ulong tkt=0; double price=0.0; bool ok = PlaceOrder((input_master_side==SIDE_BUY), lots, tkt, price);
+   string ackSelf = StringFormat("1,%s,%I64d,%s,%.5f,%d,%d\n", cmd_id, (long)g_seq, "N/A", price, ok?1:0, ok?0:(int)GetLastError());
+   FileWriteAllAtomic(PathOpenAckSelf(), ackSelf);
+   LogEvent("OPEN_ACK_MASTER", StringFormat("cmd_id=%s;ok=%d;price=%.5f;err=%d", cmd_id, ok?1:0, price, ok?0:(int)GetLastError()));
+   if(!ok)
+   {
+     g_last_open_time=TimeCurrent();
+     return;
+   }
+   
+   g_last_open_time = TimeCurrent();
+   PairMapSelfUpsert(cmd_id, tkt);
+   CacheUpsert(cmd_id, tkt);
+   WritePositions();
+   CompactPairMapSelf();
+
+   // Notify slave with audited open_cmd and start ACK wait
+   double diffOpenAudit2 = DiffOpenPoints();
+   string line = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d,%.5f,%.5f,%.5f,%.5f,%.1f\n",
+      cmd_id,(long)g_seq,cmd_id,g_symbol,((input_master_side==SIDE_BUY)?"BUY":"SELL"),lots,lots,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
+      g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpenAudit2);
+   FileWriteAllAtomic(PathOpenCmd(), line);
+   LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((input_master_side==SIDE_BUY)?"BUY":"SELL"), lots, lots, expire_ms, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
+   g_waiting_slave_open_ack = true; g_pending_open_cmd_id=cmd_id; g_pending_open_created_ms=created_ms; g_rollback_initiated=false;
+   g_last_peer_open_ack_ms = 0; // reset grace timer
+   // Consolidated grace: prevent immediate reconcile/close
+   g_open_grace_until_ms = NowMs() + (ulong)MathMax(input_ack_timeout_ms + 2000, input_close_cooldown_seconds * 1000);
+   g_early_warning_sent = false;
+   if(input_debug_buttons_enabled) g_debug_hold_open = false; // allow auto-close logic to run
+}
+
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
    if(!(input_role==ROLE_MASTER)) return;
@@ -3568,6 +3693,12 @@ void OnTimer()
 
       // Forced close by time
       MaybeForceCloseByTime();
+   }
+   
+   // === POSITIVE SWAP: Thursday auto-open scheduler (ทุก 30 วินาที) ===
+   if(timer_count % 30 == 0 && input_role==ROLE_MASTER && input_trading_positive_swap)
+   {
+      MaybeOpenSwapThursday();
    }
    
    DisplayUpdate();

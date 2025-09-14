@@ -29,6 +29,7 @@
 | Positive Swap override (บังคับ close_th) | เปิดใช้งาน | 03:00–05:30 เฉพาะ วันจันทร์–ศุกร์ (ไม่นับวันเสาร์): close_th = 1000; นอกช่วงกลับไปใช้ close_th ปกติ (ดีฟอลต์ 25) |
 | Force Close at Time | ปิดใช้งานปกติ | ยกเว้น "วันเสาร์" ยังบังคับทำงานเวลา 03:15 ถ้ามีออเดอร์เปิดอยู่ |
 | Saturday Quiet Window (เฉพาะวันเสาร์) | ใช้งานเสมอ | 03:25–08:00 (บล็อกการเปิด/ปิดอัตโนมัติบางส่วน เช่น reconcile, auto open/close) |
+| Thursday Auto-Open (ใหม่) | เปิดใช้งานเมื่อ Positive Swap | เวลาเริ่มต้น 03:30 (ตั้งค่าได้ด้วย `input_swap_thursday_open_time`); จะเปิดออเดอร์อัตโนมัติถ้าไม่มีออเดอร์ค้าง โดยใช้ล็อต `input_swap_trading_lots` และปิดเองตามเงื่อนไข diffClose ปกติ |
 
 หมายเหตุ: Force Close ในวันเสาร์จะยังทำงานเวลา 03:15 (ซึ่งอยู่ก่อนช่วง Quiet Window 03:25–08:00) จึงไม่ถูกบล็อกโดย Quiet Window ในวันเสาร์
 
@@ -39,6 +40,7 @@
 - Close Threshold Schedule (เมื่อโหมดนี้เปิดใช้งาน):
   - `01:00 → 20`, `02:00 → 10`, `03:00 → 0`, `03:15 → 1000`, `05:30 → 25`
 - Positive Swap override window: `03:00–05:30` (วันจันทร์–ศุกร์เท่านั้น) ค่า `close_th = 1000`
+- Thursday Auto-Open: `03:30` ผ่าน `input_swap_thursday_open_time`, ล็อต `0.01` ผ่าน `input_swap_trading_lots`
 - Force Close at Time: `03:15`
 - Saturday Quiet Window: `03:25–08:00` (วันเสาร์)
 - ค่า threshold พื้นฐาน: `open_th = 25`, `close_th = 25` (กลับมาใช้ค่านี้เมื่ออยู่นอกหน้าต่าง override/schedule)
