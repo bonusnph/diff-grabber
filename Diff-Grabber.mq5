@@ -3426,7 +3426,11 @@ int OnInit()
    bool programAuto = (bool)MQLInfoInteger(MQL_TRADE_ALLOWED);
    if(!terminalAuto || !programAuto)
    {
-      if(input_verbose_journal_logs) Print("Auto Trading is disabled. Enable AutoTrading and 'Allow algorithmic trading'.");
+      if(input_verbose_journal_logs)
+      {
+         Print("Auto Trading is disabled. Enable AutoTrading and 'Allow algorithmic trading'.");
+         Alert("Auto Trading is disabled. Enable AutoTrading and 'Allow algorithmic trading'.");
+      }
       return(INIT_FAILED);
    }
    FolderEnsure();
