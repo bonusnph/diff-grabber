@@ -48,8 +48,8 @@ input MasterSide input_master_side          = SIDE_SELL;     // Scope: Master �
 input double input_lot                      = 0.01;          // Scope: Both — lot size for orders (applies to Master and Slave)
 #define input_lot_master input_lot
 #define input_lot_slave  input_lot
-input int    input_open_threshold_points    = 30;            // Scope: Master — open threshold (points)
-input int    input_close_threshold_points   = 30;            // Scope: Master — close threshold (points)
+input int    input_open_threshold_points    = 25;            // Scope: Master — open threshold (points)
+input int    input_close_threshold_points   = 25;            // Scope: Master — close threshold (points)
 int    input_open_cooldown_seconds    = 300;           // Scope: Master — open cooldown after an open
 int    input_close_cooldown_seconds   = 60;            // Scope: Master — close cooldown after both sides opened
 int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
@@ -61,7 +61,7 @@ int    input_raw_stability_timeout_ms = 500;          // Scope: Master — max w
 int    input_raw_hysteresis_offset   = 10;           // Scope: Master — hysteresis offset below threshold for reset (points)
 
 // Averaged diff gating (Master-only)
-input bool   input_avg_filter_enabled       = true;         // Scope: Master — enable EMA-based averaged diff gating
+input bool   input_avg_filter_enabled       = false;         // Scope: Master — enable EMA-based averaged diff gating
 int    input_avg_period               = 9;             // Scope: Master — EMA period (ticks)
 bool   input_use_prefilter_median     = true;          // Scope: Master — apply median pre-filter before EMA
 int    input_prefilter_window         = 3;             // Scope: Master — median window (odd 3/5)
@@ -108,13 +108,26 @@ input double input_initial_capital_usd       = 0.00;          // Scope: Master �
 
 // Scheduled Close Only Mode (Master only)
 input bool   input_scheduled_close_only_enabled = true;     // Scope: Master — enable scheduled close only mode
-input string input_close_only_start_time        = "00:00";   // Scope: Master — start time for close only mode (HH:mm format)
+input string input_close_only_start_time        = "01:00";   // Scope: Master — start time for close only mode (HH:mm format)
 input string input_close_only_end_time          = "08:00";   // Scope: Master — end time for close only mode (HH:mm format)
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
 input bool   input_sat_close_only_enabled       = true;           // Scope: Master — enable weekend close-only (Sat start -> Mon end)
-input string input_sat_close_only_start_time    = "00:00";   // Scope: Master — Saturday start time (HH:mm)
+input string input_sat_close_only_start_time    = "01:00";   // Scope: Master — Saturday start time (HH:mm)
 input string input_mon_close_only_end_time      = "08:00";   // Scope: Master — Monday end time (HH:mm)
+
+// Close Threshold Scheduler (Master only)
+input bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes
+input string input_close_th_time1               = "01:00";  // HH:mm — schedule slot 1
+input int    input_close_th_value1              = 20;       // points — threshold at time1
+input string input_close_th_time2               = "02:00";  // HH:mm — schedule slot 2
+input int    input_close_th_value2              = 10;       // points — threshold at time2
+input string input_close_th_time3               = "03:00";  // HH:mm — schedule slot 3
+input int    input_close_th_value3              = 0;        // points — threshold at time3
+input string input_close_th_time4               = "03:25";  // HH:mm — schedule slot 4
+input int    input_close_th_value4              = 1000;     // points — threshold at time4
+input string input_close_th_time5               = "05:30";  // HH:mm — schedule slot 5
+input int    input_close_th_value5              = 25;       // points — threshold at time5
 
 // Account Authorization via Google Sheets
 string input_auth_sheet_url            = "https://script.google.com/macros/s/AKfycbyy-TUP96gx8IBvsHr4GvdRM-6_bDPe8RcNhybVFy9bTxL9NK2lEKiO4NRo-56IpN7z/exec";           // Scope: Both — Google Sheets CSV export URL for account authorization
@@ -764,6 +777,43 @@ bool IsInScheduledCloseOnlyPeriod()
    {
       // Cross midnight: e.g., 23:00 - 08:00
       return (currentMinutes >= startMinutes || currentMinutes < endMinutes);
+   }
+}
+
+// Apply scheduled close threshold changes based on TimeLocal and configured schedule
+void ApplyCloseThresholdSchedule()
+{
+   if(!(input_role==ROLE_MASTER)) return;
+   if(!input_close_th_schedule_enabled) return;
+   // Build arrays of minutes and values
+   int times[5]; int values[5];
+   times[0]=ParseTimeToMinutes(input_close_th_time1); values[0]=input_close_th_value1;
+   times[1]=ParseTimeToMinutes(input_close_th_time2); values[1]=input_close_th_value2;
+   times[2]=ParseTimeToMinutes(input_close_th_time3); values[2]=input_close_th_value3;
+   times[3]=ParseTimeToMinutes(input_close_th_time4); values[3]=input_close_th_value4;
+   times[4]=ParseTimeToMinutes(input_close_th_time5); values[4]=input_close_th_value5;
+
+   // Current local time in minutes
+   MqlDateTime dt; TimeToStruct(TimeLocal(), dt);
+   int nowMin = dt.hour*60 + dt.min;
+
+   // Pick the latest schedule slot whose time <= nowMin
+   bool found=false; int pickVal=0; int best=-1;
+   for(int i=0;i<5;i++)
+   {
+      if(times[i] < 0) continue; // skip invalid/empty
+      if(times[i] <= nowMin)
+      {
+         if(times[i] > best){ best = times[i]; pickVal = values[i]; found=true; }
+      }
+   }
+   if(found)
+   {
+      // Apply new dynamic close threshold
+      if(g_close_threshold_current != pickVal)
+      {
+         SetCloseThresholdPoints(pickVal);
+      }
    }
 }
 
@@ -3366,6 +3416,8 @@ void OnTimer()
    if(timer_count % 30 == 0 && input_role==ROLE_MASTER && (input_scheduled_close_only_enabled || input_sat_close_only_enabled))
    {
       UpdateScheduledCloseOnlyMode();
+      // Apply close threshold schedule (Master only)
+      ApplyCloseThresholdSchedule();
    }
    
    DisplayUpdate();

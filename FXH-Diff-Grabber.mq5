@@ -117,8 +117,21 @@ input string input_close_only_end_time          = "06:00";   // Scope: Master �
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
 bool   input_sat_close_only_enabled       = true;           // Scope: Master — enable weekend close-only (Sat start -> Mon end)
-string input_sat_close_only_start_time    = "00:57";   // Scope: Master — Saturday start time (HH:mm)
-string input_mon_close_only_end_time      = "08:03";   // Scope: Master — Monday end time (HH:mm)
+string input_sat_close_only_start_time    = "01:00";   // Scope: Master — Saturday start time (HH:mm)
+string input_mon_close_only_end_time      = "05:30";   // Scope: Master — Monday end time (HH:mm)
+
+// Close Threshold Scheduler (Master only)
+input bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes
+string input_close_th_time1               = "01:00";  // HH:mm — schedule slot 1
+int    input_close_th_value1              = 20;       // points — threshold at time1
+string input_close_th_time2               = "02:00";  // HH:mm — schedule slot 2
+int    input_close_th_value2              = 10;       // points — threshold at time2
+string input_close_th_time3               = "03:00";  // HH:mm — schedule slot 3
+int    input_close_th_value3              = 0;        // points — threshold at time3
+string input_close_th_time4               = "03:25";  // HH:mm — schedule slot 4
+int    input_close_th_value4              = 1000;     // points — threshold at time4
+string input_close_th_time5               = "05:30";  // HH:mm — schedule slot 5
+int    input_close_th_value5              = 30;       // points — threshold at time5
 
 // -----------------------------
 // Globals
@@ -944,6 +957,37 @@ bool IsInScheduledCloseOnlyPeriod()
    {
       // Cross midnight: e.g., 23:00 - 08:00
       return (currentMinutes >= startMinutes || currentMinutes < endMinutes);
+   }
+}
+
+// Apply scheduled close threshold changes based on TimeLocal and configured schedule
+void ApplyCloseThresholdSchedule()
+{
+   if(!(input_role==ROLE_MASTER)) return;
+   if(!input_close_th_schedule_enabled) return;
+   // Build arrays of minutes and values
+   int times[5]; int values[5];
+   times[0]=ParseTimeToMinutes(input_close_th_time1); values[0]=input_close_th_value1;
+   times[1]=ParseTimeToMinutes(input_close_th_time2); values[1]=input_close_th_value2;
+   times[2]=ParseTimeToMinutes(input_close_th_time3); values[2]=input_close_th_value3;
+   times[3]=ParseTimeToMinutes(input_close_th_time4); values[3]=input_close_th_value4;
+   times[4]=ParseTimeToMinutes(input_close_th_time5); values[4]=input_close_th_value5;
+
+   MqlDateTime dt; TimeToStruct(TimeLocal(), dt);
+   int nowMin = dt.hour*60 + dt.min;
+
+   int applied = OPEN_TH_UNSET;
+   for(int i=0;i<5;i++)
+   {
+      if(times[i] < 0) continue;
+      if(nowMin >= times[i]) applied = values[i];
+   }
+   if(applied != OPEN_TH_UNSET)
+   {
+      if(g_close_threshold_current != applied)
+      {
+         SetCloseThresholdPoints(applied);
+      }
    }
 }
 
@@ -3641,6 +3685,8 @@ void OnTimer()
    if(timer_count % 30 == 0 && input_role==ROLE_MASTER && (input_scheduled_close_only_enabled || input_sat_close_only_enabled))
    {
       UpdateScheduledCloseOnlyMode();
+      // Apply close threshold schedule (Master only)
+      ApplyCloseThresholdSchedule();
    }
    
    DisplayUpdate();
