@@ -107,6 +107,8 @@ bool   input_dry_run_suppress_heartbeat   = false;     // Scope: Master — supp
 
 // Debug UI (Master only)
 bool   input_debug_buttons_enabled     = true;        // Scope: Master — show Open/Close test buttons (simulates diffOpen/diffClose)
+// Reset Stats button (Master only)
+bool   input_reset_stats_button_enabled = true;      // Scope: Master — show Reset Stats button next to Close Only
 
 // Extended controls (Master-only; synced to Slave via config):
 input double input_min_balance_master_usd    = 0.00;         // Scope: Master — minimum balance required on Master to allow new open
@@ -2912,6 +2914,9 @@ int    CLOSE_ONLY_BTN_X = 6;
 int    CLOSE_ONLY_BTN_Y = 240; // Will be adjusted dynamically based on monitor height
 int    CLOSE_ONLY_BTN_W = 120;
 int    CLOSE_ONLY_BTN_H = 24;
+// Reset Stats button geometry (same row as Close Only)
+int    RESET_BTN_W = 120;
+int    RESET_BTN_H = 24;
 
 int CooldownRemainSeconds()
 {
@@ -2989,6 +2994,19 @@ void DisplayInit()
       ObjectSet(b3, OBJPROP_YSIZE, CLOSE_ONLY_BTN_H);
       ObjectSet(b3, OBJPROP_BGCOLOR, g_close_only_mode ? clrRed : clrWhite);
       ObjectSetText(b3, "Close Only", 9, "Arial", clrBlack);
+      // Optional Reset Stats button next to Close Only
+      if(input_reset_stats_button_enabled)
+      {
+         string b4 = OBJ_PREFIX + "BTN_RESET_STATS";
+         ObjectCreate(0, b4, OBJ_BUTTON, 0, 0, 0);
+         ObjectSet(b4, OBJPROP_CORNER, 0);
+         ObjectSet(b4, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + CLOSE_ONLY_BTN_W + 10);
+         ObjectSet(b4, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y);
+         ObjectSet(b4, OBJPROP_XSIZE, RESET_BTN_W);
+         ObjectSet(b4, OBJPROP_YSIZE, RESET_BTN_H);
+         ObjectSet(b4, OBJPROP_BGCOLOR, clrWhite);
+         ObjectSetText(b4, "Reset Stats", 9, "Arial", clrBlack);
+      }
    }
 }
 
@@ -3371,6 +3389,15 @@ void DisplayUpdate()
          int bg_height = (DISPLAY_FIRST_LINE_OFFSET + line) * DISPLAY_LINE_SPACING + 38;
          int btn_y = bg_height + 10; // 10 pixels below monitor
          ObjectSet(btnCloseOnly, OBJPROP_YDISTANCE, btn_y);
+         // Reposition Reset Stats button on the same row (if enabled/exists)
+         string btnReset = OBJ_PREFIX + "BTN_RESET_STATS";
+         if(ObjectFind(0, btnReset) != -1)
+         {
+            ObjectSet(btnReset, OBJPROP_YDISTANCE, btn_y);
+            ObjectSet(btnReset, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + CLOSE_ONLY_BTN_W + 10);
+            ObjectSet(btnReset, OBJPROP_BGCOLOR, clrWhite);
+            ObjectSetText(btnReset, "Reset Stats", 9, "Arial", clrBlack);
+         }
          
          // Update button color and text based on scheduled mode
          if(input_scheduled_close_only_enabled)
@@ -3649,6 +3676,17 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       {
          if(sparam == OBJ_PREFIX + "BTN_OPEN") { MasterOpenNow(); ObjectSetInteger(0, sparam, OBJPROP_STATE, false); }
          else if(sparam == OBJ_PREFIX + "BTN_CLOSE") { MasterCloseNow(); ObjectSetInteger(0, sparam, OBJPROP_STATE, false); }
+      }
+      // Reset Stats button handler
+      if(sparam == OBJ_PREFIX + "BTN_RESET_STATS")
+      {
+         // Reset success metrics
+         g_total_opens = 0;
+         g_successful_opens = 0;
+         g_total_ack_time_ms = 0;
+         g_avg_ack_time_ms = 0;
+         LogEvent("STATS_RESET", "success_metrics_cleared");
+         ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
       }
    }
 }
