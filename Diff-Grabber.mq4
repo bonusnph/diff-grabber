@@ -3766,25 +3766,21 @@ void OnTimer()
       WriteMasterConfig();
       if(!(input_role==ROLE_MASTER)) ReadMasterConfigForSlave();
    }
-   
-   
-   // === SCHEDULED CLOSE ONLY - ทุก 30 วินาที (เพื่อประสิทธิภาพ) ===
-   if(timer_count % 30 == 0 && input_role==ROLE_MASTER && (input_scheduled_close_only_enabled || input_sat_close_only_enabled))
+
+   // Every 30 seconds (Master only)
+   if(timer_count % 30 == 0 && input_role==ROLE_MASTER)
    {
       UpdateScheduledCloseOnlyMode();
-      // Apply close threshold schedule (every second; cheap)
+
+      // Apply close threshold schedule
       ApplyCloseThresholdSchedule();
 
       // Forced close by time
       MaybeForceCloseByTime();
-   }
 
-   // === POSITIVE SWAP: Thursday auto-open scheduler (ทุก 30 วินาที) ===
-   if(timer_count % 30 == 0 && input_role==ROLE_MASTER && input_trading_positive_swap)
-   {
+      // POSITIVE SWAP: Thursday auto-open scheduler
       MaybeOpenSwapThursday();
    }
-   
 
    DisplayUpdate();
 }
