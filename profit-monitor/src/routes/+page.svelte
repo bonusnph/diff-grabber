@@ -1067,11 +1067,11 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				<div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-400"></div>
 			</div>
 		{:else}
-					<!-- Profit/Loss Highlight Card -->
+		<!-- Profit/Loss Highlight Card -->
 		<div
-			class="bg-gradient-to-r from-gray-800 to-gray-700 border border-gray-600 rounded-lg shadow-lg p-4 mb-4 text-white"
+			class="bg-gradient-to-r from-gray-800 to-gray-700 border border-gray-600 rounded-lg shadow-lg p-3 mb-3 text-white"
 		>
-			<div class="flex flex-col gap-1 md:flex-row md:items-center md:justify-between mb-3">
+			<div class="flex flex-col gap-1 md:flex-row md:items-center md:justify-between mb-2">
 				<div
 					class="flex flex-row flex-wrap items-center text-xs text-gray-400 gap-2 md:gap-3 md:whitespace-nowrap"
 				>
@@ -1129,11 +1129,11 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				</div>
 				<!-- Open Pairs Summary (moved inside Total Profit/Loss card) -->
 				<!-- Row 1: Positive and Negative Open Points -->
-				<div class="grid grid-cols-2 gap-3 mt-3">
-					<div class="rounded-lg shadow-lg p-3 {positivePairs.length > 0 ? 'bg-gradient-to-br from-green-900/60 to-green-800/40' : ''}"
+				<div class="grid grid-cols-2 gap-2 mt-2">
+					<div class="rounded-lg shadow-lg p-2 {positivePairs.length > 0 ? 'bg-gradient-to-br from-green-900/60 to-green-800/40' : ''}"
 					>
 						<h3 class="text-sm font-bold text-green-300 uppercase tracking-wide">Positive Open</h3>
-						<div class="mt-2 flex flex-wrap gap-1.5">
+						<div class="mt-1 flex flex-wrap gap-1.5">
 							{#each positivePairs as d}
 								<span class="inline-flex items-center justify-center min-w-7 h-6 px-1.5 rounded-full text-xs font-bold bg-green-700/60 text-green-200 shadow-sm">
 									{(d.delta as number) >= 0 ? '+' : ''}{Math.round(d.delta as number)}
@@ -1141,10 +1141,10 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							{/each}
 						</div>
 					</div>
-					<div class="rounded-lg shadow-lg p-3 {negativePairs.length > 0 ? 'bg-gradient-to-br from-red-900/60 to-red-800/40' : ''}"
+					<div class="rounded-lg shadow-lg p-2 {negativePairs.length > 0 ? 'bg-gradient-to-br from-red-900/60 to-red-800/40' : ''}"
 					>
 						<h3 class="text-sm font-bold text-red-300 uppercase tracking-wide">Negative Open</h3>
-						<div class="mt-2 flex flex-wrap gap-1.5">
+						<div class="mt-1 flex flex-wrap gap-1.5">
 							{#each negativePairs as d}
 								<span class="inline-flex items-center justify-center min-w-7 h-6 px-1.5 rounded-full text-xs font-bold bg-red-700/60 text-red-200 shadow-sm">
 									{Math.round(d.delta as number)}
@@ -1155,8 +1155,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				</div>
 				
 				<!-- Row 2: Warning Boxes -->
-				<div class="grid grid-cols-2 gap-3 mt-3">
-					<div class="bg-gray-800 rounded-md shadow p-2.5 opacity-90">
+				<div class="grid grid-cols-2 gap-2 mt-2">
+					<div class="bg-gray-800 rounded-md shadow p-2 opacity-90">
 						<h3 class="text-xs font-semibold text-red-300 uppercase tracking-wide">Insufficient Balance</h3>
 						<div class="mt-1 flex items-center justify-between">
 							<div class="flex items-center gap-1">
@@ -1177,7 +1177,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							</div>
 						{/if}
 					</div>
-					<div class="bg-gray-800  rounded-md shadow p-2.5 opacity-90">
+					<div class="bg-gray-800  rounded-md shadow p-2 opacity-90">
 						<h3 class="text-xs font-semibold text-yellow-300 uppercase tracking-wide">Low Equity Warning</h3>
 						<div class="mt-1 flex items-center justify-between">
 							<div class="flex items-center gap-1">
@@ -1205,8 +1205,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			>
 				
 				<!-- Enhanced P/L Display with prominent styling -->
-				<div 
-					class="bg-gradient-to-br from-gray-800/60 to-gray-700/40 rounded-xl shadow-lg p-4 mx-2"
+		<div 
+			class="bg-gradient-to-br from-gray-800/60 to-gray-700/40 rounded-xl shadow-lg p-3 mx-2"
 				>
 					<!-- Main P/L Percentage (emphasized) -->
 					<p
@@ -1218,7 +1218,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					</p>
 					
 					<!-- Secondary P/L Amount -->
-					<div class="rounded-lg p-1 mb-4"
+				<div class="rounded-lg p-1 mb-2"
 					>
 						<p
 							class="text-3xl font-black"
@@ -1254,300 +1254,298 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			</div>
 		</div>
 
-			<!-- Summary Cards moved into Total Profit/Loss card -->
-
-					<!-- Account Summaries by Unit -->
-		<div class="bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-3 mb-4">
-			<div class="flex items-center justify-between mb-2">
-				<div class="flex items-center gap-1 ml-auto">
+			<!-- Account Summaries by Unit -->
+		<div class="bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-2 mb-2">
+			<div class="flex items-center justify-between mb-1">
+					<div class="flex items-center gap-1 ml-auto">
 					<button 
 						on:click={collapseAllUnits}
-						class="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-gray-200 hover:text-white border border-gray-500 transition-colors flex items-center gap-1"
-						title="Collapse all unit groups"
-					>
-						<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
-						</svg>
-						Collapse All
-					</button>
+						class="text-xs px-1.5 py-0.5 rounded bg-gray-600 hover:bg-gray-500 text-gray-200 hover:text-white border border-gray-500 transition-colors flex items-center gap-1"
+							title="Collapse all unit groups"
+						>
+							<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+							</svg>
+							Collapse All
+						</button>
 					<button 
 						on:click={expandAllUnits}
-						class="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-gray-200 hover:text-white border border-gray-500 transition-colors flex items-center gap-1"
-						title="Expand all unit groups"
-					>
-						<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-						</svg>
-						Expand All
-					</button>
-					<button on:click={() => (showFilters = !showFilters)} class="text-xs px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 border border-gray-600 flex items-center gap-1">
-						<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-						</svg>
-						{showFilters ? 'Hide Filters' : 'Show Filters'}
-					</button>
-				</div>
-			</div>
-
-							{#if showFilters}
-			<!-- Filters: Broker / Account Name -->
-			<div class="mb-3 space-y-2">
-				<div class="flex items-center gap-1 flex-wrap">
-					<span class="text-xs text-gray-400">Broker:</span>
-					{#each uniqueBrokersList as b}
-						<button
-							on:click={() => toggleBroker(b.name)}
-							class="px-1.5 py-0.5 rounded-full border text-xs transition-colors"
-							class:bg-blue-600={activeBrokers.has(b.name)}
-							class:text-white={activeBrokers.has(b.name)}
-							class:border-blue-400={activeBrokers.has(b.name)}
-							class:bg-gray-700={!activeBrokers.has(b.name)}
-							class:text-gray-300={!activeBrokers.has(b.name)}
-							class:border-gray-600={!activeBrokers.has(b.name)}
-							title={`Toggle broker ${b.name}`}
+						class="text-xs px-1.5 py-0.5 rounded bg-gray-600 hover:bg-gray-500 text-gray-200 hover:text-white border border-gray-500 transition-colors flex items-center gap-1"
+							title="Expand all unit groups"
 						>
-							{b.name}
-							<span class="opacity-70">({b.count})</span>
+							<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+							</svg>
+							Expand All
 						</button>
-					{/each}
-					<div class="ml-auto flex items-center gap-1">
-						<button on:click={selectAllBrokers} class="text-xs px-1.5 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">All</button>
-						<button on:click={clearAllBrokers} class="text-xs px-1.5 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">Clear</button>
+					<button on:click={() => (showFilters = !showFilters)} class="text-xs px-1.5 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 border border-gray-600 flex items-center gap-1">
+							<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+							</svg>
+							{showFilters ? 'Hide Filters' : 'Show Filters'}
+						</button>
 					</div>
 				</div>
-				<div class="flex items-center gap-1 flex-wrap">
-					<span class="text-xs text-gray-400">Account:</span>
-					{#each uniqueAccountNamesList as a}
-						<button
-							on:click={() => toggleAccountName(a.name)}
-							class="px-1.5 py-0.5 rounded-full border text-xs transition-colors"
-							class:bg-blue-600={activeAccountNames.has(a.name)}
-							class:text-white={activeAccountNames.has(a.name)}
-							class:border-blue-400={activeAccountNames.has(a.name)}
-							class:bg-gray-700={!activeAccountNames.has(a.name)}
-							class:text-gray-300={!activeAccountNames.has(a.name)}
-							class:border-gray-600={!activeAccountNames.has(a.name)}
-							title={`Toggle account ${a.name}`}
-						>
-							{shortName(a.name)}
-							<span class="opacity-70">({a.count})</span>
-						</button>
-					{/each}
+
+								{#if showFilters}
+				<!-- Filters: Broker / Account Name -->
+			<div class="mb-2 space-y-1.5">
+					<div class="flex items-center gap-1 flex-wrap">
+						<span class="text-xs text-gray-400">Broker:</span>
+						{#each uniqueBrokersList as b}
+							<button
+								on:click={() => toggleBroker(b.name)}
+								class="px-1.5 py-0.5 rounded-full border text-xs transition-colors"
+								class:bg-blue-600={activeBrokers.has(b.name)}
+								class:text-white={activeBrokers.has(b.name)}
+								class:border-blue-400={activeBrokers.has(b.name)}
+								class:bg-gray-700={!activeBrokers.has(b.name)}
+								class:text-gray-300={!activeBrokers.has(b.name)}
+								class:border-gray-600={!activeBrokers.has(b.name)}
+								title={`Toggle broker ${b.name}`}
+							>
+								{b.name}
+								<span class="opacity-70">({b.count})</span>
+							</button>
+						{/each}
 					<div class="ml-auto flex items-center gap-1">
-						<button on:click={selectAllAccountNames} class="text-xs px-1.5 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">All</button>
-						<button on:click={clearAllAccountNames} class="text-xs px-1.5 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">Clear</button>
+						<button on:click={selectAllBrokers} class="text-xs px-1 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">All</button>
+						<button on:click={clearAllBrokers} class="text-xs px-1 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">Clear</button>
+						</div>
+					</div>
+					<div class="flex items-center gap-1 flex-wrap">
+						<span class="text-xs text-gray-400">Account:</span>
+						{#each uniqueAccountNamesList as a}
+							<button
+								on:click={() => toggleAccountName(a.name)}
+								class="px-1.5 py-0.5 rounded-full border text-xs transition-colors"
+								class:bg-blue-600={activeAccountNames.has(a.name)}
+								class:text-white={activeAccountNames.has(a.name)}
+								class:border-blue-400={activeAccountNames.has(a.name)}
+								class:bg-gray-700={!activeAccountNames.has(a.name)}
+								class:text-gray-300={!activeAccountNames.has(a.name)}
+								class:border-gray-600={!activeAccountNames.has(a.name)}
+								title={`Toggle account ${a.name}`}
+							>
+								{shortName(a.name)}
+								<span class="opacity-70">({a.count})</span>
+							</button>
+						{/each}
+					<div class="ml-auto flex items-center gap-1">
+						<button on:click={selectAllAccountNames} class="text-xs px-1 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">All</button>
+						<button on:click={clearAllAccountNames} class="text-xs px-1 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">Clear</button>
+						</div>
 					</div>
 				</div>
-			</div>
-			{/if}
+				{/if}
 
-				{#each Object.entries(unitGroups) as [unitStr, accounts]}
-					{@const unit = parseInt(unitStr)}
-					{@const unitStat = unitStats.find((s) => s.unit === unit)}
-					{@const groupIsTrading = accounts.some(isTrading)}
-					{@const sortedAccounts = [...accounts].sort(
-						(a, b) =>
-							a.broker_name.localeCompare(b.broker_name) ||
-							a.account_number.localeCompare(b.account_number)
-					)}
-					{@const visibleAccounts = sortedAccounts.filter((a) => activeBrokers.has(a.broker_name) && activeAccountNames.has(a.account_name))}
-					
-					{#if visibleAccounts.length > 0}
-					<div
-						class="mb-3 rounded-md"
-						class:bg-blue-700={groupIsTrading}
-						class:border-2={groupIsTrading}
-						class:border-blue-400={groupIsTrading}
-						class:p-1={groupIsTrading}
-					>
-						<!-- Unit Header (always visible) -->
-						<div 
-							class="flex justify-between items-center mb-2 border-b border-gray-600 pb-1 cursor-pointer hover:bg-gray-700 hover:bg-opacity-50 rounded px-1 py-0.5 transition-colors"
-							class:bg-red-950={accounts.some(isInsufficientBalance)}
-							class:bg-yellow-900={!accounts.some(isInsufficientBalance) && accounts.some(isLowEquityWarning)}
-							on:click={() => {
-								unitVisibility = { ...unitVisibility, [unit]: !(unitVisibility[unit] !== false) };
-							}}
-							on:keydown={(e) => {
-								if (e.key === 'Enter' || e.key === ' ') {
-									e.preventDefault();
+					{#each Object.entries(unitGroups) as [unitStr, accounts]}
+						{@const unit = parseInt(unitStr)}
+						{@const unitStat = unitStats.find((s) => s.unit === unit)}
+						{@const groupIsTrading = accounts.some(isTrading)}
+						{@const sortedAccounts = [...accounts].sort(
+							(a, b) =>
+								a.broker_name.localeCompare(b.broker_name) ||
+								a.account_number.localeCompare(b.account_number)
+						)}
+						{@const visibleAccounts = sortedAccounts.filter((a) => activeBrokers.has(a.broker_name) && activeAccountNames.has(a.account_name))}
+						
+						{#if visibleAccounts.length > 0}
+						<div
+							class="mb-2 rounded-md"
+							class:bg-blue-700={groupIsTrading}
+							class:border-2={groupIsTrading}
+							class:border-blue-400={groupIsTrading}
+							class:p-1={groupIsTrading}
+						>
+							<!-- Unit Header (always visible) -->
+							<div 
+							class="flex justify-between items-center mb-1 border-b border-gray-600 pb-0.5 cursor-pointer hover:bg-gray-700 hover:bg-opacity-50 rounded px-1 py-0.5 transition-colors"
+								class:bg-red-950={accounts.some(isInsufficientBalance)}
+								class:bg-yellow-900={!accounts.some(isInsufficientBalance) && accounts.some(isLowEquityWarning)}
+								on:click={() => {
 									unitVisibility = { ...unitVisibility, [unit]: !(unitVisibility[unit] !== false) };
-								}
-							}}
-							role="button"
-							tabindex="0"
-							title="Click to expand/collapse unit group"
-						>
-							<div class="flex items-center space-x-1">
-								<!-- Expand/Collapse Icon -->
-								<svg 
-									class="w-4 h-4 text-gray-400 transition-transform duration-200"
-									class:rotate-90={unitVisibility[unit] !== false}
-									fill="none" 
-									stroke="currentColor" 
-									viewBox="0 0 24 24"
-								>
-									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-								</svg>
-								<h3 class="text-base font-medium text-gray-200">
-									{unit === 0 ? 'Unknown Unit' : getUnitDisplayName(unit)}
-									{#if accounts.some(isInsufficientBalance)}
-										<span class="text-red-400 font-bold ml-1" title="มีบัญชีที่เงินไม่เพียงพอในกลุ่มนี้">*</span>
-									{:else if accounts.some(isLowEquityWarning)}
-										<span class="text-yellow-400 font-bold ml-1" title="มีบัญชีที่ equity ต่ำกว่าเกณฑ์เตือนในกลุ่มนี้">⚠</span>
-									{/if}
-								</h3>
-								<span class="text-xs text-gray-500 bg-gray-600 px-1 py-0.5 rounded">
-									#{unit}
-								</span>
-								{#if computeUnitDelta(accounts) !== null}
-									{@const delta = computeUnitDelta(accounts) as number}
-									<span
-										class="text-xs px-1 py-0.5 rounded font-semibold text-white"
-										class:bg-green-600={delta >= 0}
-										class:bg-red-600={delta < 0}
+								}}
+								on:keydown={(e) => {
+									if (e.key === 'Enter' || e.key === ' ') {
+										e.preventDefault();
+										unitVisibility = { ...unitVisibility, [unit]: !(unitVisibility[unit] !== false) };
+									}
+								}}
+								role="button"
+								tabindex="0"
+								title="Click to expand/collapse unit group"
+							>
+								<div class="flex items-center space-x-1">
+									<!-- Expand/Collapse Icon -->
+									<svg 
+										class="w-4 h-4 text-gray-400 transition-transform duration-200"
+										class:rotate-90={unitVisibility[unit] !== false}
+										fill="none" 
+										stroke="currentColor" 
+										viewBox="0 0 24 24"
 									>
-										Open {delta > 0 ? '+' : ''}{delta.toFixed(0)}
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+									</svg>
+									<h3 class="text-base font-medium text-gray-200">
+										{unit === 0 ? 'Unknown Unit' : getUnitDisplayName(unit)}
+										{#if accounts.some(isInsufficientBalance)}
+											<span class="text-red-400 font-bold ml-1" title="มีบัญชีที่เงินไม่เพียงพอในกลุ่มนี้">*</span>
+										{:else if accounts.some(isLowEquityWarning)}
+											<span class="text-yellow-400 font-bold ml-1" title="มีบัญชีที่ equity ต่ำกว่าเกณฑ์เตือนในกลุ่มนี้">⚠</span>
+										{/if}
+									</h3>
+									<span class="text-xs text-gray-500 bg-gray-600 px-1 py-0.5 rounded">
+										#{unit}
 									</span>
-								{/if}
-								{#if true}
-									{@const targetEquity = capitalPerUnit / 2}
-									{@const sumsByBroker = (() => {
-										const map: Record<string, { d: number; w: number }> = {};
-										for (const a of visibleAccounts || []) {
-											const broker = a.broker_name || '';
-											if (!map[broker]) map[broker] = { d: 0, w: 0 };
-											const diff = a.latest_equity - targetEquity;
-											if (diff >= 0) map[broker].w += diff;
-											else map[broker].d += -diff;
-										}
-										return map;
-									})()}
-									{@const nonZeroEntries = Object.entries(sumsByBroker).filter(([_, s]) => (s?.d || 0) > 0 || (s?.w || 0) > 0)}
-									{#if nonZeroEntries.length > 0}
-										<div class="flex items-center gap-1 ml-1 flex-wrap">
-											{#each nonZeroEntries as [broker, s]}
-                                <div class="flex items-center gap-1 bg-gray-700/40 rounded px-1 py-0.5">
-                                    <span class="text-[10px] text-gray-200">{truncateWithEllipsis(broker, 6)}</span>
-													{#if s.d > 0}
-														<span class="text-[10px] px-1 rounded font-semibold bg-green-700/60 text-green-200 border border-green-500/40">D {formatNumber(s.d)}</span>
-													{/if}
-													{#if s.w > 0}
-														<span class="text-[10px] px-1 rounded font-semibold bg-red-700/60 text-red-200 border border-red-500/40">W {formatNumber(s.w)}</span>
-													{/if}
-												</div>
-											{/each}
-										</div>
-									{/if}
-								{/if}
-							</div>
-							{#if unitStat}
-								<div
-									class="flex flex-col md:flex-row items-start md:items-center space-y-0.5 md:space-y-0 md:space-x-2 text-xs"
-								>
-									<span class="text-gray-400">
-										Total: {formatNumber(unitStat.totalBalance)}
-									</span>
-									<span
-										class="font-medium"
-										class:text-green-400={unitStat.profitLoss >= 0}
-										class:text-red-400={unitStat.profitLoss < 0}
-									>
-										P/L: {unitStat.profitLoss >= 0 ? '+' : ''}{formatNumber(unitStat.profitLoss)}
-									</span>
-									{#if (unitGroups[unit] || []).reduce((s, a) => s + (accountWithdrawals[a.account_number] ?? 0), 0) > 0}
-										<span class="text-gray-400">
-											WD Total: {formatNumber(
-												(unitGroups[unit] || []).reduce(
-													(s, a) => s + (accountWithdrawals[a.account_number] ?? 0),
-													0
-												)
-											)}
+									{#if computeUnitDelta(accounts) !== null}
+										{@const delta = computeUnitDelta(accounts) as number}
+										<span
+											class="text-xs px-1 py-0.5 rounded font-semibold text-white"
+											class:bg-green-600={delta >= 0}
+											class:bg-red-600={delta < 0}
+										>
+											Open {delta > 0 ? '+' : ''}{delta.toFixed(0)}
 										</span>
 									{/if}
+									{#if true}
+										{@const targetEquity = capitalPerUnit / 2}
+										{@const sumsByBroker = (() => {
+											const map: Record<string, { d: number; w: number }> = {};
+											for (const a of visibleAccounts || []) {
+												const broker = a.broker_name || '';
+												if (!map[broker]) map[broker] = { d: 0, w: 0 };
+												const diff = a.latest_equity - targetEquity;
+												if (diff >= 0) map[broker].w += diff;
+												else map[broker].d += -diff;
+											}
+											return map;
+										})()}
+										{@const nonZeroEntries = Object.entries(sumsByBroker).filter(([_, s]) => (s?.d || 0) > 0 || (s?.w || 0) > 0)}
+										{#if nonZeroEntries.length > 0}
+											<div class="flex items-center gap-1 ml-1 flex-wrap">
+												{#each nonZeroEntries as [broker, s]}
+									<div class="flex items-center gap-1 bg-gray-700/40 rounded px-1 py-0.5">
+										<span class="text-[10px] text-gray-200">{truncateWithEllipsis(broker, 6)}</span>
+														{#if s.d > 0}
+															<span class="text-[10px] px-1 rounded font-semibold bg-green-700/60 text-green-200 border border-green-500/40">D {formatNumber(s.d)}</span>
+														{/if}
+														{#if s.w > 0}
+															<span class="text-[10px] px-1 rounded font-semibold bg-red-700/60 text-red-200 border border-red-500/40">W {formatNumber(s.w)}</span>
+														{/if}
+													</div>
+												{/each}
+											</div>
+										{/if}
+									{/if}
 								</div>
+								{#if unitStat}
+									<div
+										class="flex flex-col md:flex-row items-start md:items-center space-y-0.5 md:space-y-0 md:space-x-2 text-xs"
+									>
+										<span class="text-gray-400">
+											Total: {formatNumber(unitStat.totalBalance)}
+										</span>
+										<span
+											class="font-medium"
+											class:text-green-400={unitStat.profitLoss >= 0}
+											class:text-red-400={unitStat.profitLoss < 0}
+										>
+											P/L: {unitStat.profitLoss >= 0 ? '+' : ''}{formatNumber(unitStat.profitLoss)}
+										</span>
+										{#if (unitGroups[unit] || []).reduce((s, a) => s + (accountWithdrawals[a.account_number] ?? 0), 0) > 0}
+											<span class="text-gray-400">
+												WD Total: {formatNumber(
+													(unitGroups[unit] || []).reduce(
+														(s, a) => s + (accountWithdrawals[a.account_number] ?? 0),
+														0
+													)
+												)}
+											</span>
+										{/if}
+									</div>
+								{/if}
+							</div>
+							
+							{#if unitVisibility[unit] !== false}
+							<!-- Compact Table View -->
+							<div class="overflow-x-auto">
+								<table class="w-full text-xs">
+									<thead>
+										<tr class="border-b border-gray-600">
+											<th class="text-right py-1 px-2 text-gray-400 font-medium">Adjust</th>
+											<th class="text-left py-1 px-2 text-gray-400 font-medium">Account / Name</th>
+											<th class="text-left py-1 px-2 text-gray-400 font-medium">Broker</th>
+											<th class="text-right py-1 px-2 text-gray-400 font-medium">Balance</th>
+											<th class="text-right py-1 px-2 text-gray-400 font-medium">Equity</th>
+											<th class="text-right py-1 px-2 text-gray-400 font-medium">WD Note</th>
+											<th class="text-left py-1 px-2 text-gray-400 font-medium">Updated</th>
+										</tr>
+									</thead>
+									<tbody>
+										{#each visibleAccounts as account}
+											{@const dataAge = getDataAge(account.last_update)}
+											<tr
+												class="border-b border-gray-700 hover:bg-gray-600 transition-colors"
+												class:bg-yellow-800={!isInsufficientBalance(account) && dataAge.status !== 'warning' && dataAge.status !== 'danger' && isLowEquityWarning(account)}
+												class:bg-yellow-900={dataAge.status === 'warning'}
+												class:bg-red-900={dataAge.status === 'danger'}
+												class:bg-red-950={isInsufficientBalance(account)}
+											>
+												<td
+													class="py-1 px-2 text-right font-medium text-xs"
+													class:text-red-400={capitalPerUnit / 2 - account.latest_equity < 0}
+													class:text-green-400={capitalPerUnit / 2 - account.latest_equity > 0}
+												>
+													{#if capitalPerUnit / 2 - account.latest_equity > 0}
+														D {formatNumber(Math.abs(capitalPerUnit / 2 - account.latest_equity))}
+													{:else if capitalPerUnit / 2 - account.latest_equity < 0}
+														W {formatNumber(Math.abs(capitalPerUnit / 2 - account.latest_equity))}
+													{:else}
+														{formatNumber(0)}
+													{/if}
+												</td>
+												<td class="py-1 px-2">
+													<div class="flex flex-col leading-tight">
+														<span class="font-mono font-semibold text-white text-xs">
+															{#if isInsufficientBalance(account)}<span class="text-red-400">*</span>
+															{/if}{account.account_number}
+														</span>
+														<span class="text-gray-400 text-xs truncate" title={account.account_name}
+															>{shortName(account.account_name)}</span
+														>
+													</div>
+												</td>
+												<td class="py-1 px-2 text-gray-400 text-xs">{account.broker_name}</td>
+												<td class="py-1 px-2 text-right font-medium text-white text-xs"
+													>{formatNumber(account.latest_balance)}</td
+												>
+												<td class="py-1 px-2 text-right font-medium text-white text-xs"
+													>{formatNumber(account.latest_equity)}</td
+												>
+												<td class="py-1 px-2 text-right">
+													<input
+														type="number"
+														min="0"
+														step="100"
+														value={accountWithdrawals[account.account_number] ?? 0}
+														on:change={(e) =>
+															handleAccountWithdrawalChange(account.account_number, e)}
+														class="w-20 border border-gray-600 bg-gray-700 text-white rounded px-1 py-0.5 text-right text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+													/>
+												</td>
+												<td class="py-1 px-2 text-gray-400 text-xs"
+													>{formatDateTime(account.last_update)}</td
+												>
+											</tr>
+										{/each}
+									</tbody>
+								</table>
+							</div>
 							{/if}
 						</div>
-						
-						{#if unitVisibility[unit] !== false}
-						<!-- Compact Table View -->
-						<div class="overflow-x-auto">
-							<table class="w-full text-xs">
-								<thead>
-									<tr class="border-b border-gray-600">
-										<th class="text-right py-1 px-2 text-gray-400 font-medium">Adjust</th>
-										<th class="text-left py-1 px-2 text-gray-400 font-medium">Account / Name</th>
-										<th class="text-left py-1 px-2 text-gray-400 font-medium">Broker</th>
-										<th class="text-right py-1 px-2 text-gray-400 font-medium">Balance</th>
-										<th class="text-right py-1 px-2 text-gray-400 font-medium">Equity</th>
-										<th class="text-right py-1 px-2 text-gray-400 font-medium">WD Note</th>
-										<th class="text-left py-1 px-2 text-gray-400 font-medium">Updated</th>
-									</tr>
-								</thead>
-								<tbody>
-									{#each visibleAccounts as account}
-										{@const dataAge = getDataAge(account.last_update)}
-										<tr
-											class="border-b border-gray-700 hover:bg-gray-600 transition-colors"
-											class:bg-yellow-800={!isInsufficientBalance(account) && dataAge.status !== 'warning' && dataAge.status !== 'danger' && isLowEquityWarning(account)}
-											class:bg-yellow-900={dataAge.status === 'warning'}
-											class:bg-red-900={dataAge.status === 'danger'}
-											class:bg-red-950={isInsufficientBalance(account)}
-										>
-											<td
-												class="py-1 px-2 text-right font-medium text-xs"
-												class:text-red-400={capitalPerUnit / 2 - account.latest_equity < 0}
-												class:text-green-400={capitalPerUnit / 2 - account.latest_equity > 0}
-											>
-												{#if capitalPerUnit / 2 - account.latest_equity > 0}
-													D {formatNumber(Math.abs(capitalPerUnit / 2 - account.latest_equity))}
-												{:else if capitalPerUnit / 2 - account.latest_equity < 0}
-													W {formatNumber(Math.abs(capitalPerUnit / 2 - account.latest_equity))}
-												{:else}
-													{formatNumber(0)}
-												{/if}
-											</td>
-											<td class="py-1 px-2">
-												<div class="flex flex-col leading-tight">
-													<span class="font-mono font-semibold text-white text-xs">
-														{#if isInsufficientBalance(account)}<span class="text-red-400">*</span>
-														{/if}{account.account_number}
-													</span>
-													<span class="text-gray-400 text-xs truncate" title={account.account_name}
-														>{shortName(account.account_name)}</span
-													>
-												</div>
-											</td>
-											<td class="py-1 px-2 text-gray-400 text-xs">{account.broker_name}</td>
-											<td class="py-1 px-2 text-right font-medium text-white text-xs"
-												>{formatNumber(account.latest_balance)}</td
-											>
-											<td class="py-1 px-2 text-right font-medium text-white text-xs"
-												>{formatNumber(account.latest_equity)}</td
-											>
-											<td class="py-1 px-2 text-right">
-												<input
-													type="number"
-													min="0"
-													step="100"
-													value={accountWithdrawals[account.account_number] ?? 0}
-													on:change={(e) =>
-														handleAccountWithdrawalChange(account.account_number, e)}
-													class="w-20 border border-gray-600 bg-gray-700 text-white rounded px-1 py-0.5 text-right text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-												/>
-											</td>
-											<td class="py-1 px-2 text-gray-400 text-xs"
-												>{formatDateTime(account.last_update)}</td
-											>
-										</tr>
-									{/each}
-								</tbody>
-							</table>
-						</div>
 						{/if}
-					</div>
-					{/if}
-				{/each}
+					{/each}
 			</div>
 
 			{#if summaries.length === 0}
