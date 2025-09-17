@@ -51,7 +51,7 @@ input double input_lot                      = 0.01;          // Scope: Both — 
 input bool   input_trading_positive_swap        = false;    // Scope: Master — Positive Swap mode: true=optimize for positive swap (disable scheduled/threshold/force-close; weekend only), false=enable scheduled/threshold/force-close
 
 // Positive Swap override (Master only)
-int    input_pswap_close_th_points        = 1000;     // Scope: Master — close threshold to enforce during positive swap window (03:00-05:30 local, non-Saturday)
+int    input_pswap_close_th_points        = 10000;     // Scope: Master — close threshold to enforce during positive swap window (03:00-05:30 local, non-Saturday)
 
 // Positive Swap Thursday auto-open (Master only)
 string input_swap_thursday_open_time    = "03:30";   // Scope: Master — Thursday auto-open time (HH:mm, local)
