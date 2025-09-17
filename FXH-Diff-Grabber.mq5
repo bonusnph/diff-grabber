@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.01"
+#property version   "1.03"
 
 // =============================
 // EA Heading Master–Slave (MT5)
@@ -115,10 +115,6 @@ double input_min_balance_master_usd    = 0.00;          // Scope: Master — min
 double input_min_balance_slave_usd     = 0.00;          // Scope: Master — minimum balance required on Slave to allow new open
 double input_initial_capital_usd       = 0.00;          // Scope: Master — initial capital for profit calculation
 
-// Account Authorization via Google Sheets
-string input_auth_sheet_url            = "https://script.google.com/macros/s/AKfycbwu4NytwY2ycRFsonoyEJFJICqT-ooS6Wszb5LTY3PEysF1hxXMEZ0ThgAlzUlCZr1gdg/exec";            // Scope: Both — Google Sheets CSV export URL for account authorization
-bool   input_auth_enabled              = true;         // Scope: Both — enable account authorization check
-
 // Scheduled Close Only Mode (Master only)
 bool   input_scheduled_close_only_enabled = true;     // Scope: Master — enable scheduled close only mode
 string input_close_only_start_time        = "00:00";   // Scope: Master — start time for close only mode (HH:mm format)
@@ -132,19 +128,23 @@ string input_mon_close_only_end_time      = "06:00";   // Scope: Master — Mond
 // Close Threshold Scheduler (Master only)
 bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes
 string input_close_th_time1               = "01:00";  // HH:mm — schedule slot 1
-int    input_close_th_value1              = 20;       // points — threshold at time1
+int    input_close_th_value1              = 10;       // points — threshold at time1
 string input_close_th_time2               = "02:00";  // HH:mm — schedule slot 2
-int    input_close_th_value2              = 10;       // points — threshold at time2
+int    input_close_th_value2              = 5;       // points — threshold at time2
 string input_close_th_time3               = "03:00";  // HH:mm — schedule slot 3
 int    input_close_th_value3              = 0;        // points — threshold at time3
-string input_close_th_time4               = "03:15";  // HH:mm — schedule slot 4
-int    input_close_th_value4              = 1000;     // points — threshold at time4
-string input_close_th_time5               = "05:30";  // HH:mm — schedule slot 5
-int    input_close_th_value5              = 30;       // points — threshold at time5
+string input_close_th_time4               = "03:15";  // HH:mm — schedule (prevent close time)
+int    input_close_th_value4              = 10000;    // points — threshold at time4
+string input_close_th_time5               = "05:30";  // HH:mm — schedule reset to initial close threshold
+string input_close_th_time6               = "06:00";  // HH:mm — schedule freeze close threshold all day
 
 // Force Close at Time (Master only)
 bool   input_force_close_time_enabled     = false;    // Scope: Master — enable daily forced close at a specific time
 string input_force_close_time             = "03:15";  // Scope: Master — time to force close all (HH:mm)
+
+// Account Authorization via Google Sheets
+string input_auth_sheet_url            = "https://script.google.com/macros/s/AKfycbwu4NytwY2ycRFsonoyEJFJICqT-ooS6Wszb5LTY3PEysF1hxXMEZ0ThgAlzUlCZr1gdg/exec";            // Scope: Both — Google Sheets CSV export URL for account authorization
+bool   input_auth_enabled              = true;         // Scope: Both — enable account authorization check
 
 // -----------------------------
 // Globals
@@ -189,6 +189,10 @@ string  g_pending_order_comment = "";
 // Slave last-open tracking for robust local reconcile guard
 ulong   g_slave_last_open_ms = 0;
 string  g_slave_last_processed_cmd = "";
+
+// Display state
+int g_display_last_lines = 0;
+
 // Cached master command snapshot for Slave display
 bool   g_have_master_cmd = false;
 string g_last_cmd_side = "";     // BUY/SELL of master
@@ -422,12 +426,16 @@ void LogsCleanupRetention()
 string g_cache_pair_ids[];
 ulong  g_cache_tickets[];
 
-// Dynamic thresholds (open/close) with sentinel
+// Dynamic open/close threshold (initial vs current)
 #define OPEN_TH_UNSET -9999
 int    g_open_threshold_initial = 0;
 int    g_open_threshold_current = OPEN_TH_UNSET;
+
+// Dynamic close threshold (initial vs current)
 int    g_close_threshold_initial = 0;
 int    g_close_threshold_current = OPEN_TH_UNSET;
+
+#define NUMBER_UNSET -9999
 
 int GetOpenThresholdPoints(){ return (g_open_threshold_current != OPEN_TH_UNSET ? g_open_threshold_current : input_open_threshold_points); }
 void SetOpenThresholdPoints(const int v){ g_open_threshold_current = v; }
@@ -933,9 +941,12 @@ void MaybeForceCloseByTime()
    // Enforce on Saturdays regardless of configs
    if(IsSaturday()) eff_force_close_time_enabled = true;
    if(!eff_force_close_time_enabled) return;
+   // Do not interfere with Saturday quiet window policy
    if(IsInSaturdayQuietWindow()) return;
+   // Require there is something to close
    if(CountOpenPairs() <= 0) return;
-   static int target_minutes = -2;
+   // Parse target time once and cache it
+   static int target_minutes = -2; // -2 = uninitialized; -1 = invalid
    static string cached_time = "";
    if(cached_time != input_force_close_time)
    {
@@ -943,25 +954,32 @@ void MaybeForceCloseByTime()
       target_minutes = ParseTimeToMinutes(cached_time);
    }
    if(target_minutes < 0) return;
+   // Compute current local minutes and detect day change
    static int last_day_of_year = -1;
    static bool fired_today = false;
    MqlDateTime dt; TimeToStruct(TimeLocal(), dt);
    int minutes_now = dt.hour * 60 + dt.min;
-   int day_of_year = dt.day_of_year;
-   if(day_of_year != last_day_of_year){ last_day_of_year = day_of_year; fired_today = false; }
+   int day_of_year = dt.day_of_year; // resets everyday
+   if(day_of_year != last_day_of_year)
+   {
+      last_day_of_year = day_of_year;
+      fired_today = false;
+   }
+   // Fire once per day when within the exact minute window
    if(!fired_today && minutes_now == target_minutes)
    {
+      // Generate id up-front; emit cmd only after local close success (except DRY fake-ack)
       string cmd_id = NewCmdId();
       ulong created_ms = NowMs();
       int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0) ? DryOverrideExpireMs() : input_cmd_expire_ms;
       if(expire_ms <= 0) expire_ms = 60000;
-      string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
-      FileWriteAllAtomic(PathCloseCmd(), line);
       LogEvent("CLOSE_TRIGGER", StringFormat("source=FORCE_TIME;time=%s", cached_time));
       if(DryEnabled())
       {
          if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK)
          {
+            string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
+            FileWriteAllAtomic(PathCloseCmd(), line);
             string ackSelf = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0);
             FileWriteAll(PathCloseAckSelf(), ackSelf);
          }
@@ -969,10 +987,19 @@ void MaybeForceCloseByTime()
       else
       {
          bool ok = CloseAllByMagic();
-         string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:GetLastError());
+         string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError());
          FileWriteAll(PathCloseAckSelf(), ack);
+         if(ok)
+         {
+            string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
+            FileWriteAllAtomic(PathCloseCmd(), line);
+         }
+         else
+         {
+            LogEvent("CLOSE_LOCAL_FAIL", StringFormat("reason=FORCE_CLOSE_BY_TIME;err=%d", (int)GetLastError()));
+         }
       }
-      fired_today = true;
+       fired_today = true;
    }
 }
 
@@ -1050,27 +1077,42 @@ void ApplyCloseThresholdSchedule()
       return;
    }
    // Build arrays of minutes and values
-   int times[5]; int values[5];
+   int times[6]; int values[6];
    times[0]=ParseTimeToMinutes(input_close_th_time1); values[0]=input_close_th_value1;
    times[1]=ParseTimeToMinutes(input_close_th_time2); values[1]=input_close_th_value2;
    times[2]=ParseTimeToMinutes(input_close_th_time3); values[2]=input_close_th_value3;
    times[3]=ParseTimeToMinutes(input_close_th_time4); values[3]=input_close_th_value4;
-   times[4]=ParseTimeToMinutes(input_close_th_time5); values[4]=input_close_th_value5;
+   times[4]=ParseTimeToMinutes(input_close_th_time5); values[4]=input_close_threshold_points;
+   times[5]=ParseTimeToMinutes(input_close_th_time6); values[5]=NUMBER_UNSET;
 
+   // Current local time in minutes
    MqlDateTime dt; TimeToStruct(TimeLocal(), dt);
    int nowMin = dt.hour*60 + dt.min;
 
-   int applied = OPEN_TH_UNSET;
-   for(int i=0;i<5;i++)
+   // Pick the latest schedule slot whose time <= nowMin
+   bool found=false; int pickVal=0; int best=-1;
+   for(int i=0;i<6;i++)
    {
-      if(times[i] < 0) continue;
-      if(nowMin >= times[i]) applied = values[i];
-   }
-   if(applied != OPEN_TH_UNSET)
-   {
-      if(g_close_threshold_current != applied)
+      if(times[i] < 0) continue; // skip invalid/empty
+      if(times[i] <= nowMin)
       {
-         SetCloseThresholdPoints(applied);
+         if(times[i] > best){ best = times[i]; pickVal = values[i]; found=true; }
+      }
+   }
+   
+   // Handle time6 special case: stop processing after time6 until next day
+   if(found && pickVal == NUMBER_UNSET)
+   {
+      // time6 reached: no more SetCloseThresholdPoints until next time1
+      return;
+   }
+   
+   if(found)
+   {
+      // Apply new dynamic close threshold
+      if(g_close_threshold_current != pickVal && pickVal != NUMBER_UNSET)
+      {
+         SetCloseThresholdPoints(pickVal);
       }
    }
 }
@@ -1117,7 +1159,7 @@ void UpdateScheduledCloseOnlyMode()
       }
    }
    
-   // Compute activity
+   // Use cached values
    MqlDateTime dt; TimeToStruct(TimeLocal(), dt);
    int currentMinutes = dt.hour * 60 + dt.min;
    bool wasActive = g_scheduled_close_only_active;
@@ -1135,39 +1177,28 @@ void UpdateScheduledCloseOnlyMode()
    bool weekendActive = false;
    if(eff_sat_close_only_enabled && g_cached_sat_start_minutes >= 0 && g_cached_mon_end_minutes >= 0)
    {
-      int dow = dt.day_of_week; // 0=Sunday ... 6=Saturday (MT4)
+      int dow = dt.day_of_week; // 1=Monday ... 7=Sunday in MQL5? Using MqlDateTime: 0=Sunday..6=Saturday (same as MT4)
       if(dow == 6)
       {
          // Saturday: active from start time onward
          if(g_cached_sat_start_minutes == g_cached_mon_end_minutes) weekendActive = false;
-         else if(g_cached_sat_start_minutes < g_cached_mon_end_minutes)
-            weekendActive = (currentMinutes >= g_cached_sat_start_minutes);
-         else
-            weekendActive = (currentMinutes >= g_cached_sat_start_minutes);
+         else weekendActive = (currentMinutes >= g_cached_sat_start_minutes);
       }
       else if(dow == 0)
       {
-         // Sunday: always active entire day
+         // Sunday: always active
          weekendActive = true;
       }
       else if(dow == 1)
       {
          // Monday: active until end time
          if(g_cached_sat_start_minutes == g_cached_mon_end_minutes) weekendActive = false;
-         else if(g_cached_sat_start_minutes < g_cached_mon_end_minutes)
-            weekendActive = (currentMinutes < g_cached_mon_end_minutes);
-         else
-            weekendActive = (currentMinutes < g_cached_mon_end_minutes);
+         else weekendActive = (currentMinutes < g_cached_mon_end_minutes);
       }
    }
    
    g_scheduled_close_only_active = (generalActive || weekendActive);
-   if(g_scheduled_close_only_active)
-   {
-      g_close_only_mode = true;
-   }
-   else
-   {
+   if(g_scheduled_close_only_active) g_close_only_mode = true; else {
       int graceMin = 5;
       bool inGraceGeneral=false, inGraceWeekend=false;
       if(eff_scheduled_close_only_enabled && g_cached_start_minutes >= 0 && g_cached_end_minutes >= 0)
@@ -1192,11 +1223,11 @@ void UpdateScheduledCloseOnlyMode()
    
    if(wasActive != g_scheduled_close_only_active)
    {
-      LogEvent("SCHEDULED_CLOSE_ONLY", StringFormat("active=%s;general=%s-%s;weekend=%s-%s;current=%02d:%02d;mode=%s",
-               g_scheduled_close_only_active?"true":"false",
+      LogEvent("SCHEDULED_CLOSE_ONLY", StringFormat("active=%s;general=%s-%s;weekend=%s-%s;current=%02d:%02d;mode=%s", 
+               g_scheduled_close_only_active ? "true" : "false",
                input_close_only_start_time, input_close_only_end_time,
                input_sat_close_only_start_time, input_mon_close_only_end_time,
-               dt.hour, dt.min, g_close_only_mode?"ON":"OFF"));
+               dt.hour, dt.min, g_close_only_mode ? "ON" : "OFF"));
    }
 }
 
@@ -1420,13 +1451,15 @@ void MasterReconcilePositions()
         FileWriteAllAtomic(PathCloseCmd(), line0);
         LogEvent("RECONCILE_MASTER_FOLLOW_CLOSE", StringFormat("cmd_id=%s;reason=PEER_MANUAL_CLOSE", cmd_id0));
         if(DryEnabled()){
-           if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string ackSelf0=StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id0, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf0);} 
-           g_prev_self_pairs=selfNowTmp; g_prev_peer_pairs=peerNowTmp; 
-           return; 
+           if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string line0 = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id0, (long)g_seq, "N/A", "CLOSE", created_ms0, expire_ms0); FileWriteAllAtomic(PathCloseCmd(), line0); string ackSelf0=StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id0, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf0);} 
+            g_prev_self_pairs=selfNowTmp; g_prev_peer_pairs=peerNowTmp; 
+            return; 
         }
         bool ok0 = CloseAllByMagic(); CompactPairMapSelf(); WritePositions(); 
         string ack20 = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id0, (long)g_seq, "N/A", ok0?1:0, ok0?0:(int)GetLastError()); 
         FileWriteAll(PathCloseAckSelf(), ack20);
+        if(ok0){ string line0 = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id0, (long)g_seq, "N/A", "CLOSE", created_ms0, expire_ms0); FileWriteAllAtomic(PathCloseCmd(), line0); }
+        else {LogEvent("CLOSE_LOCAL_FAIL", StringFormat("reason=RECONCILE;err=%d", GetLastError()));}
         g_prev_self_pairs=selfNowTmp; g_prev_peer_pairs=peerNowTmp; 
         return;
      }
@@ -1460,13 +1493,15 @@ void MasterReconcilePositions()
         FileWriteAllAtomic(PathCloseCmd(), line1);
         LogEvent("RECONCILE_MASTER_FOLLOW_CLOSE", StringFormat("cmd_id=%s;reason=PEER_MANUAL_CLOSE", cmd_id1));
         if(DryEnabled()){
-           if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string ackSelf1=StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id1, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf1);} 
-           g_prev_self_pairs=selfNowTmp2; g_prev_peer_pairs=peerNowTmp2; 
-           return; 
+           if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string line1 = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id1, (long)g_seq, "N/A", "CLOSE", created_ms1, expire_ms1); FileWriteAllAtomic(PathCloseCmd(), line1); string ackSelf1=StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id1, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf1);} 
+            g_prev_self_pairs=selfNowTmp2; g_prev_peer_pairs=peerNowTmp2; 
+            return; 
         }
         bool ok1 = CloseAllByMagic(); CompactPairMapSelf(); WritePositions(); 
         string ack21 = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id1, (long)g_seq, "N/A", ok1?1:0, ok1?0:(int)GetLastError()); 
         FileWriteAll(PathCloseAckSelf(), ack21);
+        if(ok1){ string line1 = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id1, (long)g_seq, "N/A", "CLOSE", created_ms1, expire_ms1); FileWriteAllAtomic(PathCloseCmd(), line1); }
+        else{LogEvent("CLOSE_LOCAL_FAIL", StringFormat("reason=RECONCILE;err=%d", (int)GetLastError()));}
         g_prev_self_pairs=selfNowTmp2; g_prev_peer_pairs=peerNowTmp2; 
         return;
      }
@@ -2380,18 +2415,13 @@ void MaybeClosePair()
    int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0)? DryOverrideExpireMs(): input_cmd_expire_ms;
    if(expire_ms <= 0) expire_ms = 30000; // Default 30 seconds if invalid
    string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
-   bool write_cmd = !(DryEnabled() && DryMode()==DRY_NONE);
-   if(write_cmd) 
-   {
-      FileWriteAllAtomic(PathCloseCmd(), line);
-      // Enhanced logging to track close triggers (consistent with MT4)
-      LogEvent("CLOSE_CMD", StringFormat("cmd_id=%s;reason=AUTO;diffClose=%.1f;threshold=%d;action=CLOSE", cmd_id, diffClose, GetCloseThresholdPoints()));
-   }
-
    if(DryEnabled())
    {
       if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK)
       {
+         string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
+         FileWriteAllAtomic(PathCloseCmd(), line);
+         LogEvent("CLOSE_CMD", StringFormat("cmd_id=%s;reason=AUTO;diffClose=%.1f;threshold=%d;action=CLOSE", cmd_id, diffClose, GetCloseThresholdPoints()));
          int latency = DryDelayMs(); if(latency>0) Sleep(latency);
          string ackSelf = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0);
          FileWriteAllAtomic(PathCloseAckSelf(), ackSelf);
@@ -2403,6 +2433,16 @@ void MaybeClosePair()
    string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError());
    FileWriteAllAtomic(PathCloseAckSelf(), ack);
    LogEvent("CLOSE_ACK_MASTER", StringFormat("cmd_id=%s;ok=%d;err=%d", cmd_id, ok?1:0, ok?0:(int)GetLastError()));
+   if(ok)
+   {
+      string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
+      FileWriteAllAtomic(PathCloseCmd(), line);
+      LogEvent("CLOSE_CMD", StringFormat("cmd_id=%s;reason=AUTO;diffClose=%.1f;threshold=%d;action=CLOSE", cmd_id, diffClose, GetCloseThresholdPoints()));
+   }
+   else
+   {
+      LogEvent("CLOSE_LOCAL_FAIL", StringFormat("reason=AUTO;err=%d", (int)GetLastError()));
+   }
 }
 
 void SlaveProcessOpenCmd()
@@ -2845,6 +2885,16 @@ int DisplaySetWrappedLines(int lineIndex, const string text)
    return lineIndex;
 }
 
+void DisplayTrimLines(const int keep)
+{
+   for(int i=keep; i<g_display_last_lines; ++i)
+   {
+      string name = OBJ_PREFIX + "LINE_" + IntegerToString(i);
+      if(ObjectFind(0, name) != -1) ObjectDelete(0, name);
+   }
+   g_display_last_lines = keep;
+}
+
 // Auto-detect initial capital from first available balance readings
 void AutoDetectInitialCapital()
 {
@@ -3259,6 +3309,10 @@ void DisplayUpdate()
       }
    }
 
+   DisplayTrimLines(line);
+
+   // Resize background to cover lines
+
    string bg2 = OBJ_PREFIX + "BG";
    if(ObjectFind(0, bg2) != -1)
    {
@@ -3417,6 +3471,8 @@ void MasterOpenNow()
 void MasterCloseNow()
 {
    if(!(input_role==ROLE_MASTER)) return;
+   // Account authorization check
+   if(input_auth_enabled && !g_account_authorized) return;
    // Release the debug hold so close can proceed
    if(input_debug_buttons_enabled) g_debug_hold_open = false;
    
@@ -3430,11 +3486,28 @@ void MasterCloseNow()
    LogEvent("CLOSE_TRIGGER", "source=MANUAL_BUTTON");
    
    string cmd_id = NewCmdId(); ulong created_ms = NowMs(); int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0)? DryOverrideExpireMs(): input_cmd_expire_ms;
-   string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
-   FileWriteAllAtomic(PathCloseCmd(), line);
-   LogEvent("CLOSE_CMD", StringFormat("cmd_id=%s;reason=MANUAL_BUTTON;action=CLOSE", cmd_id));
-   if(DryEnabled()){ if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string ackSelf=StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0); FileWriteAllAtomic(PathCloseAckSelf(), ackSelf);} return; }
-   bool ok = CloseAllByMagic(); CompactPairMapSelf(); WritePositions(); string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError()); FileWriteAllAtomic(PathCloseAckSelf(), ack);
+   if(DryEnabled()){
+     if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){
+       string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
+       FileWriteAllAtomic(PathCloseCmd(), line);
+       LogEvent("CLOSE_CMD", StringFormat("cmd_id=%s;reason=MANUAL_BUTTON;action=CLOSE", cmd_id));
+       string ackSelf=StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0);
+       FileWriteAllAtomic(PathCloseAckSelf(), ackSelf);
+     }
+     return;
+   }
+   bool ok = CloseAllByMagic(); CompactPairMapSelf(); WritePositions();
+   string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError());
+   FileWriteAllAtomic(PathCloseAckSelf(), ack);
+   if(ok){
+     string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
+     FileWriteAllAtomic(PathCloseCmd(), line);
+     LogEvent("CLOSE_CMD", StringFormat("cmd_id=%s;reason=MANUAL_BUTTON;action=CLOSE", cmd_id));
+   }
+   else
+   {
+      LogEvent("CLOSE_LOCAL_FAIL", StringFormat("reason=MANUAL;err=%d", (int)GetLastError()));
+   }
 }
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
