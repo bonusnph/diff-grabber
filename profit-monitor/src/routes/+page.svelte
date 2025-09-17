@@ -37,6 +37,8 @@
 	let showSettingsModal = false;
 	let savingSettings = false;
 	let latestUpdate: number = 0;
+	let settingsLoaded = false;
+	let appReady = false;
 
 	// Delete data confirmation
 	let showDeleteConfirmModal = false;
@@ -61,6 +63,9 @@
 			autoFetchEnabled = true;
 		}
 	})();
+
+	// App is ready only after auth and settings loaded
+	$: appReady = isAuthenticated && settingsLoaded;
 
 	$: uniqueBrokersList = (() => {
 		const counts = new Map<string, number>();
@@ -150,6 +155,22 @@
 		unitVisibility = { ...unitVisibility, ...newVisibility };
 	}
 
+	// Default collapsed: ensure any unit without an explicit state starts as collapsed
+	$: (() => {
+		const keys = Object.keys(unitGroups || {});
+		if (!keys.length) return;
+		let shouldUpdate = false;
+		const next: Record<number, boolean> = { ...unitVisibility };
+		for (const unitStr of keys) {
+			const unit = parseInt(unitStr);
+			if (next[unit] === undefined) {
+				next[unit] = false;
+				shouldUpdate = true;
+			}
+		}
+		if (shouldUpdate) unitVisibility = next;
+	})();
+
 
 	// PIN Protection
 	let isAuthenticated = false;
@@ -190,7 +211,7 @@
 		} catch (_) {}
 	}
 
-	function checkPersistedAuth(): boolean {
+	async function checkPersistedAuth(): Promise<boolean> {
 		try {
 			const has = getCookie(AUTH_COOKIE_NAME);
 			if (!has) return false;
@@ -199,8 +220,8 @@
 			pinInput = '';
 			pinError = '';
 			// Start loading data after authentication
-			loadInitialCapital();
-			fetchData();
+			await loadInitialCapital();
+			await fetchData();
 			startPolling();
 			return true;
 		} catch (_) {
@@ -323,6 +344,7 @@
 	}
 
 	async function loadInitialCapital() {
+		settingsLoaded = false;
 		try {
 			const response = await fetch('/api/settings');
 			const data = await response.json();
@@ -336,6 +358,8 @@
 		} catch (error) {
 			console.error('Error loading settings:', error);
 			// Keep default values if loading fails
+		} finally {
+			settingsLoaded = true;
 		}
 	}
 
@@ -687,8 +711,8 @@
 				pinError = '';
 				persistAuth();
 				// Start loading data after authentication
-				loadInitialCapital();
-				fetchData();
+				await loadInitialCapital();
+				await fetchData();
 				startPolling();
 			} else {
 				pinError = 'รหัส PIN ไม่ถูกต้อง';
@@ -765,6 +789,11 @@
 		if (!name) return '';
 		return name.length > 8 ? name.slice(0, 8) + '~' : name;
 	}
+
+function truncateWithEllipsis(name: string, max: number = 6): string {
+    if (!name) return '';
+    return name.length > max ? name.slice(0, max) + '...' : name;
+}
 
 	onMount(() => {
 		// Don't load data until authenticated
@@ -986,7 +1015,7 @@
 	</div>
 {/if}
 
-<div class="min-h-screen bg-gray-900 p-3" class:hidden={showPinModal}>
+<div class="min-h-screen bg-gray-900 p-3" class:hidden={showPinModal || !appReady}>
 	<div class="max-w-7xl mx-auto">
 		<!-- Header -->
 		<div class="mb-2">
@@ -1179,24 +1208,24 @@
 				<div 
 					class="bg-gradient-to-br from-gray-800/60 to-gray-700/40 rounded-xl shadow-lg p-4 mx-2"
 				>
-					<!-- Main P/L Amount -->
+					<!-- Main P/L Percentage (emphasized) -->
 					<p
-						class="text-7xl font-black {!isDataComplete ? 'opacity-60' : ''}"
-						class:text-green-300={adjustedProfitLoss >= 0}
-						class:text-red-300={adjustedProfitLoss < 0}
+						class="text-6xl font-black {!isDataComplete ? 'opacity-60' : ''}"
+						class:text-green-300={adjustedProfitLossPercent >= 0}
+						class:text-red-300={adjustedProfitLossPercent < 0}
 					>
-						{adjustedProfitLoss >= 0 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
+						{adjustedProfitLossPercent >= 0 ? '+' : ''}{formatPercent(adjustedProfitLossPercent)}
 					</p>
 					
-					<!-- Prominent P/L Percentage -->
+					<!-- Secondary P/L Amount -->
 					<div class="rounded-lg p-1 mb-4"
 					>
 						<p
-							class="text-4xl font-black"
-							class:text-green-200={adjustedProfitLossPercent >= 0}
-							class:text-red-200={adjustedProfitLossPercent < 0}
+							class="text-3xl font-black"
+							class:text-green-200={adjustedProfitLoss >= 0}
+							class:text-red-200={adjustedProfitLoss < 0}
 						>
-							{adjustedProfitLossPercent >= 0 ? '+' : ''}{formatPercent(adjustedProfitLossPercent)}
+							{adjustedProfitLoss >= 0 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
 						</p>
 					</div>
 
@@ -1375,14 +1404,41 @@
 									{@const delta = computeUnitDelta(accounts) as number}
 									<span
 										class="text-xs px-1 py-0.5 rounded font-semibold text-white"
-										class:bg-green-600={delta > 0}
+										class:bg-green-600={delta >= 0}
 										class:bg-red-600={delta < 0}
-										class:border={delta !== 0}
-										class:border-green-500={delta > 0}
-										class:border-red-500={delta < 0}
 									>
-										Open {delta > 0 ? '+' : ''}{delta.toFixed(0)} points
+										Open {delta > 0 ? '+' : ''}{delta.toFixed(0)}
 									</span>
+								{/if}
+								{#if true}
+									{@const targetEquity = capitalPerUnit / 2}
+									{@const sumsByBroker = (() => {
+										const map: Record<string, { d: number; w: number }> = {};
+										for (const a of visibleAccounts || []) {
+											const broker = a.broker_name || '';
+											if (!map[broker]) map[broker] = { d: 0, w: 0 };
+											const diff = a.latest_equity - targetEquity;
+											if (diff >= 0) map[broker].w += diff;
+											else map[broker].d += -diff;
+										}
+										return map;
+									})()}
+									{@const nonZeroEntries = Object.entries(sumsByBroker).filter(([_, s]) => (s?.d || 0) > 0 || (s?.w || 0) > 0)}
+									{#if nonZeroEntries.length > 0}
+										<div class="flex items-center gap-1 ml-1 flex-wrap">
+											{#each nonZeroEntries as [broker, s]}
+                                <div class="flex items-center gap-1 bg-gray-700/40 rounded px-1 py-0.5">
+                                    <span class="text-[10px] text-gray-200">{truncateWithEllipsis(broker, 6)}</span>
+													{#if s.d > 0}
+														<span class="text-[10px] px-1 rounded font-semibold bg-green-700/60 text-green-200 border border-green-500/40">D {formatNumber(s.d)}</span>
+													{/if}
+													{#if s.w > 0}
+														<span class="text-[10px] px-1 rounded font-semibold bg-red-700/60 text-red-200 border border-red-500/40">W {formatNumber(s.w)}</span>
+													{/if}
+												</div>
+											{/each}
+										</div>
+									{/if}
 								{/if}
 							</div>
 							{#if unitStat}
