@@ -158,63 +158,28 @@ class SupabaseStorage {
 		};
 	}
 
+	// Deprecated: keep for backward compatibility (no-op)
 	async setInitialCapital(amount: number): Promise<void> {
-		const { error } = await supabase
-			.from('settings')
-			.upsert({
-				setting_key: 'initial_capital',
-				setting_value: amount.toString(),
-				updated_at: new Date().toISOString()
-			});
-
-		if (error) {
-			console.error('Error setting initial capital:', error);
-			throw error;
-		}
+		// No-op: initial capital is now derived from unit_initial_capitals
 	}
 
 	async getInitialCapital(): Promise<number> {
-		const { data, error } = await supabase
+		// Sum from unit_initial_capitals mapping; fallback to legacy initial_capital if not present
+		const unitCaps = await this.getUnitInitialCapitals();
+		const sum = Object.values(unitCaps || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
+		if (sum > 0) return sum;
+		const { data } = await supabase
 			.from('settings')
 			.select('setting_value')
 			.eq('setting_key', 'initial_capital')
 			.single();
-
-		if (error || !data) {
-			return 60000; // Default value
-		}
-
-		return parseFloat(data.setting_value);
+		return data ? parseFloat(data.setting_value) : 60000;
 	}
 
-	async setCapitalPerUnit(amount: number): Promise<void> {
-		const { error } = await supabase
-			.from('settings')
-			.upsert({
-				setting_key: 'capital_per_unit',
-				setting_value: amount.toString(),
-				updated_at: new Date().toISOString()
-			});
+	// Deprecated: per-unit capitals are used instead
+	async setCapitalPerUnit(_amount: number): Promise<void> {}
 
-		if (error) {
-			console.error('Error setting capital per unit:', error);
-			throw error;
-		}
-	}
-
-	async getCapitalPerUnit(): Promise<number> {
-		const { data, error } = await supabase
-			.from('settings')
-			.select('setting_value')
-			.eq('setting_key', 'capital_per_unit')
-			.single();
-
-		if (error || !data) {
-			return 7500; // Default value
-		}
-
-		return parseFloat(data.setting_value);
-	}
+	async getCapitalPerUnit(): Promise<number> { return 0; }
 
 	async getAccountsByUnit(): Promise<Record<number, AccountSummary[]>> {
 		const summaries = await this.getAccountSummaries();
@@ -233,7 +198,7 @@ class SupabaseStorage {
 
 	async getUnitStats(): Promise<Array<{unit: number, totalBalance: number, profitLoss: number, accountCount: number}>> {
 		const groupedAccounts = await this.getAccountsByUnit();
-		const capitalPerUnit = await this.getCapitalPerUnit();
+		const unitInitialCaps = await this.getUnitInitialCapitals();
 		const accountWithdrawals = await this.getAccountWithdrawals();
 		const stats: Array<{unit: number, totalBalance: number, profitLoss: number, accountCount: number}> = [];
 		
@@ -241,7 +206,8 @@ class SupabaseStorage {
 			const unit = parseInt(unitStr);
 			const totalBalance = accounts.reduce((sum, account) => sum + account.latest_balance, 0);
 			const withdrawalAdjust = accounts.reduce((sum, acc) => sum + (accountWithdrawals[acc.account_number] ?? 0), 0);
-			const profitLoss = totalBalance - capitalPerUnit + withdrawalAdjust;
+			const unitCap = unitInitialCaps[unit] ?? 0;
+			const profitLoss = totalBalance - unitCap + withdrawalAdjust;
 			const accountCount = accounts.length;
 			
 			stats.push({
@@ -253,6 +219,36 @@ class SupabaseStorage {
 		});
 		
 		return stats.sort((a, b) => a.unit - b.unit);
+	}
+
+	async setUnitInitialCapitals(mappings: Record<number, number>): Promise<void> {
+		const { error } = await supabase
+			.from('settings')
+			.upsert({
+				setting_key: 'unit_initial_capitals',
+				setting_value: JSON.stringify(mappings),
+				updated_at: new Date().toISOString()
+			});
+		if (error) {
+			console.error('Error setting unit initial capitals:', error);
+			throw error;
+		}
+	}
+
+	async getUnitInitialCapitals(): Promise<Record<number, number>> {
+		const { data, error } = await supabase
+			.from('settings')
+			.select('setting_value')
+			.eq('setting_key', 'unit_initial_capitals')
+			.single();
+		if (error && error.code !== 'PGRST116') {
+			console.error('Error getting unit initial capitals:', error);
+			throw error;
+		}
+		if (data) {
+			try { return JSON.parse(data.setting_value); } catch (_) {}
+		}
+		return {};
 	}
 
 	async setAccountWithdrawals(mappings: Record<string, number>): Promise<void> {
@@ -291,6 +287,52 @@ class SupabaseStorage {
 		}
 
 		return {};
+	}
+
+	// Snapshot for total P/L (server-wide)
+	async setSnapshotPL(payload: { value: number; kind: 'adjusted' | 'real'; timestamp?: string }): Promise<void> {
+		const { error } = await supabase
+			.from('settings')
+			.upsert({
+				setting_key: 'pl_snapshot',
+				setting_value: JSON.stringify({ value: payload.value, kind: payload.kind, timestamp: payload.timestamp ?? new Date().toISOString() }),
+				updated_at: new Date().toISOString()
+			});
+		if (error) {
+			console.error('Error setting pl snapshot:', error);
+			throw error;
+		}
+	}
+
+	async clearSnapshotPL(): Promise<void> {
+		const { error } = await supabase
+			.from('settings')
+			.delete()
+			.eq('setting_key', 'pl_snapshot');
+		if (error && error.code !== 'PGRST116') {
+			console.error('Error clearing pl snapshot:', error);
+			throw error;
+		}
+	}
+
+	async getSnapshotPL(): Promise<{ value: number; kind: 'adjusted' | 'real'; timestamp: string } | null> {
+		const { data, error } = await supabase
+			.from('settings')
+			.select('setting_value')
+			.eq('setting_key', 'pl_snapshot')
+			.single();
+		if (error && error.code !== 'PGRST116') {
+			console.error('Error getting pl snapshot:', error);
+			throw error;
+		}
+		if (!data) return null;
+		try {
+			const obj = JSON.parse(data.setting_value);
+			if (typeof obj?.value === 'number' && (obj?.kind === 'adjusted' || obj?.kind === 'real')) {
+				return { value: obj.value, kind: obj.kind, timestamp: obj.timestamp ?? new Date().toISOString() };
+			}
+		} catch {}
+		return null;
 	}
 
 	async setUnitWithdrawals(mappings: Record<number, number>): Promise<void> {
@@ -470,16 +512,7 @@ class SupabaseStorage {
 			}
 		}
 
-		return {
-			1: 'neex-sell',
-			2: 'neex-buy',
-			3: 'neex-avg-sell',
-			4: 'neex-avg-buy',
-			5: 'xs-sell',
-			6: 'xs-buy',
-			7: 'xs-avg-sell',
-			8: 'xs-avg-buy',
-		};
+		return {};
 	}
 
 	async setBrokerMinMargins(mappings: Record<string, number>): Promise<void> {
@@ -520,34 +553,39 @@ class SupabaseStorage {
 		return {};
 	}
 
-	async setWarningEquityPercentage(percentage: number): Promise<void> {
+	// Deprecated: now per unit
+	async setWarningEquityPercentage(_percentage: number): Promise<void> {}
+
+	async getWarningEquityPercentage(): Promise<number> { return 0; }
+
+	async setUnitWarningEquityPercentages(mappings: Record<number, number>): Promise<void> {
 		const { error } = await supabase
 			.from('settings')
 			.upsert({
-				setting_key: 'warning_equity_percentage',
-				setting_value: percentage.toString(),
+				setting_key: 'unit_warning_equity_percentages',
+				setting_value: JSON.stringify(mappings),
 				updated_at: new Date().toISOString()
 			});
-
 		if (error) {
-			console.error('Error setting warning equity percentage:', error);
+			console.error('Error setting unit warning equity percentages:', error);
 			throw error;
 		}
 	}
 
-	async getWarningEquityPercentage(): Promise<number> {
+	async getUnitWarningEquityPercentages(): Promise<Record<number, number>> {
 		const { data, error } = await supabase
 			.from('settings')
 			.select('setting_value')
-			.eq('setting_key', 'warning_equity_percentage')
+			.eq('setting_key', 'unit_warning_equity_percentages')
 			.single();
-
-		if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
-			console.error('Error getting warning equity percentage:', error);
+		if (error && error.code !== 'PGRST116') {
+			console.error('Error getting unit warning equity percentages:', error);
 			throw error;
 		}
-
-		return data ? parseFloat(data.setting_value) : 30;
+		if (data) {
+			try { return JSON.parse(data.setting_value); } catch (_) {}
+		}
+		return {};
 	}
 
 	getUnitName(unit: number): string {

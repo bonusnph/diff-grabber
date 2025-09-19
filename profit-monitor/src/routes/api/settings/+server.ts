@@ -5,32 +5,45 @@ import { storage } from '$lib/storage-supabase.js';
 export const GET: RequestHandler = async () => {
 	return json({
 		initial_capital: await storage.getInitialCapital(),
-		capital_per_unit: await storage.getCapitalPerUnit(),
+		unit_initial_capitals: await storage.getUnitInitialCapitals(),
+		unit_warning_equity_percentages: await storage.getUnitWarningEquityPercentages(),
 		total_active_accounts: await storage.getTotalActiveAccounts(),
-		warning_equity_percentage: await storage.getWarningEquityPercentage(),
 		unit_mappings: await storage.getUnitMappings(),
 		broker_min_margins: await storage.getBrokerMinMargins(),
 		unit_withdrawals: await storage.getUnitWithdrawals(),
-		account_withdrawals: await storage.getAccountWithdrawals()
+		account_withdrawals: await storage.getAccountWithdrawals(),
+		snapshot: await storage.getSnapshotPL()
 	});
 };
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
-		const { initial_capital, capital_per_unit, total_active_accounts, warning_equity_percentage, unit_mappings, broker_min_margins, unit_withdrawals, account_withdrawals } = await request.json();
-		
-		if (initial_capital !== undefined) {
-			if (typeof initial_capital !== 'number' || initial_capital < 0) {
-				return json({ error: 'Invalid initial capital amount' }, { status: 400 });
+		const { initial_capital, unit_initial_capitals, total_active_accounts, unit_warning_equity_percentages, unit_mappings, broker_min_margins, unit_withdrawals, account_withdrawals, snapshot, clear_snapshot } = await request.json();
+		// Snapshot operations (optional)
+		if (clear_snapshot === true) {
+			await storage.clearSnapshotPL();
+		}
+
+		if (snapshot !== undefined) {
+			if (typeof snapshot?.value !== 'number' || (snapshot?.kind !== 'adjusted' && snapshot?.kind !== 'real')) {
+				return json({ error: 'Invalid snapshot payload' }, { status: 400 });
 			}
-			await storage.setInitialCapital(initial_capital);
+			await storage.setSnapshotPL({ value: snapshot.value, kind: snapshot.kind });
 		}
 		
-		if (capital_per_unit !== undefined) {
-			if (typeof capital_per_unit !== 'number' || capital_per_unit < 0) {
-				return json({ error: 'Invalid capital per unit amount' }, { status: 400 });
+		// initial_capital is now derived; keep for backward compatibility but ignore if provided
+		
+		if (unit_initial_capitals !== undefined) {
+			if (typeof unit_initial_capitals !== 'object' || Array.isArray(unit_initial_capitals)) {
+				return json({ error: 'Invalid unit initial capitals' }, { status: 400 });
 			}
-			await storage.setCapitalPerUnit(capital_per_unit);
+			const normalized: Record<number, number> = {};
+			for (const [k, v] of Object.entries(unit_initial_capitals)) {
+				const unit = parseInt(k as string);
+				const num = typeof v === 'number' && v >= 0 ? v : 0;
+				if (!isNaN(unit)) normalized[unit] = num;
+			}
+			await storage.setUnitInitialCapitals(normalized);
 		}
 
 		if (total_active_accounts !== undefined) {
@@ -40,11 +53,17 @@ export const POST: RequestHandler = async ({ request }) => {
 			await storage.setTotalActiveAccounts(total_active_accounts);
 		}
 
-		if (warning_equity_percentage !== undefined) {
-			if (typeof warning_equity_percentage !== 'number' || warning_equity_percentage < 1 || warning_equity_percentage > 100) {
-				return json({ error: 'Invalid warning equity percentage (must be between 1-100)' }, { status: 400 });
+		if (unit_warning_equity_percentages !== undefined) {
+			if (typeof unit_warning_equity_percentages !== 'object' || Array.isArray(unit_warning_equity_percentages)) {
+				return json({ error: 'Invalid unit warning equity percentages' }, { status: 400 });
 			}
-			await storage.setWarningEquityPercentage(warning_equity_percentage);
+			const normalizedWarn: Record<number, number> = {};
+			for (const [k, v] of Object.entries(unit_warning_equity_percentages)) {
+				const unit = parseInt(k as string);
+				const num = typeof v === 'number' && v >= 1 && v <= 100 ? v : 30;
+				if (!isNaN(unit)) normalizedWarn[unit] = num;
+			}
+			await storage.setUnitWarningEquityPercentages(normalizedWarn);
 		}
 
 		if (unit_mappings !== undefined) {
@@ -96,13 +115,14 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ 
 			status: 'success',
 			initial_capital: await storage.getInitialCapital(),
-			capital_per_unit: await storage.getCapitalPerUnit(),
+			unit_initial_capitals: await storage.getUnitInitialCapitals(),
+			unit_warning_equity_percentages: await storage.getUnitWarningEquityPercentages(),
 			total_active_accounts: await storage.getTotalActiveAccounts(),
-			warning_equity_percentage: await storage.getWarningEquityPercentage(),
 			unit_mappings: await storage.getUnitMappings(),
 			broker_min_margins: await storage.getBrokerMinMargins(),
 			unit_withdrawals: await storage.getUnitWithdrawals(),
-			account_withdrawals: await storage.getAccountWithdrawals()
+			account_withdrawals: await storage.getAccountWithdrawals(),
+			snapshot: await storage.getSnapshotPL()
 		});
 		
 	} catch (error) {

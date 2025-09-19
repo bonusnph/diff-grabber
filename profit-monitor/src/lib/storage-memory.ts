@@ -6,19 +6,10 @@ class MemoryStorage {
 
 	constructor() {
 		// Initialize default settings
-		this.settings.set('initial_capital', '60000');
-		this.settings.set('capital_per_unit', '7500');
-		this.settings.set('total_active_accounts', '16');
-		this.settings.set('unit_mappings', JSON.stringify({
-			1: 'neex-sell',
-			2: 'neex-buy',
-			3: 'neex-avg-sell',
-			4: 'neex-avg-buy',
-			5: 'xs-sell',
-			6: 'xs-buy',
-			7: 'xs-avg-sell',
-			8: 'xs-avg-buy',
-		}));
+		this.settings.set('unit_initial_capitals', JSON.stringify({}));
+		this.settings.set('unit_warning_equity_percentages', JSON.stringify({}));
+		this.settings.set('total_active_accounts', JSON.stringify({}));
+		this.settings.set('unit_mappings', JSON.stringify({}));
 	}
 
 	addAccountData(data: AccountData): void {
@@ -98,23 +89,24 @@ class MemoryStorage {
 		};
 	}
 
-	setInitialCapital(amount: number): void {
-		this.settings.set('initial_capital', amount.toString());
-	}
+	// Deprecated: now derived from unit_initial_capitals
+	setInitialCapital(_amount: number): void {}
 
 	getInitialCapital(): number {
-		const value = this.settings.get('initial_capital');
-		return value ? parseFloat(value) : 60000;
+		const value = this.settings.get('unit_initial_capitals');
+		if (value) {
+			try {
+				const obj = JSON.parse(value) as Record<number, number>;
+				return Object.values(obj).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
+			} catch {}
+		}
+		return 60000;
 	}
 
-	setCapitalPerUnit(amount: number): void {
-		this.settings.set('capital_per_unit', amount.toString());
-	}
+	// Deprecated
+	setCapitalPerUnit(_amount: number): void {}
 
-	getCapitalPerUnit(): number {
-		const value = this.settings.get('capital_per_unit');
-		return value ? parseFloat(value) : 7500;
-	}
+	getCapitalPerUnit(): number { return 0; }
 
 	setTotalActiveAccounts(count: number): void {
 		this.settings.set('total_active_accounts', count.toString());
@@ -179,13 +171,14 @@ class MemoryStorage {
 
 	getUnitStats(): Array<{unit: number, totalBalance: number, profitLoss: number, accountCount: number}> {
 		const groupedAccounts = this.getAccountsByUnit();
-		const capitalPerUnit = this.getCapitalPerUnit();
+		const unitCaps = this.getUnitInitialCapitals();
 		const stats: Array<{unit: number, totalBalance: number, profitLoss: number, accountCount: number}> = [];
 		
 		Object.entries(groupedAccounts).forEach(([unitStr, accounts]) => {
 			const unit = parseInt(unitStr);
 			const totalBalance = accounts.reduce((sum, account) => sum + account.latest_balance, 0);
-			const profitLoss = totalBalance - capitalPerUnit;
+			const unitCap = unitCaps[unit] ?? 0;
+			const profitLoss = totalBalance - unitCap;
 			const accountCount = accounts.length;
 			
 			stats.push({
@@ -197,6 +190,30 @@ class MemoryStorage {
 		});
 		
 		return stats.sort((a, b) => a.unit - b.unit);
+	}
+
+	setUnitInitialCapitals(mappings: Record<number, number>): void {
+		this.settings.set('unit_initial_capitals', JSON.stringify(mappings));
+	}
+
+	getUnitInitialCapitals(): Record<number, number> {
+		const value = this.settings.get('unit_initial_capitals');
+		if (value) {
+			try { return JSON.parse(value); } catch {}
+		}
+		return {};
+	}
+
+	setUnitWarningEquityPercentages(mappings: Record<number, number>): void {
+		this.settings.set('unit_warning_equity_percentages', JSON.stringify(mappings));
+	}
+
+	getUnitWarningEquityPercentages(): Record<number, number> {
+		const value = this.settings.get('unit_warning_equity_percentages');
+		if (value) {
+			try { return JSON.parse(value); } catch {}
+		}
+		return {};
 	}
 
 	getAccountHistory(accountNumber: string, limit: number = 100): AccountData[] {

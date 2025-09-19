@@ -9,11 +9,11 @@
 		account_count: 0
 	};
 	let summaries: AccountSummary[] = [];
-	let initialCapital = 64000;
-	let capitalPerUnit = 16000;
+    let initialCapital = 64000;
+    let unitInitialCapitals: Record<number, number> = {};
 	let totalActiveAccounts = 8;
-	let warningEquityPercentage = 30;
-	let unitMappings: Record<number, string> = { 1: '', 2: '', 3: '', 4: '' };
+    let unitWarningEquityPercentages: Record<number, number> = {};
+    let unitMappings: Record<number, string> = {};
 	let brokerMinMargins: Record<string, number> = {};
 	let unitGroups: Record<string, AccountSummary[]> = {};
 	let unitStats: Array<{
@@ -36,6 +36,7 @@
 	let lastForcedRefreshAt = 0;
 	let showSettingsModal = false;
 	let savingSettings = false;
+    let snapshotLoading = false;
 	let latestUpdate: number = 0;
 	let settingsLoaded = false;
 	let appReady = false;
@@ -244,6 +245,36 @@
 	let newBrokerName = '';
 	let newBrokerMargin: string = '';
 
+	// Dynamic Unit Settings editing (Initial Capital & Warn %)
+	let newUnitSettingNumber: string = '';
+	let newUnitSettingCap: string = '';
+	let newUnitSettingWarn: string = '';
+
+    function addUnitSetting() {
+		const unit = parseInt(newUnitSettingNumber);
+		if (isNaN(unit) || unit < 1) return;
+		const capParsed = parseFloat(newUnitSettingCap);
+		const warnParsed = parseFloat(newUnitSettingWarn);
+		const cap = isNaN(capParsed) || capParsed < 0 ? 0 : capParsed;
+		const warn = isNaN(warnParsed) || warnParsed < 1 || warnParsed > 100 ? 30 : warnParsed;
+		unitInitialCapitals = { ...unitInitialCapitals, [unit]: cap };
+		unitWarningEquityPercentages = { ...unitWarningEquityPercentages, [unit]: warn };
+        // ensure unitMappings has a placeholder to make unit visible if user has no mapping yet
+        if (!(unit in unitMappings)) {
+            unitMappings = { ...unitMappings, [unit]: '' };
+        }
+		newUnitSettingNumber = '';
+		newUnitSettingCap = '';
+		newUnitSettingWarn = '';
+	}
+
+	// Computed list of units for Unit Settings (union of keys)
+	$: unitList = Array.from(new Set([
+		...Object.keys(unitMappings || {}),
+		...Object.keys(unitInitialCapitals || {}),
+		...Object.keys(unitWarningEquityPercentages || {})
+	])).map((k) => parseInt(k as any)).filter((n) => !isNaN(n)).sort((a, b) => a - b);
+
 	// Data completeness check
 	$: currentActiveAccounts = summaries.length;
 	$: isDataComplete = currentActiveAccounts >= totalActiveAccounts;
@@ -273,7 +304,7 @@
 	$: tradingAccountsCount = summaries.filter(isTrading).length;
 	$: tradingPairs = Math.ceil(tradingAccountsCount / 2);
 
-	$: profitLossPercent = initialCapital > 0 ? (stats.profit_loss / initialCapital) * 100 : 0;
+    $: profitLossPercent = initialCapital > 0 ? (stats.profit_loss / initialCapital) * 100 : 0;
 	$: totalWaitingWD = Object.values(accountWithdrawals || {}).reduce(
 		(sum, v) => sum + (typeof v === 'number' ? v : 0),
 		0
@@ -281,6 +312,10 @@
 	$: adjustedProfitLoss = (stats?.profit_loss || 0) + (totalWaitingWD || 0);
 	$: adjustedProfitLossPercent =
 		initialCapital > 0 ? (adjustedProfitLoss / initialCapital) * 100 : 0;
+
+	// Snapshot data returned from server
+	let snapshot: { value: number; kind: 'adjusted' | 'real'; timestamp: string } | null = null;
+	let snapshotDelta: number | null = null;
 
 	let unitDeltaSummaries: Array<{ unit: number; delta: number | null; tradingCount: number }> = [];
 	let positivePairs: Array<{ unit: number; delta: number | null; tradingCount: number }> = [];
@@ -332,6 +367,8 @@
 				const t = new Date(a.last_update).getTime();
 				return t > latest ? t : latest;
 			}, 0);
+			snapshot = data.snapshot || null;
+			snapshotDelta = data.snapshotDelta ?? null;
 			loading = false;
 		} catch (error) {
 			console.error('Error fetching data:', error);
@@ -343,15 +380,51 @@
 		}
 	}
 
-	async function loadInitialCapital() {
+	async function takeSnapshot(kind: 'adjusted' | 'real' = 'adjusted') {
+		if (snapshotLoading) return;
+		snapshotLoading = true;
+		try {
+			const value = kind === 'adjusted' ? adjustedProfitLoss : stats.profit_loss;
+			const res = await fetch('/api/settings', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ snapshot: { value, kind } })
+			});
+			if (res.ok) {
+				await fetchData();
+			}
+		} finally {
+			snapshotLoading = false;
+		}
+	}
+
+	async function clearSnapshot() {
+		if (snapshotLoading) return;
+		snapshotLoading = true;
+		try {
+			const res = await fetch('/api/settings', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ clear_snapshot: true })
+			});
+			if (res.ok) {
+				snapshot = null;
+				snapshotDelta = null;
+			}
+		} finally {
+			snapshotLoading = false;
+		}
+	}
+
+    async function loadInitialCapital() {
 		settingsLoaded = false;
 		try {
 			const response = await fetch('/api/settings');
 			const data = await response.json();
-			initialCapital = data.initial_capital;
-			capitalPerUnit = data.capital_per_unit;
+            initialCapital = data.initial_capital;
+            unitInitialCapitals = data.unit_initial_capitals || {};
 			totalActiveAccounts = data.total_active_accounts;
-			warningEquityPercentage = data.warning_equity_percentage || 30;
+            unitWarningEquityPercentages = data.unit_warning_equity_percentages || {};
 			unitMappings = data.unit_mappings || {};
 			brokerMinMargins = data.broker_min_margins || {};
 			unitWithdrawals = data.unit_withdrawals || {};
@@ -436,27 +509,7 @@
 		}
 	}
 
-	async function updateCapitalPerUnit() {
-		try {
-			const response = await fetch('/api/settings', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({ capital_per_unit: capitalPerUnit })
-			});
-
-			if (response.ok) {
-				const data = await response.json();
-				capitalPerUnit = data.capital_per_unit; // Update with confirmed value from server
-				await fetchData(); // Refresh data to update unit stats
-			}
-		} catch (error) {
-			console.error('Error updating capital per unit:', error);
-			// Reload the original value if update fails
-			await loadInitialCapital();
-		}
-	}
+    // Removed Capital Per Unit - handled per unit now
 
 	async function updateTotalActiveAccounts() {
 		try {
@@ -654,11 +707,20 @@
 		return account.latest_equity <= min;
 	}
 
-	function isLowEquityWarning(account: AccountSummary): boolean {
-		const targetEquity = capitalPerUnit / 2;
-		const warningThreshold = targetEquity * (warningEquityPercentage / 100);
-		return account.latest_equity < warningThreshold;
-	}
+    function getUnitTargetEquity(unit: number): number {
+        const cap = unitInitialCapitals[unit] ?? 0;
+        return cap / 2;
+    }
+
+    function getUnitWarningPct(unit: number): number {
+        return unitWarningEquityPercentages[unit] ?? 30;
+    }
+
+    function isLowEquityWarning(account: AccountSummary): boolean {
+        const targetEquity = getUnitTargetEquity(account.unit);
+        const warningThreshold = targetEquity * (getUnitWarningPct(account.unit) / 100);
+        return account.latest_equity < warningThreshold;
+    }
 
 	function computeUnitDelta(accounts: AccountSummary[]): number | null {
 		const buy = accounts.find(
@@ -827,19 +889,18 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					initial_capital: initialCapital,
-					capital_per_unit: capitalPerUnit,
+                    unit_initial_capitals: unitInitialCapitals,
+                    unit_warning_equity_percentages: unitWarningEquityPercentages,
 					total_active_accounts: totalActiveAccounts,
-					warning_equity_percentage: warningEquityPercentage,
 					unit_mappings: unitMappings
 				})
 			});
 			if (response.ok) {
 				const data = await response.json();
-				initialCapital = data.initial_capital;
-				capitalPerUnit = data.capital_per_unit;
+                initialCapital = data.initial_capital;
+                unitInitialCapitals = data.unit_initial_capitals || unitInitialCapitals;
+                unitWarningEquityPercentages = data.unit_warning_equity_percentages || unitWarningEquityPercentages;
 				totalActiveAccounts = data.total_active_accounts;
-				warningEquityPercentage = data.warning_equity_percentage || warningEquityPercentage;
 				unitMappings = data.unit_mappings || unitMappings;
 				// await loadInitialCapital();
 				// await fetchData();
@@ -1177,7 +1238,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							</div>
 						{/if}
 					</div>
-					<div class="bg-gray-800  rounded-md shadow p-2 opacity-90">
+                <div class="bg-gray-800  rounded-md shadow p-2 opacity-90">
 						<h3 class="text-xs font-semibold text-yellow-300 uppercase tracking-wide">Low Equity Warning</h3>
 						<div class="mt-1 flex items-center justify-between">
 							<div class="flex items-center gap-1">
@@ -1192,11 +1253,11 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								</div>
 							{/if}
 						</div>
-						{#if lowEquityWarningCount > 0}
-							<div class="mt-1 text-xs text-gray-400">
-								Below {warningEquityPercentage}% equity threshold
-							</div>
-						{/if}
+                        {#if lowEquityWarningCount > 0}
+                            <div class="mt-1 text-xs text-gray-400">
+                                Below unit equity threshold
+                            </div>
+                        {/if}
 					</div>
 				</div>
 			</div>
@@ -1209,7 +1270,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			class="bg-gradient-to-br from-gray-800/60 to-gray-700/40 rounded-xl shadow-lg p-3 mx-2"
 				>
 					<!-- Main P/L Percentage (emphasized) -->
-					<p
+							<p
 						class="text-6xl font-black {!isDataComplete ? 'opacity-60' : ''}"
 						class:text-green-300={adjustedProfitLossPercent >= 0}
 						class:text-red-300={adjustedProfitLossPercent < 0}
@@ -1229,7 +1290,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						</p>
 					</div>
 
-					{#if totalWaitingWD !== 0}
+							{#if totalWaitingWD !== 0}
 						<p class="text-sm text-gray-300 mb-2 bg-gray-700/50 rounded px-2 py-1">
 							<span class="text-gray-300">
 								Real P/L: {stats.profit_loss >= 0 ? '+' : ''}{formatNumber(stats.profit_loss)}
@@ -1240,6 +1301,25 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							</span>
 						</p>
 					{/if}
+
+							<!-- Snapshot delta + actions -->
+							<div class="flex items-center justify-center gap-2 mt-1">
+								{#if snapshot}
+									<span class="text-xs px-2 py-0.5 rounded-full text-white"
+										class:bg-green-800={(snapshotDelta ?? 0) >= 0}
+										class:bg-red-800={(snapshotDelta ?? 0) < 0}>
+										Δ vs snapshot: {(snapshotDelta ?? 0) >= 0 ? '+' : ''}{formatNumber(snapshotDelta ?? 0)} ({snapshot?.kind})
+									</span>
+								{/if}
+								<button on:click={() => takeSnapshot('adjusted')} class="text-xs px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-700 text-white disabled:bg-gray-600" disabled={snapshotLoading}>
+									Snapshot
+								</button>
+								{#if snapshot}
+									<button on:click={clearSnapshot} class="text-xs px-2 py-0.5 rounded bg-gray-600 hover:bg-gray-500 text-white disabled:bg-gray-600" disabled={snapshotLoading}>
+										Clear
+									</button>
+								{/if}
+							</div>
 					
 					{#if !isDataComplete}
 					<div class="flex items-center justify-center gap-3">
@@ -1398,6 +1478,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 									<span class="text-xs text-gray-500 bg-gray-600 px-1 py-0.5 rounded">
 										#{unit}
 									</span>
+								<span class="text-xs text-gray-500 bg-gray-600 px-1 py-0.5 rounded">
+									Cap: {formatNumber(unitInitialCapitals[unit] ?? 0)}
+								</span>
 									{#if computeUnitDelta(accounts) !== null}
 										{@const delta = computeUnitDelta(accounts) as number}
 										<span
@@ -1408,14 +1491,14 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											Open {delta > 0 ? '+' : ''}{delta.toFixed(0)}
 										</span>
 									{/if}
-									{#if true}
-										{@const targetEquity = capitalPerUnit / 2}
+                                    {#if true}
+                                        {@const targetEquity = getUnitTargetEquity(unit)}
 										{@const sumsByBroker = (() => {
 											const map: Record<string, { d: number; w: number }> = {};
 											for (const a of visibleAccounts || []) {
 												const broker = a.broker_name || '';
 												if (!map[broker]) map[broker] = { d: 0, w: 0 };
-												const diff = a.latest_equity - targetEquity;
+                                                const diff = a.latest_equity - targetEquity;
 												if (diff >= 0) map[broker].w += diff;
 												else map[broker].d += -diff;
 											}
@@ -1492,15 +1575,15 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												class:bg-red-900={dataAge.status === 'danger'}
 												class:bg-red-950={isInsufficientBalance(account)}
 											>
-												<td
+                                            <td
 													class="py-1 px-2 text-right font-medium text-xs"
-													class:text-red-400={capitalPerUnit / 2 - account.latest_equity < 0}
-													class:text-green-400={capitalPerUnit / 2 - account.latest_equity > 0}
+                                                class:text-red-400={getUnitTargetEquity(account.unit) - account.latest_equity < 0}
+                                                class:text-green-400={getUnitTargetEquity(account.unit) - account.latest_equity > 0}
 												>
-													{#if capitalPerUnit / 2 - account.latest_equity > 0}
-														D {formatNumber(Math.abs(capitalPerUnit / 2 - account.latest_equity))}
-													{:else if capitalPerUnit / 2 - account.latest_equity < 0}
-														W {formatNumber(Math.abs(capitalPerUnit / 2 - account.latest_equity))}
+                                                {#if getUnitTargetEquity(account.unit) - account.latest_equity > 0}
+                                                    D {formatNumber(Math.abs(getUnitTargetEquity(account.unit) - account.latest_equity))}
+                                                {:else if getUnitTargetEquity(account.unit) - account.latest_equity < 0}
+                                                    W {formatNumber(Math.abs(getUnitTargetEquity(account.unit) - account.latest_equity))}
 													{:else}
 														{formatNumber(0)}
 													{/if}
@@ -1611,66 +1694,82 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					</svg>
 				</button>
 			</div>
-			<div class="flex-1 overflow-y-auto px-6 pb-4 space-y-6">
-				<!-- Initial Capital Setting -->
-				<div>
-					<label for="modal-initial-capital" class="block text-sm font-medium text-gray-300 mb-2">
-						Initial Capital
-					</label>
-					<div class="flex items-center space-x-3">
-						<input
-							id="modal-initial-capital"
-							type="number"
-							bind:value={initialCapital}
-							on:change={updateInitialCapital}
-							class="flex-1 border border-gray-600 bg-gray-700 text-white rounded-md px-3 py-2 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-							step="1000"
-							min="0"
-						/>
-						<span class="text-sm text-gray-400">USD</span>
-					</div>
-					<p class="text-xs text-gray-500 mt-1">This value is used to calculate profit/loss</p>
-				</div>
+            <div class="flex-1 overflow-y-auto px-6 pb-4 space-y-6">
+                <!-- Unit Settings: Initial Capital & Warning % per unit -->
+                <div>
+                    <fieldset>
+                        <legend class="block text-sm font-medium text-gray-300 mb-2">Unit Settings</legend>
+                        <div class="space-y-2 mb-3">
+                            {#each unitList as unit}
+                                <div class="flex items-center justify-between bg-gray-700 border border-gray-600 rounded-md px-3 py-2">
+                                    <div class="flex items-center space-x-2">
+                                        <span class="text-sm font-medium text-gray-300">Unit {unit}:</span>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            step="100"
+                                            value={unitInitialCapitals[unit] ?? 0}
+                                            on:change={(e) => {
+                                                const v = parseFloat((e.target as HTMLInputElement).value);
+                                                unitInitialCapitals = { ...unitInitialCapitals, [unit]: isNaN(v) || v < 0 ? 0 : v };
+                                            }}
+        class="w-32 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                        />
+                                        <span class="text-sm text-gray-400">USD</span>
+                                        <span class="text-sm text-gray-400">/ Warn %</span>
+                                        <input
+                                            type="number"
+                                            min="1"
+                                            max="100"
+                                            step="1"
+                                            value={unitWarningEquityPercentages[unit] ?? 30}
+                                            on:change={(e) => {
+                                                const v = parseFloat((e.target as HTMLInputElement).value);
+                                                const pct = isNaN(v) || v < 1 || v > 100 ? 30 : v;
+                                                unitWarningEquityPercentages = { ...unitWarningEquityPercentages, [unit]: pct };
+                                            }}
+        class="w-20 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                        />
+                                        <span class="text-sm text-gray-400">%</span>
+                                    </div>
+                                    <button
+                                        on:click={() => {
+                                            const nextCap = { ...unitInitialCapitals }; delete nextCap[unit]; unitInitialCapitals = nextCap;
+                                            const nextWarn = { ...unitWarningEquityPercentages }; delete nextWarn[unit]; unitWarningEquityPercentages = nextWarn;
+                                            // also remove mapping to fully remove this unit from settings
+                                            if (unitMappings && unitMappings[unit] !== undefined) {
+                                                const nextMap = { ...unitMappings }; delete nextMap[unit]; unitMappings = nextMap;
+                                            }
+                                        }}
+                                        class="text-red-400 hover:text-red-300 transition-colors"
+                                        aria-label={`Remove unit settings for unit ${unit}`}
+                                    >
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                        </svg>
+                                    </button>
+                                </div>
+                            {/each}
+                        </div>
 
-				<!-- Capital Per Unit Setting -->
-				<div>
-					<label for="modal-capital-per-unit" class="block text-sm font-medium text-gray-300 mb-2">
-						Capital Per Unit
-					</label>
-					<div class="flex items-center space-x-3">
-						<input
-							id="modal-capital-per-unit"
-							type="number"
-							bind:value={capitalPerUnit}
-							on:change={updateCapitalPerUnit}
-							class="flex-1 border border-gray-600 bg-gray-700 text-white rounded-md px-3 py-2 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-							step="100"
-							min="0"
-						/>
-						<span class="text-sm text-gray-400">USD</span>
-					</div>
-					<p class="text-xs text-gray-500 mt-1">Capital amount per unit for P/L calculation</p>
-				</div>
-
-				<!-- Warning Equity Percentage Setting -->
-				<div>
-					<label for="modal-warning-equity-percentage" class="block text-sm font-medium text-gray-300 mb-2">
-						Warning Equity Percentage
-					</label>
-					<div class="flex items-center space-x-3">
-						<input
-							id="modal-warning-equity-percentage"
-							type="number"
-							bind:value={warningEquityPercentage}
-							class="flex-1 border border-gray-600 bg-gray-700 text-white rounded-md px-3 py-2 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-							step="1"
-							min="1"
-							max="100"
-						/>
-						<span class="text-sm text-gray-400">%</span>
-					</div>
-					<p class="text-xs text-gray-500 mt-1">Show warning when equity falls below this percentage of target (capital per unit / 2)</p>
-				</div>
+                        <!-- Add new unit setting -->
+                        <div class="flex items-center space-x-2">
+                            <input type="number" bind:value={newUnitSettingNumber} placeholder="Unit #" min="1" class="w-20 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-center focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
+                            <input type="number" bind:value={newUnitSettingCap} placeholder="Initial Capital" min="0" step="100" class="w-32 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
+                            <span class="text-gray-400">USD</span>
+                            <span class="text-gray-400">/ Warn %</span>
+                            <input type="number" bind:value={newUnitSettingWarn} placeholder="%" min="1" max="100" step="1" class="w-20 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
+                            <button
+                                on:click={addUnitSetting}
+                                class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md text-sm transition-colors"
+                                disabled={!newUnitSettingNumber || newUnitSettingCap === '' || newUnitSettingWarn === ''}
+                            >
+                                Add
+                            </button>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-1">Initial capital and warning threshold are set per unit. Total Initial Capital is the sum of all units.</p>
+                    </fieldset>
+                </div>
 
 				<!-- Total Active Accounts Setting -->
 				<div>
