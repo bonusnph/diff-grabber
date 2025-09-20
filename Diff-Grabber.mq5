@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.03"
+#property version   "1.04"
 
 // =============================
 // EA Heading Master–Slave (MT5)
@@ -1306,14 +1306,16 @@ void MasterReconcilePositions()
 {
   if(!(input_role==ROLE_MASTER)) return;
   if(!g_peer_alive) return; // require peer alive to avoid acting on stale files
+  if(IsInSaturdayQuietWindow()) return; // Saturday quiet window: skip reconcile
   
   // CRITICAL: Skip reconcile during grace period to prevent immediate close after open
   if(NowMs() < g_open_grace_until_ms) {
      int selfNowTmp = CountOpenPairs();
      int peerNowTmp = PeerOpenCount();
      if(peerNowTmp<0) return;
-     bool manualDropTmp = (peerNowTmp < g_prev_peer_pairs) && (selfNowTmp > 0);
-     if(manualDropTmp)
+    bool peerDropTmp = (peerNowTmp < g_prev_peer_pairs) && (selfNowTmp > 0);
+    bool selfDropTmp = (selfNowTmp < g_prev_self_pairs) && (peerNowTmp > 0);
+    if(peerDropTmp)
      {
         LogEvent("RECONCILE_PEER_MANUAL_CLOSE", StringFormat("peer_closed_manually;self=%d;peer=%d", selfNowTmp, peerNowTmp));
         LogEvent("CLOSE_TRIGGER", StringFormat("source=RECONCILE_PEER_MANUAL;self=%d;peer=%d", selfNowTmp, peerNowTmp));
@@ -1334,9 +1336,26 @@ void MasterReconcilePositions()
         g_prev_self_pairs=selfNowTmp; g_prev_peer_pairs=peerNowTmp; 
         return;
      }
-     g_prev_self_pairs = selfNowTmp; 
-     g_prev_peer_pairs = peerNowTmp; 
-     return; 
+    if(selfDropTmp)
+    {
+       // Master manual close detected during grace: broadcast CLOSE to slave
+       LogEvent("RECONCILE_SELF_MANUAL_CLOSE", StringFormat("self_closed_manually;self=%d;peer=%d", selfNowTmp, peerNowTmp));
+       LogEvent("CLOSE_TRIGGER", StringFormat("source=RECONCILE_SELF_MANUAL;self=%d;peer=%d", selfNowTmp, peerNowTmp));
+       string cmd_idS = NewCmdId(); ulong created_msS = NowMs(); int expire_msS = input_cmd_expire_ms;
+       string lineS = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_idS, (long)g_seq, "N/A", "CLOSE", created_msS, expire_msS);
+       FileWriteAllAtomic(PathCloseCmd(), lineS);
+       LogEvent("RECONCILE_MASTER_BROADCAST_CLOSE", StringFormat("cmd_id=%s;reason=SELF_MANUAL_CLOSE", cmd_idS));
+       if(DryEnabled() && DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK)
+       {
+          string ackSelfS = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_idS, (long)g_seq, "N/A", 1, 0);
+          FileWriteAll(PathCloseAckSelf(), ackSelfS);
+       }
+       g_prev_self_pairs=selfNowTmp; g_prev_peer_pairs=peerNowTmp; 
+       return; 
+    }
+    g_prev_self_pairs = selfNowTmp; 
+    g_prev_peer_pairs = peerNowTmp; 
+    return; 
   }
   
   // ENHANCED: Add grace period after master opens order to prevent immediate reconcile
@@ -1354,8 +1373,9 @@ void MasterReconcilePositions()
      int selfNowTmp2 = CountOpenPairs();
      int peerNowTmp2 = PeerOpenCount();
      if(peerNowTmp2<0) return;
-     bool manualDropTmp2 = (peerNowTmp2 < g_prev_peer_pairs) && (selfNowTmp2 > 0);
-     if(manualDropTmp2)
+     bool peerDropTmp2 = (peerNowTmp2 < g_prev_peer_pairs) && (selfNowTmp2 > 0);
+     bool selfDropTmp2 = (selfNowTmp2 < g_prev_self_pairs) && (peerNowTmp2 > 0);
+     if(peerDropTmp2)
      {
         LogEvent("RECONCILE_PEER_MANUAL_CLOSE", StringFormat("peer_closed_manually;self=%d;peer=%d", selfNowTmp2, peerNowTmp2));
         LogEvent("CLOSE_TRIGGER", StringFormat("source=RECONCILE_PEER_MANUAL;self=%d;peer=%d", selfNowTmp2, peerNowTmp2));
@@ -1376,6 +1396,22 @@ void MasterReconcilePositions()
         g_prev_self_pairs=selfNowTmp2; g_prev_peer_pairs=peerNowTmp2; 
         return;
      }
+     if(selfDropTmp2)
+     {
+        LogEvent("RECONCILE_SELF_MANUAL_CLOSE", StringFormat("self_closed_manually;self=%d;peer=%d", selfNowTmp2, peerNowTmp2));
+        LogEvent("CLOSE_TRIGGER", StringFormat("source=RECONCILE_SELF_MANUAL;self=%d;peer=%d", selfNowTmp2, peerNowTmp2));
+        string cmd_id1s = NewCmdId(); ulong created_ms1s = NowMs(); int expire_ms1s = input_cmd_expire_ms;
+        string line1s = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id1s, (long)g_seq, "N/A", "CLOSE", created_ms1s, expire_ms1s);
+        FileWriteAllAtomic(PathCloseCmd(), line1s);
+        LogEvent("RECONCILE_MASTER_BROADCAST_CLOSE", StringFormat("cmd_id=%s;reason=SELF_MANUAL_CLOSE", cmd_id1s));
+        if(DryEnabled() && DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK)
+        {
+           string ackSelf1s = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id1s, (long)g_seq, "N/A", 1, 0);
+           FileWriteAll(PathCloseAckSelf(), ackSelf1s);
+        }
+        g_prev_self_pairs=selfNowTmp2; g_prev_peer_pairs=peerNowTmp2; 
+        return;
+     }
      LogEvent("RECONCILE_GRACE_SKIP", StringFormat("elapsed_ms=%I64u;limit_ms=%I64u;remaining_ms=%I64u", 
               grace_elapsed, grace_limit, grace_limit - grace_elapsed));
      g_prev_self_pairs = selfNowTmp2; 
@@ -1392,7 +1428,42 @@ void MasterReconcilePositions()
   if(g_last_pair_both_open_time>0)
   {
     int el = (int)(TimeCurrent() - g_last_pair_both_open_time);
-    if(el < input_reconcile_freeze_seconds) { g_prev_self_pairs=selfNow; g_prev_peer_pairs=peerNow; return; }
+    if(el < input_reconcile_freeze_seconds) {
+      // During freeze, still honor manual drops immediately
+      if(selfNow < g_prev_self_pairs && peerNow > 0)
+      {
+        LogEvent("RECONCILE_SELF_MANUAL_CLOSE", StringFormat("self_closed_manually;self=%d;peer=%d", selfNow, peerNow));
+        LogEvent("CLOSE_TRIGGER", StringFormat("source=RECONCILE_SELF_MANUAL;self=%d;peer=%d", selfNow, peerNow));
+        string cmd_idF = NewCmdId(); ulong created_msF = NowMs(); int expire_msF = input_cmd_expire_ms;
+        string lineF = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_idF, (long)g_seq, "N/A", "CLOSE", created_msF, expire_msF);
+        FileWriteAllAtomic(PathCloseCmd(), lineF);
+        LogEvent("RECONCILE_MASTER_BROADCAST_CLOSE", StringFormat("cmd_id=%s;reason=SELF_MANUAL_CLOSE", cmd_idF));
+        if(DryEnabled() && DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK)
+        {
+          string ackSelfF = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_idF, (long)g_seq, "N/A", 1, 0);
+          FileWriteAll(PathCloseAckSelf(), ackSelfF);
+        }
+        g_prev_self_pairs=selfNow; g_prev_peer_pairs=peerNow; 
+        return;
+      }
+      if(peerNow < g_prev_peer_pairs && selfNow > 0)
+      {
+        LogEvent("RECONCILE_PEER_MANUAL_CLOSE", StringFormat("peer_closed_manually;self=%d;peer=%d", selfNow, peerNow));
+        LogEvent("CLOSE_TRIGGER", StringFormat("source=RECONCILE_PEER_MANUAL;self=%d;peer=%d", selfNow, peerNow));
+        string cmd_idF2 = NewCmdId(); ulong created_msF2 = NowMs(); int expire_msF2 = input_cmd_expire_ms;
+        string lineF2 = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_idF2, (long)g_seq, "N/A", "CLOSE", created_msF2, expire_msF2);
+        FileWriteAllAtomic(PathCloseCmd(), lineF2);
+        LogEvent("RECONCILE_MASTER_FOLLOW_CLOSE", StringFormat("cmd_id=%s;reason=PEER_MANUAL_CLOSE", cmd_idF2));
+        if(DryEnabled() && DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK)
+        {
+          string ackSelfF2 = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_idF2, (long)g_seq, "N/A", 1, 0);
+          FileWriteAll(PathCloseAckSelf(), ackSelfF2);
+        }
+        g_prev_self_pairs=selfNow; g_prev_peer_pairs=peerNow; 
+        return;
+      }
+      g_prev_self_pairs=selfNow; g_prev_peer_pairs=peerNow; return;
+    }
   }
   bool manualDrop = (selfNow < g_prev_self_pairs) || (peerNow < g_prev_peer_pairs);
   if(manualDrop) LogEvent("RECONCILE_MANUAL_DROP", StringFormat("selfNow=%d;peerNow=%d;prevSelf=%d;prevPeer=%d", selfNow, peerNow, g_prev_self_pairs, g_prev_peer_pairs));
@@ -1577,6 +1648,7 @@ void SlaveLocalReconcile()
 {
   if(input_role==ROLE_MASTER) return;
   if(!g_peer_alive) return;
+  if(IsInSaturdayQuietWindow()) return; // Saturday quiet window: skip local reconcile
   
   // CRITICAL: Add grace period to prevent immediate close after slave opens order
   if(g_last_processed_open_cmd_id != g_slave_last_processed_cmd && g_last_processed_open_cmd_id != "")
@@ -1584,20 +1656,22 @@ void SlaveLocalReconcile()
      g_slave_last_open_ms = NowMs();
      g_slave_last_processed_cmd = g_last_processed_open_cmd_id;
   }
-  // Dynamic grace: skip local reconcile for max(ack_timeout+2s, close_cooldown, 15s)
-  int guard_ack_ms = (g_master_ack_timeout_ms>0 ? g_master_ack_timeout_ms : 10000) + 2000;
-  int guard_close_ms = (g_master_close_cooldown_seconds>0 ? g_master_close_cooldown_seconds*1000 : 0);
+  // Dynamic grace: compute guard but allow immediate reconcile when self>peer
+  int guard_ack_ms = (g_master_ack_timeout_ms>0 ? g_master_ack_timeout_ms : input_ack_timeout_ms) + 2000;
+  int guard_close_ms = (g_master_close_cooldown_seconds>0 ? g_master_close_cooldown_seconds*1000 : input_close_cooldown_seconds*1000);
   int guard_ms = (int)MathMax((double)guard_ack_ms, (double)MathMax(guard_close_ms, 15000));
+  // Evaluate mismatch early to allow immediate reconcile when self>peer even during guard
+  int selfGuard = CountOpenPairs(); int peerGuard = PeerOpenCount(); if(peerGuard<0) return; bool needImmediate = (selfGuard > peerGuard);
   if(g_slave_last_open_ms > 0)
   {
      ulong elapsed = NowMs() - g_slave_last_open_ms;
-     if(elapsed < (ulong)guard_ms)
+     if(elapsed < (ulong)guard_ms && !needImmediate)
      {
         return;
      }
   }
 
-  if((NowMs()-g_last_reconcile_ms) < (ulong)EffectiveHeartbeatTimeoutMs()/2) return; // light throttle
+  if((NowMs()-g_last_reconcile_ms) < (ulong)EffectiveHeartbeatTimeoutMs()/2 && !needImmediate) return; // light throttle with override
   g_last_reconcile_ms = NowMs();
   int self = CountOpenPairs(); int peer = PeerOpenCount(); if(peer<0) return;
   if(self <= peer) return;
@@ -1758,7 +1832,7 @@ bool ReadPeerHeartbeat(ulong &peer_ms)
    string s; if(!FileReadAll(PathHeartbeatPeer(), s)) return false;
    string f[]; int n = StringSplit(TrimAll(s), ',', f);
    if(n < 1) return false;
-   peer_ms = (ulong)StringToInteger(f[0]);
+   peer_ms = (ulong)StringToDouble(f[0]);
    // Optional: peer digits/point appended by the other side
    if(n >= 9)
    {
@@ -1796,7 +1870,7 @@ bool ReadPeerQuotes()
    string s; if(!FileReadAll(PathQuotesPeer(), s)) return false;
    int p1 = StringFind(s, ","); if(p1<0) return false;
    int p2 = StringFind(s, ",", p1+1); if(p2<0) return false;
-   g_peer_quote_ms = (ulong)StringToInteger(StringSubstr(s, 0, p1));
+   g_peer_quote_ms = (ulong)StringToDouble(StringSubstr(s, 0, p1));
    g_peer_bid = StringToDouble(StringSubstr(s, p1+1, p2-p1-1));
    g_peer_ask = StringToDouble(StringSubstr(s, p2+1));
    return true;
@@ -1816,9 +1890,24 @@ bool ReadPeerBalanceFresh(double &bal_out, ulong &ts_out)
   bal_out = 0.0; ts_out = 0;
   string s; if(!FileReadAll(PathAccountStatusPeer(), s)) return false;
   string f[]; int n = StringSplit(TrimAll(s), ',', f); if(n<4) return false;
-  bal_out = StringToDouble(f[1]); ts_out = (ulong)StringToInteger(f[3]);
+  bal_out = StringToDouble(f[1]); ts_out = (ulong)StringToDouble(f[3]);
   if((NowMs()-ts_out) > (ulong)EffectiveHeartbeatTimeoutMs()) return false;
   return true;
+}
+
+int SelfSpreadOk()
+{
+   if(SpreadPointsSelf() <= input_max_spread_points_self) return 1;
+   return 0;
+}
+
+int PeerSpreadOk()
+{
+   // Best-effort: compute from last peer bid/ask
+   if(g_peer_ask<=0 || g_peer_bid<=0) return 0;
+   double sp = g_peer_ask - g_peer_bid;
+   int sp_points = (int)MathRound(MathMax(0.0, sp) / g_point);
+   return (sp_points <= input_max_spread_points_peer) ? 1 : 0;
 }
 
 double DiffOpenPoints()
@@ -2078,18 +2167,17 @@ void MaybeOpenPair()
    if(input_auth_enabled && !g_account_authorized) return;
    // Update scheduled close only mode state
    UpdateScheduledCloseOnlyMode();
-   // Saturday quiet window: block opens
-   if(IsInSaturdayQuietWindow()) return;
    // Close Only mode: prevent new orders
    if(g_close_only_mode) return;
+   // Saturday quiet window: block opens
+   if(IsInSaturdayQuietWindow()) return;
    if(!g_peer_alive) return; // do not operate without peer
    if((int)(TimeCurrent() - g_last_open_time) < input_open_cooldown_seconds) return;
    if(CountOpenPairs() >= input_max_open_pairs) return;
    if(!ReadPeerQuotes()) return;
    if(!QuotesFresh()) return;
-   if(SpreadPointsSelf() > input_max_spread_points_self) return;
-   // Peer spread check is approximate; rely on peer quotes
-   double ps = (g_peer_ask - g_peer_bid) / g_point; if(ps > input_max_spread_points_peer) return;
+   if(!SelfSpreadOk()) return;
+   if(!PeerSpreadOk()) return;
 
    // Min balance checks on both peers (fail-safe: require fresh peer info)
    if(input_min_balance_master_usd > 0.0 || input_min_balance_slave_usd > 0.0)
@@ -2107,6 +2195,7 @@ void MaybeOpenPair()
       }
    }
 
+   // Pre-send recheck: compute diff now
    double diffOpen = DiffOpenPoints();
    bool triggerOpen = false;
    
@@ -2123,7 +2212,7 @@ void MaybeOpenPair()
          {
             g_open_pending = true; g_open_snapshot_avg = avgOpen; g_open_ok_count = 0; g_open_deadline_ms = NowMs() + (ulong)input_confirm_timeout_ms;
          }
-         return; // wait for confirmation path below in next ticks
+         return;
       }
       else
       {
@@ -2276,8 +2365,10 @@ void MaybeClosePair()
    if(!(input_role==ROLE_MASTER)) return;
    // Account authorization check
    if(input_auth_enabled && !g_account_authorized) return;
+   // Saturday quiet window: block any closes
+   if(IsInSaturdayQuietWindow()) return;
    
-   // CRITICAL: Enhanced protection against immediate close after open (consistent with MT4)
+   // CRITICAL: Enhanced protection against immediate close after open
    // Do not auto-close while waiting for slave to acknowledge an open
    if(g_waiting_slave_open_ack) return;
    
@@ -2290,14 +2381,18 @@ void MaybeClosePair()
    // Consolidated grace window across bursts of opens
    if(NowMs() < g_open_grace_until_ms) return;
    
-   if(!ReadPeerQuotes()) return;
-   if(!QuotesFresh()) return;
+   // Close only if we actually have open trades to avoid immediate close-after-open effect
+   if(CountOpenPairs()<=0) return;
+   
    // Close cooldown: avoid normal auto-close until elapsed; do not block reconcile paths elsewhere
+   // If a pair was both-side opened recently, this timestamp should have been set; we set/update it upon successful open + peer ack in watchdog
    if(g_last_pair_both_open_time>0)
    {
-      int el = (int)(TimeCurrent() - g_last_pair_both_open_time);
-      if(el < input_close_cooldown_seconds) return;
+      if((int)(TimeCurrent() - g_last_pair_both_open_time) < input_close_cooldown_seconds)
+         return;
    }
+   if(!ReadPeerQuotes()) return;
+   if(!QuotesFresh()) return;
    double diffClose = DiffClosePoints();
    bool triggerClose = false;
    
@@ -2411,26 +2506,27 @@ void MaybeClosePair()
    
    string cmd_id = NewCmdId(); ulong created_ms = NowMs();
    // CRITICAL FIX: Ensure expire_ms is always positive and reasonable
-   int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0)? DryOverrideExpireMs(): input_cmd_expire_ms;
-   if(expire_ms <= 0) expire_ms = 30000; // Default 30 seconds if invalid
-   string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
+   int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0) ? DryOverrideExpireMs() : input_cmd_expire_ms;
+   if(expire_ms <= 0) expire_ms = 60000; // Default 60 seconds if invalid (increased for timezone safety)
    if(DryEnabled())
    {
       if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK)
       {
+         // Dry-run: emit close_cmd and ack immediately
          string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
          FileWriteAllAtomic(PathCloseCmd(), line);
          LogEvent("CLOSE_CMD", StringFormat("cmd_id=%s;reason=AUTO;diffClose=%.1f;threshold=%d;action=CLOSE", cmd_id, diffClose, GetCloseThresholdPoints()));
          int latency = DryDelayMs(); if(latency>0) Sleep(latency);
          string ackSelf = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0);
-         FileWriteAllAtomic(PathCloseAckSelf(), ackSelf);
+         FileWriteAll(PathCloseAckSelf(), ackSelf);
       }
       return;
    }
 
-   bool ok = CloseAllByMagic(); CompactPairMapSelf(); WritePositions();
+   // Real close all by magic (simplified). Emit cmd to slave only after local success
+   bool ok = CloseAllByMagic();
    string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError());
-   FileWriteAllAtomic(PathCloseAckSelf(), ack);
+   FileWriteAll(PathCloseAckSelf(), ack);
    LogEvent("CLOSE_ACK_MASTER", StringFormat("cmd_id=%s;ok=%d;err=%d", cmd_id, ok?1:0, ok?0:(int)GetLastError()));
    if(ok)
    {
@@ -2464,7 +2560,7 @@ void SlaveProcessOpenCmd()
       return;
    }
    string cmd_id = fields[1]; string pair_id = fields[3]; string sym=fields[4]; string mside=fields[5]; double lot_slave = StringToDouble(fields[7]);
-   ulong created_ms = (ulong)StringToInteger(fields[9]); int expire_ms = (int)StringToInteger(fields[10]);
+   ulong created_ms = (ulong)StringToDouble(fields[9]); int expire_ms = (int)StringToInteger(fields[10]);
    // Idempotency: skip if already acknowledged/processed this cmd
    string sAckOpen; if(FileReadAll(PathOpenAckSelf(), sAckOpen)) { string af[]; int an = StringSplit(TrimAll(sAckOpen), ',', af); if(an>=2 && af[1]==cmd_id) return; }
    if(g_last_processed_open_cmd_id == cmd_id) return; g_last_processed_open_cmd_id = cmd_id; g_slave_last_open_ms = NowMs();
@@ -2522,7 +2618,7 @@ void SlaveProcessCloseCmd()
    if(input_auth_enabled && !g_account_authorized) return;
    string s; if(!FileReadAll(PathCloseCmd(), s)) return;
    string fields[]; int n = StringSplit(TrimAll(s), ',', fields); if(n<7) return;
-   string cmd_id = fields[1]; string pair_id = fields[3]; ulong created_ms = (ulong)StringToInteger(fields[5]); int expire_ms=(int)StringToInteger(fields[6]);
+   string cmd_id = fields[1]; string pair_id = fields[3]; ulong created_ms = (ulong)StringToDouble(fields[5]); int expire_ms=(int)StringToInteger(fields[6]);
    // Idempotency: skip if already acknowledged/processed this close
    string sAckClose; if(FileReadAll(PathCloseAckSelf(), sAckClose)) { string af[]; int an = StringSplit(TrimAll(sAckClose), ',', af); if(an>=2 && af[1]==cmd_id) return; }
    if(g_last_processed_close_cmd_id == cmd_id) return; g_last_processed_close_cmd_id = cmd_id;
@@ -3278,6 +3374,7 @@ void MasterCloseNow()
        string ackSelf=StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0);
        FileWriteAllAtomic(PathCloseAckSelf(), ackSelf);
      }
+     g_last_pair_both_open_time = 0; // Reset cooldown anchor for next cycle
      return;
    }
    bool ok = CloseAllByMagic(); CompactPairMapSelf(); WritePositions();
@@ -3292,6 +3389,7 @@ void MasterCloseNow()
    {
       LogEvent("CLOSE_LOCAL_FAIL", StringFormat("reason=MANUAL;err=%d", (int)GetLastError()));
    }
+   g_last_pair_both_open_time = 0; // Reset cooldown anchor for next cycle
 }
 
 // Open-now flow but with custom lots (used by Thursday swap auto-open)
@@ -3516,7 +3614,10 @@ void MasterRollbackOpen()
    string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", close_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError());
    FileWriteAll(PathCloseAckSelf(), ack);
    LogEvent("CLOSE_ACK_MASTER", StringFormat("cmd_id=%s;ok=%d;err=%d", close_id, ok?1:0, ok?0:(int)GetLastError()));
-   g_waiting_slave_open_ack = false; g_pending_open_cmd_id = "";
+   // reset waiting state
+   g_waiting_slave_open_ack = false;
+   g_pending_open_cmd_id = "";
+   g_last_pair_both_open_time = 0; // Reset cooldown anchor for next cycle
 }
 
 // Global variable สำหรับ early warning
