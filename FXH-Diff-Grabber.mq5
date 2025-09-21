@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.04"
+#property version   "1.05"
 
 // =============================
 // EA Heading Master–Slave (MT5)
@@ -82,6 +82,11 @@ int    input_confirm_timeout_ms       = 300;           // Scope: Master — max 
 int    input_diff_hysteresis_points   = 0;             // Scope: Master — hysteresis added to thresholds when averaging is enabled (points)
 int    input_epsilon_diff_points      = 1;             // Scope: Master — small margin for real confirm (points)
 int    input_avg_signal_cooldown_ms   = 400;           // Scope: Master — signal-level cooldown after order (ms)
+
+// Zone Stability Filter (works with all modes - Master only)
+bool   input_zone_stability_enabled    = true;     // Scope: Master — enable zone stability check for all modes
+int    input_zone_stability_ticks      = 3;        // Scope: Master — consecutive ticks required in positive zone
+int    input_zone_negative_threshold   = 0;        // Scope: Master — threshold for negative zone detection (points)
 
 // Quality guards
 int    input_max_spread_points_self   = 50;            // Scope: Master — block if own spread exceeds (points)
@@ -292,6 +297,15 @@ ulong  g_raw_open_start_ms = 0;
 bool   g_raw_close_pending = false;
 int    g_raw_close_stable_count = 0;
 ulong  g_raw_close_start_ms = 0;
+
+// Zone Stability state (works with all modes)
+bool   g_open_zone_stable = false;
+int    g_open_positive_count = 0;
+int    g_open_negative_count = 0;
+
+bool   g_close_zone_stable = false;
+int    g_close_positive_count = 0;
+int    g_close_negative_count = 0;
 
 bool DryEnabled()
 {
@@ -2194,6 +2208,48 @@ double SmoothedCloseDiff(const double realDiff)
    return g_ema_close;
 }
 
+// -----------------------------
+// Zone Stability Filter Functions
+// -----------------------------
+
+// Check zone stability for a given diff value and threshold
+bool CheckZoneStability(double current_diff, double threshold, bool &zone_stable_out, int &positive_count, int &negative_count)
+{
+   if(current_diff >= threshold)
+   {
+      positive_count++;
+      negative_count = 0;
+   }
+   else if(current_diff <= input_zone_negative_threshold)
+   {
+      negative_count++;
+      positive_count = 0;
+   }
+   // Neutral zone (between negative_threshold and threshold): don't reset counters
+   
+   // Zone is stable when we have enough positive ticks and no recent negative ticks
+   zone_stable_out = (positive_count >= input_zone_stability_ticks && negative_count == 0);
+   
+   return zone_stable_out;
+}
+
+// Reset zone stability state for open or close
+void ResetZoneStability(bool is_open)
+{
+   if(is_open)
+   {
+      g_open_zone_stable = false;
+      g_open_positive_count = 0;
+      g_open_negative_count = 0;
+   }
+   else
+   {
+      g_close_zone_stable = false;
+      g_close_positive_count = 0;
+      g_close_negative_count = 0;
+   }
+}
+
 int CountOpenPairs()
 {
    int count = 0;
@@ -2247,6 +2303,22 @@ void MaybeOpenPair()
    double diffOpen = DiffOpenPoints();
    bool triggerOpen = false;
    
+   // === ZONE STABILITY CHECK (applies to all modes) ===
+   if(input_zone_stability_enabled)
+   {
+      if(!CheckZoneStability(diffOpen, GetOpenThresholdPoints(), g_open_zone_stable, g_open_positive_count, g_open_negative_count))
+      {
+         // Zone not stable - reset all pending states
+         g_open_pending = false;
+         g_open_ok_count = 0;
+         g_raw_open_pending = false;
+         g_raw_open_stable_count = 0;
+         LogEvent("ZONE_OPEN_UNSTABLE", StringFormat("diff=%.1f;positive_count=%d;negative_count=%d;threshold=%.1f;neg_threshold=%d", 
+                  diffOpen, g_open_positive_count, g_open_negative_count, (double)GetOpenThresholdPoints(), input_zone_negative_threshold));
+         return;
+      }
+   }
+   
    // PRIORITY: Averaging > Raw Stability > Simple
    if(input_avg_filter_enabled)
    {
@@ -2256,7 +2328,8 @@ void MaybeOpenPair()
       double thrEff = (double)(GetOpenThresholdPoints() + input_diff_hysteresis_points);
       if(!g_open_pending)
       {
-         if(avgOpen >= thrEff)
+         // Zone stability check for averaging mode
+         if(avgOpen >= thrEff && (!input_zone_stability_enabled || g_open_zone_stable))
          {
             g_open_pending = true; g_open_snapshot_avg = avgOpen; g_open_ok_count = 0; g_open_deadline_ms = NowMs() + (ulong)input_confirm_timeout_ms;
          }
@@ -2264,6 +2337,15 @@ void MaybeOpenPair()
       }
       else
       {
+         // Zone stability check during confirmation
+         if(input_zone_stability_enabled && !g_open_zone_stable)
+         {
+            g_open_pending = false;
+            g_open_ok_count = 0;
+            LogEvent("OPEN_AVG_ZONE_RESET", StringFormat("diff=%.1f;avg=%.1f;zone_unstable", diffOpen, avgOpen));
+            return;
+         }
+         
          bool ok = true;
          if(input_real_confirm_enabled)
          {
@@ -2278,6 +2360,8 @@ void MaybeOpenPair()
          if(g_open_ok_count >= input_confirm_ticks)
          {
             triggerOpen = true; g_open_pending = false; g_last_avg_open_signal_ms = NowMs();
+            // Reset zone stability counters after trigger
+            if(input_zone_stability_enabled) ResetZoneStability(true);
          }
          else
          {
@@ -2294,18 +2378,28 @@ void MaybeOpenPair()
       
       if(!g_raw_open_pending)
       {
-         if(diffOpen >= enterThreshold)
+         // Zone stability check for raw stability mode
+         if(diffOpen >= enterThreshold && (!input_zone_stability_enabled || g_open_zone_stable))
          {
             g_raw_open_pending = true;
             g_raw_open_stable_count = 1;
             g_raw_open_start_ms = NowMs();
-            LogEvent("RAW_OPEN_START", StringFormat("diff=%.1f;count=1;reset_at=%.1f", 
-                     diffOpen, resetThreshold));
+            LogEvent("RAW_OPEN_START", StringFormat("diff=%.1f;count=1;reset_at=%.1f;zone_stable=%s", 
+                     diffOpen, resetThreshold, g_open_zone_stable?"true":"false"));
          }
          return;
       }
       else
       {
+         // Zone stability check during raw stability confirmation
+         if(input_zone_stability_enabled && !g_open_zone_stable)
+         {
+            g_raw_open_pending = false;
+            g_raw_open_stable_count = 0;
+            LogEvent("RAW_OPEN_ZONE_RESET", StringFormat("diff=%.1f;zone_unstable", diffOpen));
+            return;
+         }
+         
          if(diffOpen < resetThreshold)
          {
             g_raw_open_pending = false;
@@ -2325,6 +2419,8 @@ void MaybeOpenPair()
             g_raw_open_pending = false;
             LogEvent("RAW_OPEN_CONFIRMED", StringFormat("diff=%.1f;final_count=%d", 
                      diffOpen, g_raw_open_stable_count));
+            // Reset zone stability counters after trigger
+            if(input_zone_stability_enabled) ResetZoneStability(true);
          }
          
          if((NowMs() - g_raw_open_start_ms) > (ulong)input_raw_stability_timeout_ms)
@@ -2340,9 +2436,13 @@ void MaybeOpenPair()
    }
    else
    {
-      // Simple instant logic (lowest priority)
+      // Simple instant logic (lowest priority) with zone stability check
       if(diffOpen < GetOpenThresholdPoints()) return;
+      // Zone stability check for simple mode
+      if(input_zone_stability_enabled && !g_open_zone_stable) return;
       triggerOpen = true;
+      // Reset zone stability counters after trigger
+      if(input_zone_stability_enabled) ResetZoneStability(true);
    }
 
 
@@ -2444,6 +2544,22 @@ void MaybeClosePair()
    double diffClose = DiffClosePoints();
    bool triggerClose = false;
    
+   // === ZONE STABILITY CHECK (applies to all modes) ===
+   if(input_zone_stability_enabled)
+   {
+      if(!CheckZoneStability(diffClose, GetCloseThresholdPoints(), g_close_zone_stable, g_close_positive_count, g_close_negative_count))
+      {
+         // Zone not stable - reset all pending states
+         g_close_pending = false;
+         g_close_ok_count = 0;
+         g_raw_close_pending = false;
+         g_raw_close_stable_count = 0;
+         LogEvent("ZONE_CLOSE_UNSTABLE", StringFormat("diff=%.1f;positive_count=%d;negative_count=%d;threshold=%.1f;neg_threshold=%d", 
+                  diffClose, g_close_positive_count, g_close_negative_count, (double)GetCloseThresholdPoints(), input_zone_negative_threshold));
+         return;
+      }
+   }
+   
    // PRIORITY: Averaging > Raw Stability > Simple
    if(input_avg_filter_enabled)
    {
@@ -2453,7 +2569,8 @@ void MaybeClosePair()
       double thrEff = (double)(GetCloseThresholdPoints() + input_diff_hysteresis_points);
       if(!g_close_pending)
       {
-         if(avgClose >= thrEff)
+         // Zone stability check for averaging close mode
+         if(avgClose >= thrEff && (!input_zone_stability_enabled || g_close_zone_stable))
          {
             g_close_pending = true; g_close_snapshot_avg = avgClose; g_close_ok_count = 0; g_close_deadline_ms = NowMs() + (ulong)input_confirm_timeout_ms;
          }
@@ -2461,6 +2578,15 @@ void MaybeClosePair()
       }
       else
       {
+         // Zone stability check during close confirmation
+         if(input_zone_stability_enabled && !g_close_zone_stable)
+         {
+            g_close_pending = false;
+            g_close_ok_count = 0;
+            LogEvent("CLOSE_AVG_ZONE_RESET", StringFormat("diff=%.1f;avg=%.1f;zone_unstable", diffClose, avgClose));
+            return;
+         }
+         
          bool ok = true;
          if(input_real_confirm_enabled)
          {
@@ -2475,6 +2601,8 @@ void MaybeClosePair()
          if(g_close_ok_count >= input_confirm_ticks)
          {
             triggerClose = true; g_close_pending = false; g_last_avg_close_signal_ms = NowMs();
+            // Reset zone stability counters after trigger
+            if(input_zone_stability_enabled) ResetZoneStability(false);
          }
          else
          {
@@ -2491,18 +2619,28 @@ void MaybeClosePair()
       
       if(!g_raw_close_pending)
       {
-         if(diffClose >= enterThreshold)
+         // Zone stability check for raw stability close mode
+         if(diffClose >= enterThreshold && (!input_zone_stability_enabled || g_close_zone_stable))
          {
             g_raw_close_pending = true;
             g_raw_close_stable_count = 1;
             g_raw_close_start_ms = NowMs();
-            LogEvent("RAW_CLOSE_START", StringFormat("diff=%.1f;count=1;reset_at=%.1f", 
-                     diffClose, resetThreshold));
+            LogEvent("RAW_CLOSE_START", StringFormat("diff=%.1f;count=1;reset_at=%.1f;zone_stable=%s", 
+                     diffClose, resetThreshold, g_close_zone_stable?"true":"false"));
          }
          return;
       }
       else
       {
+         // Zone stability check during raw stability close confirmation
+         if(input_zone_stability_enabled && !g_close_zone_stable)
+         {
+            g_raw_close_pending = false;
+            g_raw_close_stable_count = 0;
+            LogEvent("RAW_CLOSE_ZONE_RESET", StringFormat("diff=%.1f;zone_unstable", diffClose));
+            return;
+         }
+         
          if(diffClose < resetThreshold)
          {
             g_raw_close_pending = false;
@@ -2522,6 +2660,8 @@ void MaybeClosePair()
             g_raw_close_pending = false;
             LogEvent("RAW_CLOSE_CONFIRMED", StringFormat("diff=%.1f;final_count=%d", 
                      diffClose, g_raw_close_stable_count));
+            // Reset zone stability counters after trigger
+            if(input_zone_stability_enabled) ResetZoneStability(false);
          }
          
          if((NowMs() - g_raw_close_start_ms) > (ulong)input_raw_stability_timeout_ms)
@@ -2537,9 +2677,13 @@ void MaybeClosePair()
    }
    else
    {
-      // Simple instant logic (lowest priority)
+      // Simple instant logic (lowest priority) with zone stability check
       if(diffClose < GetCloseThresholdPoints()) return;
+      // Zone stability check for simple close mode
+      if(input_zone_stability_enabled && !g_close_zone_stable) return;
       triggerClose = true;
+      // Reset zone stability counters after trigger
+      if(input_zone_stability_enabled) ResetZoneStability(false);
    }
 
 
@@ -3228,7 +3372,24 @@ void DisplayUpdate()
       else
          modeStr = "SIMPLE | RealOnly";
 
+      // Add Zone Stability status to mode string
+      if(input_zone_stability_enabled)
+      {
+         modeStr += StringFormat(" + ZONE(T=%d N=%d)", input_zone_stability_ticks, input_zone_negative_threshold);
+      }
+
       DisplaySetLine(line++, modeStr);
+      
+      // Display Zone Stability status
+      if(input_zone_stability_enabled)
+      {
+         string zoneOpenStatus = g_open_zone_stable ? "STABLE" : 
+            StringFormat("BUILDING(+%d/-%d)", g_open_positive_count, g_open_negative_count);
+         string zoneCloseStatus = g_close_zone_stable ? "STABLE" : 
+            StringFormat("BUILDING(+%d/-%d)", g_close_positive_count, g_close_negative_count);
+         
+         DisplaySetLine(line++, StringFormat("Zone: Open=%s Close=%s", zoneOpenStatus, zoneCloseStatus));
+      }
       
       // Enhanced status display with detailed info
       if(input_avg_filter_enabled)
