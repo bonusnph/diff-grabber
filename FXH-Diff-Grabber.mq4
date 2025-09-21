@@ -3475,6 +3475,56 @@ double GetCachedSlaveBalance()
    return g_has_slave_balance ? g_cached_slave_balance : 0.0;
 }
 
+// Update Sum Profit Display only (for OnTick primary + OnTimer backup)
+void UpdateProfitDisplay()
+{
+   if(!input_debug_buttons_enabled || input_role!=ROLE_MASTER) return;
+   
+   string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
+   if(ObjectFind(0, eq_value) != -1)
+   {
+      // Keep caches fresh opportunistically
+      UpdateCachedSlaveEquity();
+      UpdateCachedSlaveBalance();
+
+      // Realtime sums
+      double master_equity = AccountEquity();
+      double master_balance = AccountBalance();
+      double slave_equity = 0.0; ulong slave_eq_ts = 0; bool eq_ok = ReadPeerEquityFresh(slave_equity, slave_eq_ts);
+      double slave_balance = 0.0; ulong slave_bal_ts = 0; bool bal_ok = ReadPeerBalanceFresh(slave_balance, slave_bal_ts);
+      if(!eq_ok && g_has_slave_equity) slave_equity = g_cached_slave_equity;
+      if(!bal_ok && g_has_slave_balance) slave_balance = g_cached_slave_balance;
+
+      double sum_equity = master_equity + slave_equity;
+      double sum_balance = master_balance + slave_balance;
+      double profit_value = sum_equity - sum_balance;
+
+      // Color by PnL
+      color profit_color = (profit_value>0.0? clrDarkGreen : (profit_value<0.0? clrDarkRed : clrBlack));
+      string profit_text = StringFormat("$%.2f", profit_value);
+      ObjectSetText(eq_value, profit_text, 12, "Arial Bold", profit_color);
+   }
+}
+
+// Update Diff Values Display only (for OnTick - high frequency)
+void UpdateDiffDisplay()
+{
+   if(!input_debug_buttons_enabled || input_role!=ROLE_MASTER) return;
+   
+   double dOpen = DiffOpenPoints();
+   double dClose = DiffClosePoints();
+   
+   // Update realtime diffOpen/diffClose values with color coding
+   string dopen_value = OBJ_PREFIX + "DIFF_OPEN_VALUE";
+   string dclose_value = OBJ_PREFIX + "DIFF_CLOSE_VALUE";
+   color dOpenColor = (dOpen>0.0? clrDarkGreen : (dOpen<0.0? clrRed : clrBlack));
+   color dCloseColor = (dClose>0.0? clrDarkGreen : (dClose<0.0? clrRed : clrBlack));
+   if(ObjectFind(0, dopen_value) != -1)
+      ObjectSetText(dopen_value, StringFormat("%.1f", dOpen), 12, "Arial Bold", dOpenColor);
+   if(ObjectFind(0, dclose_value) != -1)
+      ObjectSetText(dclose_value, StringFormat("%.1f", dClose), 12, "Arial Bold", dCloseColor);
+}
+
 void DisplayUpdate()
 {
    string role = (input_role==ROLE_MASTER)?"MASTER":"SLAVE";
@@ -3758,45 +3808,6 @@ void DisplayUpdate()
       DisplaySetLine(line++, StringFormat("Net Profit: $%.2f", net_profit)); */
    }
    
-   // Update Profit and Diff Displays (Master only, when debug buttons enabled)
-   if(input_debug_buttons_enabled && input_role==ROLE_MASTER)
-   {
-      string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
-      if(ObjectFind(0, eq_value) != -1)
-      {
-         // Keep caches fresh opportunistically
-         UpdateCachedSlaveEquity();
-         UpdateCachedSlaveBalance();
-
-         // Realtime sums
-         double master_equity = AccountEquity();
-         double master_balance = AccountBalance();
-         double slave_equity = 0.0; ulong slave_eq_ts = 0; bool eq_ok = ReadPeerEquityFresh(slave_equity, slave_eq_ts);
-         double slave_balance = 0.0; ulong slave_bal_ts = 0; bool bal_ok = ReadPeerBalanceFresh(slave_balance, slave_bal_ts);
-         if(!eq_ok && g_has_slave_equity) slave_equity = g_cached_slave_equity;
-         if(!bal_ok && g_has_slave_balance) slave_balance = g_cached_slave_balance;
-
-         double sum_equity = master_equity + slave_equity;
-         double sum_balance = master_balance + slave_balance;
-         double profit_value = sum_equity - sum_balance;
-
-         // Color by PnL
-         color profit_color = (profit_value>0.0? clrDarkGreen : (profit_value<0.0? clrDarkRed : clrBlack));
-         string profit_text = StringFormat("$%.2f", profit_value);
-         ObjectSetText(eq_value, profit_text, 12, "Arial Bold", profit_color);
-
-         // Update realtime diffOpen/diffClose values with color coding
-         // Use precomputed dOpen/dClose from earlier in DisplayUpdate to avoid shadowing
-         string dopen_value = OBJ_PREFIX + "DIFF_OPEN_VALUE";
-         string dclose_value = OBJ_PREFIX + "DIFF_CLOSE_VALUE";
-         color dOpenColor = (dOpen>0.0? clrDarkGreen : (dOpen<0.0? clrRed : clrBlack));
-         color dCloseColor = (dClose>0.0? clrDarkGreen : (dClose<0.0? clrRed : clrBlack));
-         if(ObjectFind(0, dopen_value) != -1)
-            ObjectSetText(dopen_value, StringFormat("%.1f", dOpen), 12, "Arial Bold", dOpenColor);
-         if(ObjectFind(0, dclose_value) != -1)
-            ObjectSetText(dclose_value, StringFormat("%.1f", dClose), 12, "Arial Bold", dCloseColor);
-      }
-   }
    
    DisplayTrimLines(line);
 
@@ -4283,6 +4294,9 @@ void OnTimer()
       MaybeOpenSwapThursday();
    }
    
+   // Update Sum Profit Display every second (backup path when no ticks)
+   UpdateProfitDisplay();
+   
    DisplayUpdate();
 }
 
@@ -4303,5 +4317,10 @@ void OnTick()
       SlaveProcessOpenCmd();
       SlaveProcessCloseCmd();
    }
+   
+   // Update both Sum Profit and Diff Values Display every tick (primary path)
+   UpdateProfitDisplay();
+   UpdateDiffDisplay();
+   
    DisplayUpdate();
 }

@@ -167,6 +167,9 @@ bool g_auto_capital_detected = false;
 // Cached slave balance (to avoid STALE flickering)
 double g_cached_slave_balance = 0.0;
 bool g_has_slave_balance = false;
+// Cached slave equity (to avoid flicker when peer inactive)
+double g_cached_slave_equity = 0.0;
+bool g_has_slave_equity = false;
 int    g_digits;
 double g_point;
 long   g_magic;
@@ -2871,6 +2874,12 @@ int    BTN_Y2 = 48;
 int    BTN_W = 96;
 int    BTN_H = 18;
 
+// Sum Equity display geometry (beside debug buttons)
+int    EQUITY_X = 650;
+int    EQUITY_Y = 24;
+int    EQUITY_W = 200;
+int    EQUITY_H = 42;
+
 // Close Only button geometry (below display monitor)
 int    CLOSE_ONLY_BTN_X = 6;
 int    CLOSE_ONLY_BTN_Y = 240; // Will be adjusted dynamically based on monitor height
@@ -2947,6 +2956,91 @@ void DisplayInit()
       ObjectSetInteger(0, b2, OBJPROP_YSIZE, BTN_H);
       ObjectSetString(0, b2, OBJPROP_TEXT, "Close Now");
       ObjectSetInteger(0, b2, OBJPROP_FONTSIZE, 8);
+      
+      // Sum Equity Display (below debug buttons)
+      string eq_bg = OBJ_PREFIX + "EQUITY_BG";
+      ObjectCreate(0, eq_bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, eq_bg, OBJPROP_CORNER, 0);
+      ObjectSetInteger(0, eq_bg, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
+      ObjectSetInteger(0, eq_bg, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8);
+      ObjectSetInteger(0, eq_bg, OBJPROP_XSIZE, EQUITY_W);
+      ObjectSetInteger(0, eq_bg, OBJPROP_YSIZE, EQUITY_H);
+      ObjectSetInteger(0, eq_bg, OBJPROP_COLOR, clrLightGray);
+      ObjectSetInteger(0, eq_bg, OBJPROP_BACK, false);
+      
+      string eq_label = OBJ_PREFIX + "EQUITY_LABEL";
+      ObjectCreate(0, eq_label, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, eq_label, OBJPROP_CORNER, 0);
+      ObjectSetInteger(0, eq_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+      ObjectSetInteger(0, eq_label, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8 + 5);
+      ObjectSetString(0, eq_label, OBJPROP_TEXT, "Profit");
+      ObjectSetInteger(0, eq_label, OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, eq_label, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, eq_label, OBJPROP_COLOR, clrBlack);
+      
+      string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
+      ObjectCreate(0, eq_value, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, eq_value, OBJPROP_CORNER, 0);
+      ObjectSetInteger(0, eq_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+      ObjectSetInteger(0, eq_value, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8 + 22);
+      ObjectSetString(0, eq_value, OBJPROP_TEXT, "$0.00");
+      ObjectSetInteger(0, eq_value, OBJPROP_FONTSIZE, 12);
+      ObjectSetString(0, eq_value, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, eq_value, OBJPROP_COLOR, clrDarkGreen);
+      
+      // Realtime diffOpen/diffClose labels and values (below Profit)
+      int diff_base_y = CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8 + EQUITY_H + 8;
+
+      // Background for diff section (white)
+      string diff_bg = OBJ_PREFIX + "DIFF_BG";
+      ObjectCreate(0, diff_bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, diff_bg, OBJPROP_CORNER, 0);
+      ObjectSetInteger(0, diff_bg, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
+      ObjectSetInteger(0, diff_bg, OBJPROP_YDISTANCE, diff_base_y - 6);
+      ObjectSetInteger(0, diff_bg, OBJPROP_XSIZE, EQUITY_W);
+      ObjectSetInteger(0, diff_bg, OBJPROP_YSIZE, 44);
+      ObjectSetInteger(0, diff_bg, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, diff_bg, OBJPROP_BACK, false);
+      
+      string dopen_label = OBJ_PREFIX + "DIFF_OPEN_LABEL";
+      ObjectCreate(0, dopen_label, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, dopen_label, OBJPROP_CORNER, 0);
+      ObjectSetInteger(0, dopen_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+      ObjectSetInteger(0, dopen_label, OBJPROP_YDISTANCE, diff_base_y);
+      ObjectSetString(0, dopen_label, OBJPROP_TEXT, "diffOpen");
+      ObjectSetInteger(0, dopen_label, OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, dopen_label, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, dopen_label, OBJPROP_COLOR, clrBlack);
+
+      string dopen_value = OBJ_PREFIX + "DIFF_OPEN_VALUE";
+      ObjectCreate(0, dopen_value, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, dopen_value, OBJPROP_CORNER, 0);
+      ObjectSetInteger(0, dopen_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 110);
+      ObjectSetInteger(0, dopen_value, OBJPROP_YDISTANCE, diff_base_y);
+      ObjectSetString(0, dopen_value, OBJPROP_TEXT, "0.0");
+      ObjectSetInteger(0, dopen_value, OBJPROP_FONTSIZE, 12);
+      ObjectSetString(0, dopen_value, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, dopen_value, OBJPROP_COLOR, clrBlack);
+
+      string dclose_label = OBJ_PREFIX + "DIFF_CLOSE_LABEL";
+      ObjectCreate(0, dclose_label, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, dclose_label, OBJPROP_CORNER, 0);
+      ObjectSetInteger(0, dclose_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+      ObjectSetInteger(0, dclose_label, OBJPROP_YDISTANCE, diff_base_y + 20);
+      ObjectSetString(0, dclose_label, OBJPROP_TEXT, "diffClose");
+      ObjectSetInteger(0, dclose_label, OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, dclose_label, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, dclose_label, OBJPROP_COLOR, clrBlack);
+
+      string dclose_value = OBJ_PREFIX + "DIFF_CLOSE_VALUE";
+      ObjectCreate(0, dclose_value, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, dclose_value, OBJPROP_CORNER, 0);
+      ObjectSetInteger(0, dclose_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 110);
+      ObjectSetInteger(0, dclose_value, OBJPROP_YDISTANCE, diff_base_y + 20);
+      ObjectSetString(0, dclose_value, OBJPROP_TEXT, "0.0");
+      ObjectSetInteger(0, dclose_value, OBJPROP_FONTSIZE, 12);
+      ObjectSetString(0, dclose_value, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, dclose_value, OBJPROP_COLOR, clrBlack);
    }
 
    // Close Only button (Master only)
@@ -3089,10 +3183,127 @@ void UpdateCachedSlaveBalance()
    }
 }
 
+// Get fresh equity from peer account status file
+bool ReadPeerEquityFresh(double &equity_out, ulong &ts_out)
+{
+   equity_out = 0.0; ts_out = 0;
+   string s; if(!FileReadAll(PathAccountStatusPeer(), s)) return false;
+   string f[]; int n = StringSplit(TrimAll(s), ',', f);
+   if(n<4) return false;
+   // format: version,balance,equity,updated_ms
+   equity_out = StringToDouble(f[2]);
+   ts_out = (ulong)StringToDouble(f[3]);
+   // freshness: require within EffectiveHeartbeatTimeoutMs
+   if((NowMs()-ts_out) > (ulong)EffectiveHeartbeatTimeoutMs()) return false;
+   return true;
+}
+
+// Update cached slave equity if fresh data is available
+void UpdateCachedSlaveEquity()
+{
+   double slave_equity = 0.0;
+   ulong slave_ts = 0;
+   bool slave_ok = ReadPeerEquityFresh(slave_equity, slave_ts);
+   if(slave_ok && slave_equity > 0.0)
+   {
+      g_cached_slave_equity = slave_equity;
+      g_has_slave_equity = true;
+   }
+}
+
+// Get cached slave equity (returns last known value, never shows STALE)
+double GetCachedSlaveEquity()
+{
+   return g_has_slave_equity ? g_cached_slave_equity : 0.0;
+}
+
+// Get sum of master and slave equity (realtime)
+double GetSumEquity()
+{
+   double master_equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double slave_equity = 0.0;
+   ulong slave_ts = 0;
+   
+   // Prefer fresh equity; when fresh, also refresh cache
+   if(ReadPeerEquityFresh(slave_equity, slave_ts))
+   {
+      if(slave_equity > 0.0)
+      {
+         g_cached_slave_equity = slave_equity;
+         g_has_slave_equity = true;
+      }
+      return master_equity + slave_equity;
+   }
+   
+   // Fallback to cached slave equity to avoid flicker when peer inactive
+   if(g_has_slave_equity)
+      return master_equity + g_cached_slave_equity;
+   
+   // If no cache yet, return only master equity
+   return master_equity;
+}
+
 // Get cached slave balance (returns last known value, never shows STALE)
 double GetCachedSlaveBalance()
 {
    return g_has_slave_balance ? g_cached_slave_balance : 0.0;
+}
+
+// Update Sum Profit Display only (for OnTick primary + OnTimer backup)
+void UpdateProfitDisplay()
+{
+   if(!input_debug_buttons_enabled || input_role!=ROLE_MASTER) return;
+   
+   string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
+   if(ObjectFind(0, eq_value) != -1)
+   {
+      // Keep caches fresh opportunistically
+      UpdateCachedSlaveEquity();
+      UpdateCachedSlaveBalance();
+
+      // Realtime sums
+      double master_equity = AccountInfoDouble(ACCOUNT_EQUITY);
+      double master_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+      double slave_equity = 0.0; ulong slave_eq_ts = 0; bool eq_ok = ReadPeerEquityFresh(slave_equity, slave_eq_ts);
+      double slave_balance = 0.0; ulong slave_bal_ts = 0; bool bal_ok = ReadPeerBalanceFresh(slave_balance, slave_bal_ts);
+      if(!eq_ok && g_has_slave_equity) slave_equity = g_cached_slave_equity;
+      if(!bal_ok && g_has_slave_balance) slave_balance = g_cached_slave_balance;
+
+      double sum_equity = master_equity + slave_equity;
+      double sum_balance = master_balance + slave_balance;
+      double profit_value = sum_equity - sum_balance;
+
+      // Color by PnL
+      color profit_color = (profit_value>0.0? clrDarkGreen : (profit_value<0.0? clrDarkRed : clrBlack));
+      string profit_text = StringFormat("$%.2f", profit_value);
+      ObjectSetString(0, eq_value, OBJPROP_TEXT, profit_text);
+      ObjectSetInteger(0, eq_value, OBJPROP_COLOR, profit_color);
+   }
+}
+
+// Update Diff Values Display only (for OnTick - high frequency)
+void UpdateDiffDisplay()
+{
+   if(!input_debug_buttons_enabled || input_role!=ROLE_MASTER) return;
+   
+   double dOpen = DiffOpenPoints();
+   double dClose = DiffClosePoints();
+   
+   // Update realtime diffOpen/diffClose values with color coding
+   string dopen_value = OBJ_PREFIX + "DIFF_OPEN_VALUE";
+   string dclose_value = OBJ_PREFIX + "DIFF_CLOSE_VALUE";
+   color dOpenColor = (dOpen>0.0? clrDarkGreen : (dOpen<0.0? clrRed : clrBlack));
+   color dCloseColor = (dClose>0.0? clrDarkGreen : (dClose<0.0? clrRed : clrBlack));
+   if(ObjectFind(0, dopen_value) != -1)
+   {
+      ObjectSetString(0, dopen_value, OBJPROP_TEXT, StringFormat("%.1f", dOpen));
+      ObjectSetInteger(0, dopen_value, OBJPROP_COLOR, dOpenColor);
+   }
+   if(ObjectFind(0, dclose_value) != -1)
+   {
+      ObjectSetString(0, dclose_value, OBJPROP_TEXT, StringFormat("%.1f", dClose));
+      ObjectSetInteger(0, dclose_value, OBJPROP_COLOR, dCloseColor);
+   }
 }
 
 void DisplayUpdate()
@@ -3348,6 +3559,7 @@ void DisplayUpdate()
          sum_balance, master_balance, slave_balance, slave_status));
       DisplaySetLine(line++, StringFormat("Net Profit: $%.2f", net_profit));
    }
+   
 
    DisplayTrimLines(line);
 
@@ -3422,6 +3634,62 @@ void DisplayUpdate()
             {
                ObjectSetInteger(0, btnClose, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + BTN_W + 10);
                ObjectSetInteger(0, btnClose, OBJPROP_YDISTANCE, close_y);
+            }
+            
+            // Reposition Sum Equity Display (below debug buttons)
+            string eq_bg = OBJ_PREFIX + "EQUITY_BG";
+            string eq_label = OBJ_PREFIX + "EQUITY_LABEL";
+            string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
+            int equity_y = open_y + BTN_H + 8;
+            
+            if(ObjectFind(0, eq_bg) != -1)
+            {
+               ObjectSetInteger(0, eq_bg, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
+               ObjectSetInteger(0, eq_bg, OBJPROP_YDISTANCE, equity_y);
+            }
+            if(ObjectFind(0, eq_label) != -1)
+            {
+               ObjectSetInteger(0, eq_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+               ObjectSetInteger(0, eq_label, OBJPROP_YDISTANCE, equity_y + 5);
+            }
+            if(ObjectFind(0, eq_value) != -1)
+            {
+               ObjectSetInteger(0, eq_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+               ObjectSetInteger(0, eq_value, OBJPROP_YDISTANCE, equity_y + 22);
+            }
+            
+            // Reposition Diff displays (below Sum Equity)
+            string diff_bg = OBJ_PREFIX + "DIFF_BG";
+            string dopen_label = OBJ_PREFIX + "DIFF_OPEN_LABEL";
+            string dopen_value = OBJ_PREFIX + "DIFF_OPEN_VALUE";
+            string dclose_label = OBJ_PREFIX + "DIFF_CLOSE_LABEL";
+            string dclose_value = OBJ_PREFIX + "DIFF_CLOSE_VALUE";
+            int diff_y = equity_y + EQUITY_H + 8;
+            
+            if(ObjectFind(0, diff_bg) != -1)
+            {
+               ObjectSetInteger(0, diff_bg, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
+               ObjectSetInteger(0, diff_bg, OBJPROP_YDISTANCE, diff_y - 6);
+            }
+            if(ObjectFind(0, dopen_label) != -1)
+            {
+               ObjectSetInteger(0, dopen_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+               ObjectSetInteger(0, dopen_label, OBJPROP_YDISTANCE, diff_y);
+            }
+            if(ObjectFind(0, dopen_value) != -1)
+            {
+               ObjectSetInteger(0, dopen_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 110);
+               ObjectSetInteger(0, dopen_value, OBJPROP_YDISTANCE, diff_y);
+            }
+            if(ObjectFind(0, dclose_label) != -1)
+            {
+               ObjectSetInteger(0, dclose_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+               ObjectSetInteger(0, dclose_label, OBJPROP_YDISTANCE, diff_y + 20);
+            }
+            if(ObjectFind(0, dclose_value) != -1)
+            {
+               ObjectSetInteger(0, dclose_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 110);
+               ObjectSetInteger(0, dclose_value, OBJPROP_YDISTANCE, diff_y + 20);
             }
          }
       }
@@ -3947,6 +4215,9 @@ void OnTimer()
       MaybeOpenSwapThursday();
    }
    
+   // Update Sum Profit Display every second (backup path when no ticks)
+   UpdateProfitDisplay();
+   
    DisplayUpdate();
 }
 
@@ -3967,6 +4238,11 @@ void OnTick()
       SlaveProcessOpenCmd(); 
       SlaveProcessCloseCmd(); 
    }
+   
+   // Update both Sum Profit and Diff Values Display every tick (primary path)
+   UpdateProfitDisplay();
+   UpdateDiffDisplay();
+   
    DisplayUpdate();
 }
 
