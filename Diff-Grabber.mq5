@@ -84,9 +84,9 @@ int    input_epsilon_diff_points      = 1;             // Scope: Master — smal
 int    input_avg_signal_cooldown_ms   = 400;           // Scope: Master — signal-level cooldown after order (ms)
 
 // Zone Stability Filter (works with all modes - Master only)
-bool   input_zone_stability_enabled    = true;     // Scope: Master — enable zone stability check for all modes
-int    input_zone_stability_ticks      = 3;        // Scope: Master — consecutive ticks required in positive zone
-int    input_zone_negative_threshold   = 0;        // Scope: Master — threshold for negative zone detection (points)
+input  bool   input_zone_stability_enabled    = true;     // Scope: Master — enable zone stability check for all modes
+input  int    input_zone_stability_ticks      = 7;        // Scope: Master — consecutive ticks required in positive zone
+input  int    input_zone_negative_threshold   = -1;        // Scope: Master — threshold for negative zone detection (points)
 
 // Quality guards
 int    input_max_spread_points_self   = 30;            // Scope: Master — block if own spread exceeds (points)
