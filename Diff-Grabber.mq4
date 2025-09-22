@@ -1748,6 +1748,8 @@ void SlaveLocalReconcile()
    if(g_slave_last_open_ms > 0)
    {
       ulong elapsed = NowMs() - g_slave_last_open_ms;
+      // CRITICAL FIX: Force minimum 10 second grace period for file sync
+      if(elapsed < 10000) return;
       if(elapsed < (ulong)guard_ms && !needImmediate) return;
    }
    

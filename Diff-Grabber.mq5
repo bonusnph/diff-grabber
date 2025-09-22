@@ -1679,14 +1679,16 @@ void SlaveLocalReconcile()
   int guard_ms = (int)MathMax((double)guard_ack_ms, (double)MathMax(guard_close_ms, 15000));
   // Evaluate mismatch early to allow immediate reconcile when self>peer even during guard
   int selfGuard = CountOpenPairs(); int peerGuard = PeerOpenCount(); if(peerGuard<0) return; bool needImmediate = (selfGuard > peerGuard);
-  if(g_slave_last_open_ms > 0)
-  {
-     ulong elapsed = NowMs() - g_slave_last_open_ms;
-     if(elapsed < (ulong)guard_ms && !needImmediate)
-     {
-        return;
-     }
-  }
+   if(g_slave_last_open_ms > 0)
+   {
+      ulong elapsed = NowMs() - g_slave_last_open_ms;
+      // CRITICAL FIX: Force minimum 10 second grace period for file sync
+      if(elapsed < 10000) return;
+      if(elapsed < (ulong)guard_ms && !needImmediate)
+      {
+         return;
+      }
+   }
 
   if((NowMs()-g_last_reconcile_ms) < (ulong)EffectiveHeartbeatTimeoutMs()/2 && !needImmediate) return; // light throttle with override
   g_last_reconcile_ms = NowMs();
