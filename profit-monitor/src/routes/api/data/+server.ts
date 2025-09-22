@@ -10,6 +10,8 @@ export const GET: RequestHandler = async () => {
 		const unitStats = await storage.getUnitStats();
 		const accountWithdrawals = await storage.getAccountWithdrawals();
 		const snapshot = await storage.getSnapshotPL();
+		console.log('API /api/data - Retrieved snapshot from storage:', snapshot);
+		
 		const currentAdjusted = (() => {
 			const totalWaitingWD = Object.values(accountWithdrawals || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
 			return (stats?.profit_loss || 0) + (totalWaitingWD || 0);

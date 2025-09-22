@@ -9,7 +9,7 @@ export const GET: RequestHandler = async () => {
 		unit_warning_equity_percentages: await storage.getUnitWarningEquityPercentages(),
 		total_active_accounts: await storage.getTotalActiveAccounts(),
 		unit_mappings: await storage.getUnitMappings(),
-		broker_min_margins: await storage.getBrokerMinMargins(),
+		unit_broker_min_margins: await storage.getUnitBrokerMinMargins(),
 		unit_withdrawals: await storage.getUnitWithdrawals(),
 		account_withdrawals: await storage.getAccountWithdrawals(),
 		snapshot: await storage.getSnapshotPL()
@@ -18,10 +18,12 @@ export const GET: RequestHandler = async () => {
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
-		const { initial_capital, unit_initial_capitals, total_active_accounts, unit_warning_equity_percentages, unit_mappings, broker_min_margins, unit_withdrawals, account_withdrawals, snapshot, clear_snapshot } = await request.json();
+		const { initial_capital, unit_initial_capitals, total_active_accounts, unit_warning_equity_percentages, unit_mappings, unit_broker_min_margins, unit_withdrawals, account_withdrawals, snapshot, clear_snapshot } = await request.json();
 		// Snapshot operations (optional)
 		if (clear_snapshot === true) {
+			console.log('Clearing snapshot from database...');
 			await storage.clearSnapshotPL();
+			console.log('Snapshot cleared successfully');
 		}
 
 		if (snapshot !== undefined) {
@@ -73,17 +75,31 @@ export const POST: RequestHandler = async ({ request }) => {
 			await storage.setUnitMappings(unit_mappings);
 		}
 
-		if (broker_min_margins !== undefined) {
-			if (typeof broker_min_margins !== 'object' || Array.isArray(broker_min_margins)) {
-				return json({ error: 'Invalid broker min margins' }, { status: 400 });
+
+		if (unit_broker_min_margins !== undefined) {
+			if (typeof unit_broker_min_margins !== 'object' || Array.isArray(unit_broker_min_margins)) {
+				return json({ error: 'Invalid unit broker min margins' }, { status: 400 });
 			}
-			// Validate values are numbers >= 0
-			for (const [k, v] of Object.entries(broker_min_margins)) {
-				if (typeof v !== 'number' || v < 0) {
-					return json({ error: `Invalid margin for broker '${k}'` }, { status: 400 });
+			// Validate structure: Record<unit, Record<broker_name, min_margin>>
+			const normalized: Record<number, Record<string, number>> = {};
+			for (const [unitStr, brokerMargins] of Object.entries(unit_broker_min_margins)) {
+				const unit = parseInt(unitStr);
+				if (isNaN(unit)) continue;
+				
+				if (typeof brokerMargins !== 'object' || Array.isArray(brokerMargins) || brokerMargins === null) {
+					return json({ error: `Invalid broker margins for unit ${unit}` }, { status: 400 });
 				}
+				
+				const brokerMap: Record<string, number> = {};
+				for (const [brokerName, margin] of Object.entries(brokerMargins)) {
+					if (typeof margin !== 'number' || margin < 0) {
+						return json({ error: `Invalid margin for broker '${brokerName}' in unit ${unit}` }, { status: 400 });
+					}
+					brokerMap[brokerName] = margin;
+				}
+				normalized[unit] = brokerMap;
 			}
-			await storage.setBrokerMinMargins(broker_min_margins);
+			await storage.setUnitBrokerMinMargins(normalized);
 		}
 
 		if (unit_withdrawals !== undefined) {
@@ -119,7 +135,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			unit_warning_equity_percentages: await storage.getUnitWarningEquityPercentages(),
 			total_active_accounts: await storage.getTotalActiveAccounts(),
 			unit_mappings: await storage.getUnitMappings(),
-			broker_min_margins: await storage.getBrokerMinMargins(),
+			unit_broker_min_margins: await storage.getUnitBrokerMinMargins(),
 			unit_withdrawals: await storage.getUnitWithdrawals(),
 			account_withdrawals: await storage.getAccountWithdrawals(),
 			snapshot: await storage.getSnapshotPL()

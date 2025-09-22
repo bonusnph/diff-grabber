@@ -305,13 +305,71 @@ class SupabaseStorage {
 	}
 
 	async clearSnapshotPL(): Promise<void> {
-		const { error } = await supabase
+		console.log('Attempting to clear pl_snapshot from settings table...');
+		
+		// First, check if the record exists
+		const { data: existingData, error: selectError } = await supabase
 			.from('settings')
-			.delete()
+			.select('setting_key, setting_value')
 			.eq('setting_key', 'pl_snapshot');
-		if (error && error.code !== 'PGRST116') {
-			console.error('Error clearing pl snapshot:', error);
-			throw error;
+		
+		console.log('Records found before clear:', existingData?.length || 0, existingData);
+		
+		if (selectError) {
+			console.error('Error checking existing snapshot:', selectError);
+		}
+		
+		// Use UPDATE with null instead of DELETE (to work around potential RLS issues)
+		console.log('Using UPDATE method to set value to null...');
+		const { data: updateData, error: updateError } = await supabase
+			.from('settings')
+			.update({ 
+				setting_value: null,
+				updated_at: new Date().toISOString()
+			})
+			.eq('setting_key', 'pl_snapshot')
+			.select();
+		
+		if (updateError) {
+			console.error('Error updating pl snapshot to null:', updateError);
+			
+			// If update fails, try delete as fallback
+			console.log('Update failed, trying DELETE as fallback...');
+			const { data: deleteData, error: deleteError } = await supabase
+				.from('settings')
+				.delete()
+				.eq('setting_key', 'pl_snapshot')
+				.select();
+			
+			console.log('Delete fallback result:', { deleteData, deleteError });
+			
+			if (deleteError && deleteError.code !== 'PGRST116') {
+				throw deleteError;
+			}
+		} else {
+			console.log('Update operation completed. Updated rows:', updateData?.length || 0);
+			console.log('Updated data:', updateData);
+		}
+		
+		// Verify clearing by trying to get the snapshot
+		const verifyResult = await this.getSnapshotPL();
+		if (verifyResult === null) {
+			console.log('Snapshot successfully cleared - verification passed');
+		} else {
+			console.error('Snapshot still exists after clear operation:', verifyResult);
+			
+			// Last resort: try to overwrite with invalid data
+			console.log('Trying last resort: overwrite with invalid data...');
+			const { data: overwriteData, error: overwriteError } = await supabase
+				.from('settings')
+				.update({ 
+					setting_value: '{}',
+					updated_at: new Date().toISOString()
+				})
+				.eq('setting_key', 'pl_snapshot')
+				.select();
+			
+			console.log('Overwrite result:', overwriteData, overwriteError);
 		}
 	}
 
@@ -321,17 +379,29 @@ class SupabaseStorage {
 			.select('setting_value')
 			.eq('setting_key', 'pl_snapshot')
 			.single();
+		
+		console.log('getSnapshotPL - Raw data from database:', { data, error });
+		
 		if (error && error.code !== 'PGRST116') {
 			console.error('Error getting pl snapshot:', error);
 			throw error;
 		}
-		if (!data) return null;
+		if (!data || !data.setting_value || data.setting_value === 'null' || data.setting_value === '{}') {
+			console.log('getSnapshotPL - Returning null (no data or null/empty value)');
+			return null;
+		}
 		try {
 			const obj = JSON.parse(data.setting_value);
+			console.log('getSnapshotPL - Parsed object:', obj);
 			if (typeof obj?.value === 'number' && (obj?.kind === 'adjusted' || obj?.kind === 'real')) {
-				return { value: obj.value, kind: obj.kind, timestamp: obj.timestamp ?? new Date().toISOString() };
+				const result = { value: obj.value, kind: obj.kind, timestamp: obj.timestamp ?? new Date().toISOString() };
+				console.log('getSnapshotPL - Returning valid snapshot:', result);
+				return result;
 			}
-		} catch {}
+		} catch (parseError) {
+			console.error('getSnapshotPL - JSON parse error:', parseError);
+		}
+		console.log('getSnapshotPL - Returning null (invalid data)');
 		return null;
 	}
 
@@ -515,30 +585,31 @@ class SupabaseStorage {
 		return {};
 	}
 
-	async setBrokerMinMargins(mappings: Record<string, number>): Promise<void> {
+	// Unit-specific broker min margins: Record<unit, Record<broker_name, min_margin>>
+	async setUnitBrokerMinMargins(mappings: Record<number, Record<string, number>>): Promise<void> {
 		const { error } = await supabase
 			.from('settings')
 			.upsert({
-				setting_key: 'broker_min_margins',
+				setting_key: 'unit_broker_min_margins',
 				setting_value: JSON.stringify(mappings),
 				updated_at: new Date().toISOString()
 			});
 
 		if (error) {
-			console.error('Error setting broker min margins:', error);
+			console.error('Error setting unit broker min margins:', error);
 			throw error;
 		}
 	}
 
-	async getBrokerMinMargins(): Promise<Record<string, number>> {
+	async getUnitBrokerMinMargins(): Promise<Record<number, Record<string, number>>> {
 		const { data, error } = await supabase
 			.from('settings')
 			.select('setting_value')
-			.eq('setting_key', 'broker_min_margins')
+			.eq('setting_key', 'unit_broker_min_margins')
 			.single();
 
 		if (error && error.code !== 'PGRST116') {
-			console.error('Error getting broker min margins:', error);
+			console.error('Error getting unit broker min margins:', error);
 			throw error;
 		}
 
@@ -546,12 +617,13 @@ class SupabaseStorage {
 			try {
 				return JSON.parse(data.setting_value);
 			} catch (parseError) {
-				console.error('Error parsing broker min margins:', parseError);
+				console.error('Error parsing unit broker min margins:', parseError);
 			}
 		}
 
 		return {};
 	}
+
 
 	// Deprecated: now per unit
 	async setWarningEquityPercentage(_percentage: number): Promise<void> {}

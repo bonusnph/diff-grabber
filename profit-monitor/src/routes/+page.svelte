@@ -11,10 +11,10 @@
 	let summaries: AccountSummary[] = [];
     let initialCapital = 64000;
     let unitInitialCapitals: Record<number, number> = {};
-	let totalActiveAccounts = 8;
+	// totalActiveAccounts now calculated from number of units * 2
     let unitWarningEquityPercentages: Record<number, number> = {};
     let unitMappings: Record<number, string> = {};
-	let brokerMinMargins: Record<string, number> = {};
+	let unitBrokerMinMargins: Record<number, Record<string, number>> = {};
 	let unitGroups: Record<string, AccountSummary[]> = {};
 	let unitStats: Array<{
 		unit: number;
@@ -242,8 +242,10 @@
 	// Unit mappings editing
 	let newUnitNumber = '';
 	let newUnitName = '';
-	let newBrokerName = '';
-	let newBrokerMargin: string = '';
+	// Unit-specific broker margin form
+	let newUnitBrokerUnit = '';
+	let newUnitBrokerName = '';
+	let newUnitBrokerMargin = '';
 
 	// Dynamic Unit Settings editing (Initial Capital & Warn %)
 	let newUnitSettingNumber: string = '';
@@ -275,7 +277,8 @@
 		...Object.keys(unitWarningEquityPercentages || {})
 	])).map((k) => parseInt(k as any)).filter((n) => !isNaN(n)).sort((a, b) => a - b);
 
-	// Data completeness check
+	// Data completeness check - calculate totalActiveAccounts from number of units * 2
+	$: totalActiveAccounts = Object.keys(unitGroups || {}).length * 2;
 	$: currentActiveAccounts = summaries.length;
 	$: isDataComplete = currentActiveAccounts >= totalActiveAccounts;
 	$: dataCompletenessPercentage =
@@ -402,15 +405,30 @@
 		if (snapshotLoading) return;
 		snapshotLoading = true;
 		try {
+			console.log('Sending clear snapshot request...');
 			const res = await fetch('/api/settings', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ clear_snapshot: true })
 			});
+			
 			if (res.ok) {
+				const result = await res.json();
+				console.log('Clear snapshot response:', result);
+				
 				snapshot = null;
 				snapshotDelta = null;
+				
+				// Refresh data to ensure snapshot is cleared from server
+				console.log('Refreshing data after clear snapshot...');
+				await fetchData();
+				console.log('Data refreshed. Current snapshot:', snapshot);
+			} else {
+				const errorData = await res.json();
+				console.error('Failed to clear snapshot:', errorData);
 			}
+		} catch (error) {
+			console.error('Error clearing snapshot:', error);
 		} finally {
 			snapshotLoading = false;
 		}
@@ -423,10 +441,10 @@
 			const data = await response.json();
             initialCapital = data.initial_capital;
             unitInitialCapitals = data.unit_initial_capitals || {};
-			totalActiveAccounts = data.total_active_accounts;
+			// totalActiveAccounts now calculated automatically from units
             unitWarningEquityPercentages = data.unit_warning_equity_percentages || {};
 			unitMappings = data.unit_mappings || {};
-			brokerMinMargins = data.broker_min_margins || {};
+			unitBrokerMinMargins = data.unit_broker_min_margins || {};
 			unitWithdrawals = data.unit_withdrawals || {};
 		} catch (error) {
 			console.error('Error loading settings:', error);
@@ -511,26 +529,7 @@
 
     // Removed Capital Per Unit - handled per unit now
 
-	async function updateTotalActiveAccounts() {
-		try {
-			const response = await fetch('/api/settings', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({ total_active_accounts: totalActiveAccounts })
-			});
-
-			if (response.ok) {
-				const data = await response.json();
-				totalActiveAccounts = data.total_active_accounts; // Update with confirmed value from server
-			}
-		} catch (error) {
-			console.error('Error updating total active accounts:', error);
-			// Reload the original value if update fails
-			await loadInitialCapital();
-		}
-	}
+	// updateTotalActiveAccounts function removed - now calculated automatically from units
 
 	async function updateUnitMappings() {
 		try {
@@ -553,21 +552,22 @@
 		}
 	}
 
-	async function updateBrokerMinMargins() {
+
+	async function updateUnitBrokerMinMargins() {
 		try {
 			const response = await fetch('/api/settings', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json'
 				},
-				body: JSON.stringify({ broker_min_margins: brokerMinMargins })
+				body: JSON.stringify({ unit_broker_min_margins: unitBrokerMinMargins })
 			});
 			if (response.ok) {
 				const data = await response.json();
-				brokerMinMargins = data.broker_min_margins || brokerMinMargins;
+				unitBrokerMinMargins = data.unit_broker_min_margins || unitBrokerMinMargins;
 			}
 		} catch (error) {
-			console.error('Error updating broker min margins:', error);
+			console.error('Error updating unit broker min margins:', error);
 		}
 	}
 
@@ -672,37 +672,69 @@
 		updateUnitMappings();
 	}
 
-	function addBrokerMinMargin() {
-		const name = newBrokerName.trim();
-		const margin = parseFloat(newBrokerMargin);
-		if (name && !isNaN(margin) && margin >= 0) {
-			brokerMinMargins[name] = margin;
-			updateBrokerMinMargins();
-			newBrokerName = '';
-			newBrokerMargin = '';
+
+	function addUnitBrokerMinMargin() {
+		const unit = parseInt(newUnitBrokerUnit);
+		const name = newUnitBrokerName.trim();
+		const margin = parseFloat(newUnitBrokerMargin);
+		
+		if (!isNaN(unit) && name && !isNaN(margin) && margin >= 0) {
+			if (!unitBrokerMinMargins[unit]) {
+				unitBrokerMinMargins[unit] = {};
+			}
+			unitBrokerMinMargins[unit][name] = margin;
+			updateUnitBrokerMinMargins();
+			newUnitBrokerUnit = '';
+			newUnitBrokerName = '';
+			newUnitBrokerMargin = '';
 		}
 	}
 
-	function removeBrokerMinMargin(name: string) {
-		delete brokerMinMargins[name];
-		updateBrokerMinMargins();
+	function removeUnitBrokerMinMargin(unit: number, brokerName: string) {
+		if (unitBrokerMinMargins[unit]) {
+			delete unitBrokerMinMargins[unit][brokerName];
+			if (Object.keys(unitBrokerMinMargins[unit]).length === 0) {
+				delete unitBrokerMinMargins[unit];
+			}
+			updateUnitBrokerMinMargins();
+		}
+	}
+
+	function updateUnitBrokerMargin(unit: number, oldBrokerName: string, newBrokerName: string, margin: number) {
+		if (!unitBrokerMinMargins[unit]) {
+			unitBrokerMinMargins[unit] = {};
+		}
+		
+		// Remove old entry if broker name changed
+		if (oldBrokerName !== newBrokerName && unitBrokerMinMargins[unit][oldBrokerName] !== undefined) {
+			delete unitBrokerMinMargins[unit][oldBrokerName];
+		}
+		
+		// Set new entry
+		unitBrokerMinMargins[unit][newBrokerName] = margin;
+		updateUnitBrokerMinMargins();
 	}
 
 	function getUnitDisplayName(unit: number): string {
 		return unitMappings[unit] || `Unit ${unit}`;
 	}
 
-	function getBrokerMinFor(name: string): number | undefined {
-		if (!name) return undefined;
+	function getBrokerMinFor(name: string, unit?: number): number | undefined {
+		if (!name || unit === undefined) return undefined;
 		const lower = name.toLowerCase();
-		for (const [k, v] of Object.entries(brokerMinMargins || {})) {
-			if (k.toLowerCase() === lower) return v as number;
+		
+		// Check unit-specific margins only
+		if (unitBrokerMinMargins[unit]) {
+			for (const [k, v] of Object.entries(unitBrokerMinMargins[unit])) {
+				if (k.toLowerCase() === lower) return v;
+			}
 		}
+		
 		return undefined;
 	}
 
 	function isInsufficientBalance(account: AccountSummary): boolean {
-		const min = getBrokerMinFor(account.broker_name);
+		const min = getBrokerMinFor(account.broker_name, account.unit);
 		if (min === undefined) return false;
 		return account.latest_equity <= min;
 	}
@@ -891,7 +923,6 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				body: JSON.stringify({
                     unit_initial_capitals: unitInitialCapitals,
                     unit_warning_equity_percentages: unitWarningEquityPercentages,
-					total_active_accounts: totalActiveAccounts,
 					unit_mappings: unitMappings
 				})
 			});
@@ -900,7 +931,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                 initialCapital = data.initial_capital;
                 unitInitialCapitals = data.unit_initial_capitals || unitInitialCapitals;
                 unitWarningEquityPercentages = data.unit_warning_equity_percentages || unitWarningEquityPercentages;
-				totalActiveAccounts = data.total_active_accounts;
+				// totalActiveAccounts now calculated automatically from units
 				unitMappings = data.unit_mappings || unitMappings;
 				// await loadInitialCapital();
 				// await fetchData();
@@ -1478,9 +1509,6 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 									<span class="text-xs text-gray-500 bg-gray-600 px-1 py-0.5 rounded">
 										#{unit}
 									</span>
-								<span class="text-xs text-gray-500 bg-gray-600 px-1 py-0.5 rounded">
-									Cap: {formatNumber(unitInitialCapitals[unit] ?? 0)}
-								</span>
 									{#if computeUnitDelta(accounts) !== null}
 										{@const delta = computeUnitDelta(accounts) as number}
 										<span
@@ -1488,7 +1516,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											class:bg-green-600={delta >= 0}
 											class:bg-red-600={delta < 0}
 										>
-											Open {delta > 0 ? '+' : ''}{delta.toFixed(0)}
+											Open {delta > 0 ? '+' : ''}{delta.toFixed(0)} points
 										</span>
 									{/if}
                                     {#if true}
@@ -1526,6 +1554,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 									<div
 										class="flex flex-col md:flex-row items-start md:items-center space-y-0.5 md:space-y-0 md:space-x-2 text-xs"
 									>
+										<span class="text-xs text-gray-500 bg-gray-600 px-1 py-0.5 rounded">
+											Cap: {formatNumber(unitInitialCapitals[unit] ?? 0)}
+										</span>
 										<span class="text-gray-400">
 											Total: {formatNumber(unitStat.totalBalance)}
 										</span>
@@ -1671,7 +1702,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 		tabindex="-1"
 	>
 		<div
-			class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl w-full max-w-md mx-4 my-8 flex flex-col max-h-[85vh]"
+			class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl w-full max-w-7xl mx-4 my-8 flex flex-col max-h-[85vh]"
 			role="document"
 			on:click|stopPropagation
 			on:keydown|stopPropagation
@@ -1771,22 +1802,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                     </fieldset>
                 </div>
 
-				<!-- Total Active Accounts Setting -->
-				<div>
-					<label for="totalActiveAccounts" class="block text-sm font-medium text-gray-300 mb-2"
-						>Total Active Accounts</label
-					>
-					<input
-						id="totalActiveAccounts"
-						type="number"
-						bind:value={totalActiveAccounts}
-						min="1"
-						class="w-full border border-gray-600 bg-gray-700 text-white rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-					/>
-					<p class="text-xs text-gray-500 mt-1">
-						Expected number of active EA accounts for complete data
-					</p>
-				</div>
+				<!-- Total Active Accounts now calculated automatically from units (units * 2) -->
 
 				<!-- Unit Mappings Setting -->
 				<div>
@@ -1861,79 +1877,111 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					</fieldset>
 				</div>
 
-				<!-- Broker Min Margin Settings -->
+				<!-- Unit-Specific Broker Min Margin Settings -->
 				<div>
 					<fieldset>
 						<legend class="block text-sm font-medium text-gray-300 mb-2">
-							Broker Min Margin
+							Unit-Specific Broker Min Margin
 						</legend>
-						<div class="space-y-2 mb-3">
-							{#each Object.entries(brokerMinMargins) as [broker, margin]}
-								<div
-									class="flex items-center justify-between bg-gray-700 border border-gray-600 rounded-md px-3 py-2"
-								>
-									<div class="flex items-center space-x-2">
-										<span class="text-sm font-medium text-gray-300">{broker}</span>
-										<span class="text-sm text-gray-400">=</span>
-										<input
-											type="number"
-											min="0"
-											step="100"
-											value={margin}
-											on:change={(e) => {
-												const parsed = parseFloat((e.target as HTMLInputElement).value);
-												const value = isNaN(parsed) || parsed < 0 ? 0 : parsed;
-												brokerMinMargins = { ...brokerMinMargins, [broker]: value };
-												updateBrokerMinMargins();
-											}}
-											class="w-32 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-										/>
+						<div class="space-y-3 mb-3">
+							{#each Object.entries(unitBrokerMinMargins) as [unitStr, brokerMargins]}
+								{@const unit = parseInt(unitStr)}
+								<div class="bg-gray-700 border border-gray-600 rounded-md">
+									<div class="px-3 py-2 border-b border-gray-600 flex items-center justify-between">
+										<span class="text-sm text-gray-300">Unit {unit} ({getUnitDisplayName(unit)})</span>
+										<span class="text-xs text-gray-400">{Object.keys(brokerMargins).length} brokers</span>
 									</div>
-									<button
-										on:click={() => removeBrokerMinMargin(broker)}
-										class="text-red-400 hover:text-red-300 transition-colors"
-										aria-label={`Remove min margin for broker ${broker}`}
-									>
-										<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-											<path
-												stroke-linecap="round"
-												stroke-linejoin="round"
-												stroke-width="2"
-												d="M6 18L18 6M6 6l12 12"
-											/>
-										</svg>
-									</button>
+									<div class="divide-y divide-gray-600">
+										{#each Object.entries(brokerMargins) as [brokerName, margin]}
+											<div class="flex items-center justify-between px-3 py-2">
+												<div class="flex items-center space-x-2 flex-1">
+													<input
+														type="text"
+														value={brokerName}
+														on:change={(e) => {
+															const newName = (e.target as HTMLInputElement).value.trim();
+															if (newName && newName !== brokerName) {
+																updateUnitBrokerMargin(unit, brokerName, newName, margin);
+															}
+														}}
+														class="bg-gray-600 border border-gray-500 text-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 min-w-0 flex-1"
+													/>
+													<span class="text-gray-400">=</span>
+													<input
+														type="number"
+														min="0"
+														step="100"
+														value={margin}
+														on:change={(e) => {
+															const parsed = parseFloat((e.target as HTMLInputElement).value);
+															const value = isNaN(parsed) || parsed < 0 ? 0 : parsed;
+															updateUnitBrokerMargin(unit, brokerName, brokerName, value);
+														}}
+														class="w-24 border border-gray-600 bg-gray-700 text-white rounded px-2 py-1 text-right text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+													/>
+													<span class="text-xs text-gray-300">USD</span>
+												</div>
+												<button
+													on:click={() => removeUnitBrokerMinMargin(unit, brokerName)}
+													class="text-red-400 hover:text-red-300 transition-colors ml-2"
+													aria-label={`Remove broker ${brokerName} from unit ${unit}`}
+												>
+													<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+														<path
+															stroke-linecap="round"
+															stroke-linejoin="round"
+															stroke-width="2"
+															d="M6 18L18 6M6 6l12 12"
+														/>
+													</svg>
+												</button>
+											</div>
+										{/each}
+									</div>
 								</div>
 							{/each}
+							{#if Object.keys(unitBrokerMinMargins).length === 0}
+								<div class="text-xs text-gray-500">No unit-specific broker margins configured.</div>
+							{/if}
 						</div>
 						<div class="flex items-center space-x-2">
 							<input
+								type="number"
+								bind:value={newUnitBrokerUnit}
+								placeholder="Unit #"
+								min="1"
+								class="w-20 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-center focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+							/>
+							<span class="text-gray-400">→</span>
+							<input
 								type="text"
-								bind:value={newBrokerName}
+								bind:value={newUnitBrokerName}
 								placeholder="Broker name"
 								class="flex-1 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
 							/>
 							<span class="text-gray-400">=</span>
 							<input
 								type="number"
-								bind:value={newBrokerMargin}
+								bind:value={newUnitBrokerMargin}
 								placeholder="Min margin"
 								min="0"
+								step="100"
 								class="w-32 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
 							/>
 							<button
-								on:click={addBrokerMinMargin}
+								on:click={addUnitBrokerMinMargin}
+								disabled={!newUnitBrokerUnit || !newUnitBrokerName.trim() || !newUnitBrokerMargin}
 								class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md text-sm transition-colors"
-								disabled={!newBrokerName.trim() || !newBrokerMargin}
 							>
 								Add
 							</button>
 						</div>
 						<p class="text-xs text-gray-500 mt-1">
-							Map broker (case-insensitive) to minimum margin. Used to flag low equity rows.
+							Set minimum margin per broker per unit. Broker names are case-insensitive. You can edit broker names directly by clicking on them.
 						</p>
 					</fieldset>
 				</div>
+
 
 				<!-- WD Notes Setting (per account) -->
 				<div>
