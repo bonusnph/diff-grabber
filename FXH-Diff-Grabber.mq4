@@ -2697,8 +2697,8 @@ void MaybeClosePair()
          g_close_ok_count = 0;
          g_raw_close_pending = false;
          g_raw_close_stable_count = 0;
-         LogEvent("ZONE_CLOSE_UNSTABLE", StringFormat("diff=%.1f;positive_count=%d;negative_count=%d;threshold=%.1f;neg_threshold=%d", 
-                  diffClose, g_close_positive_count, g_close_negative_count, (double)GetCloseThresholdPoints(), input_zone_negative_threshold));
+         // LogEvent("ZONE_CLOSE_UNSTABLE", StringFormat("diff=%.1f;positive_count=%d;negative_count=%d;threshold=%.1f;neg_threshold=%d", 
+         //         diffClose, g_close_positive_count, g_close_negative_count, (double)GetCloseThresholdPoints(), input_zone_negative_threshold));
          return;
       }
    }
@@ -2743,6 +2743,8 @@ void MaybeClosePair()
          if(ok) g_close_ok_count++; else g_close_ok_count = 0;
          if(g_close_ok_count >= input_confirm_ticks)
          {
+            LogEvent("AVG_CLOSE_CONFIRMED", StringFormat("avgClose=%.1f;realClose=%.1f;thrEff=%.1f;count=%d/%d", 
+                     avgClose, diffClose, thrEff, g_close_ok_count, input_confirm_ticks));
             triggerClose = true; g_close_pending = false; g_last_avg_close_signal_ms = NowMs();
             // Reset zone stability counters after trigger
             if(input_zone_stability_enabled) ResetZoneStability(false);
