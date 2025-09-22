@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.05"
+#property version   "1.06"
 #property strict
 
 // =============================
@@ -68,7 +68,7 @@ int    input_raw_stability_timeout_ms = 500;          // Scope: Master — max w
 int    input_raw_hysteresis_offset   = 10;           // Scope: Master — hysteresis offset below threshold for reset (points)
 
 // Averaged diff gating (Master-only)
-input bool   input_avg_filter_enabled       = false;         // Scope: Master — enable EMA-based averaged diff gating
+input bool   input_avg_filter_enabled       = true;         // Scope: Master — enable EMA-based averaged diff gating
 int    input_avg_period               = 9;             // Scope: Master — EMA period (ticks)
 bool   input_use_prefilter_median     = true;          // Scope: Master — apply median pre-filter before EMA
 int    input_prefilter_window         = 3;             // Scope: Master — median window (odd 3/5)
@@ -1627,7 +1627,14 @@ void MasterReconcilePositions()
       }
    }
   bool manualDrop = (selfNow < g_prev_self_pairs) || (peerNow < g_prev_peer_pairs);
-  if(manualDrop) LogEvent("RECONCILE_MANUAL_DROP", StringFormat("selfNow=%d;peerNow=%d;prevSelf=%d;prevPeer=%d", selfNow, peerNow, g_prev_self_pairs, g_prev_peer_pairs));
+  if(manualDrop) 
+  {
+     LogEvent("RECONCILE_MANUAL_DROP", StringFormat("selfNow=%d;peerNow=%d;prevSelf=%d;prevPeer=%d", selfNow, peerNow, g_prev_self_pairs, g_prev_peer_pairs));
+     // ENHANCED: Add detailed debugging for false positives
+     string peerContent; bool peerReadOk = FileReadAll(PathPositionsPeer(), peerContent);
+     LogEvent("RECONCILE_DEBUG", StringFormat("OrdersTotal=%d;peer_file_ok=%s;peer_content_len=%d;peer_alive=%s", 
+              OrdersTotal(), peerReadOk?"true":"false", StringLen(TrimAll(peerContent)), g_peer_alive?"true":"false"));
+  }
   
   // Handle manual drops immediately - if peer closed manually, master should close too
   if(manualDrop && peerNow < g_prev_peer_pairs && selfNow > 0)
@@ -1749,7 +1756,10 @@ void SlaveLocalReconcile()
    {
       ulong elapsed = NowMs() - g_slave_last_open_ms;
       // CRITICAL FIX: Force minimum 10 second grace period for file sync
-      if(elapsed < 10000) return;
+      if(elapsed < 10000) {
+         Print("GRACE PERIOD FOR FILE SYNC, WAITING FOR " + (10000 - elapsed) + " ms.");
+         return;
+      }
       if(elapsed < (ulong)guard_ms && !needImmediate) return;
    }
    
@@ -3058,15 +3068,35 @@ void WritePositions()
       current_count++;
    }
    
-   // Detect manual close when order count decreases without command
+   // ENHANCED: Add stability check before detecting manual close to prevent false positives
+   static ulong g_last_position_change_ms = 0;
    if(g_prev_order_count >= 0 && current_count < g_prev_order_count)
    {
-      int closed_count = g_prev_order_count - current_count;
-      // Additional debug: check if this is really a manual close or system issue
-      LogEvent("MANUAL_CLOSE_DEBUG", StringFormat("role=%s;prev=%d;current=%d;total_orders=%d;symbol=%s;magic=%d", 
-               RoleName(), g_prev_order_count, current_count, OrdersTotal(), g_symbol, g_magic));
-      LogEvent("MANUAL_CLOSE_DETECTED", StringFormat("role=%s;closed_orders=%d;prev_count=%d;current_count=%d", 
-               RoleName(), closed_count, g_prev_order_count, current_count));
+      ulong now_ms = NowMs();
+      
+      // First time detecting drop - start stability timer
+      if(g_last_position_change_ms == 0)
+      {
+         g_last_position_change_ms = now_ms;
+         g_prev_order_count = current_count; // Update but don't log yet
+         FileWriteAllAtomic(PathPositionsSelf(), buf);
+         return;
+      }
+      
+      // Only log manual close if drop persists for 3+ seconds
+      if((now_ms - g_last_position_change_ms) >= 3000)
+      {
+         int closed_count = g_prev_order_count - current_count;
+         LogEvent("MANUAL_CLOSE_DEBUG", StringFormat("role=%s;prev=%d;current=%d;total_orders=%d;symbol=%s;magic=%d", 
+                  RoleName(), g_prev_order_count, current_count, OrdersTotal(), g_symbol, g_magic));
+         LogEvent("MANUAL_CLOSE_DETECTED", StringFormat("role=%s;closed_orders=%d;prev_count=%d;current_count=%d", 
+                  RoleName(), closed_count, g_prev_order_count, current_count));
+         g_last_position_change_ms = 0; // Reset for next detection
+      }
+   }
+   else
+   {
+      g_last_position_change_ms = 0; // Reset when count stable or increasing
    }
    g_prev_order_count = current_count;
    
