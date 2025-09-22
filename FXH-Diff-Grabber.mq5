@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.06"
+#property version   "1.07"
 
 // =============================
 // EA Heading Master–Slave (MT5)
@@ -2238,7 +2238,10 @@ double SmoothedCloseDiff(const double realDiff)
 // Check zone stability for a given diff value and threshold
 bool CheckZoneStability(double current_diff, double threshold, bool &zone_stable_out, int &positive_count, int &negative_count)
 {
-   if(current_diff >= threshold)
+   // Dynamic positive threshold: 50% of actual threshold for balanced filtering
+   double positive_threshold = threshold * 0.5;
+   
+   if(current_diff >= positive_threshold)
    {
       positive_count++;
       negative_count = 0;
@@ -2248,7 +2251,7 @@ bool CheckZoneStability(double current_diff, double threshold, bool &zone_stable
       negative_count++;
       positive_count = 0;
    }
-   // Neutral zone (between negative_threshold and threshold): don't reset counters
+   // Neutral zone (between negative_threshold and positive_threshold): don't reset counters
    
    // Zone is stable when we have enough positive ticks and no recent negative ticks
    zone_stable_out = (positive_count >= input_zone_stability_ticks && negative_count == 0);
@@ -2329,7 +2332,7 @@ void MaybeOpenPair()
    // === ZONE STABILITY CHECK (applies to all modes) ===
    if(input_zone_stability_enabled)
    {
-      if(!CheckZoneStability(diffOpen, GetOpenThresholdPoints(), g_open_zone_stable, g_open_positive_count, g_open_negative_count))
+      if(!g_open_zone_stable)
       {
          // Zone not stable - reset all pending states
          g_open_pending = false;
@@ -2570,7 +2573,7 @@ void MaybeClosePair()
    // === ZONE STABILITY CHECK (applies to all modes) ===
    if(input_zone_stability_enabled)
    {
-      if(!CheckZoneStability(diffClose, GetCloseThresholdPoints(), g_close_zone_stable, g_close_positive_count, g_close_negative_count))
+      if(!g_close_zone_stable)
       {
          // Zone not stable - reset all pending states
          g_close_pending = false;
@@ -3483,7 +3486,9 @@ void DisplayUpdate()
       // Add Zone Stability status to mode string
       if(input_zone_stability_enabled)
       {
-         modeStr += StringFormat(" + ZONE(T=%d N=%d)", input_zone_stability_ticks, input_zone_negative_threshold);
+         double pos_th_open = GetOpenThresholdPoints() * 0.5;
+         double pos_th_close = GetCloseThresholdPoints() * 0.5;
+         modeStr += StringFormat(" + ZONE(T=%d P=%.1f/%.1f N=%d)", input_zone_stability_ticks, pos_th_open, pos_th_close, input_zone_negative_threshold);
       }
 
       DisplaySetLine(line++, modeStr);
@@ -4329,6 +4334,19 @@ void OnTick()
    WriteQuotes();
    ReadPeerQuotes();
    UpdatePeerStatus();
+   
+   // === ZONE STABILITY CHECK - ทำทุก tick สำหรับ Master ===
+   if(input_role==ROLE_MASTER && input_zone_stability_enabled)
+   {
+      if(ReadPeerQuotes() && QuotesFresh())
+      {
+         double diffOpen = DiffOpenPoints();
+         double diffClose = DiffClosePoints();
+         CheckZoneStability(diffOpen, GetOpenThresholdPoints(), g_open_zone_stable, g_open_positive_count, g_open_negative_count);
+         CheckZoneStability(diffClose, GetCloseThresholdPoints(), g_close_zone_stable, g_close_positive_count, g_close_negative_count);
+      }
+   }
+   
    if(input_role==ROLE_MASTER) 
    { 
       MaybeOpenPair(); 
