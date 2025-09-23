@@ -24,6 +24,7 @@
 	}> = [];
 	let unitWithdrawals: Record<number, number> = {};
 	let accountWithdrawals: Record<string, number> = {};
+	let accountDeposits: Record<string, number> = {};
 	let loading = true;
 	let pollingInterval = 5; // seconds
 	let intervalId: ReturnType<typeof setInterval> | null = null;
@@ -312,7 +313,12 @@
 		(sum, v) => sum + (typeof v === 'number' ? v : 0),
 		0
 	);
-	$: adjustedProfitLoss = (stats?.profit_loss || 0) + (totalWaitingWD || 0);
+
+	$: totalDeposits = Object.values(accountDeposits || {}).reduce(
+		(sum, v) => sum + (typeof v === 'number' ? v : 0),
+		0
+	);
+	$: adjustedProfitLoss = (stats?.profit_loss || 0) + (totalWaitingWD || 0) - (totalDeposits || 0);
 	$: adjustedProfitLossPercent =
 		initialCapital > 0 ? (adjustedProfitLoss / initialCapital) * 100 : 0;
 
@@ -366,6 +372,7 @@
 			unitGroups = data.unitGroups || {};
 			unitStats = data.unitStats || [];
 			accountWithdrawals = data.accountWithdrawals || {};
+			accountDeposits = data.accountDeposits || {};
 			latestUpdate = (summaries || []).reduce((latest, a) => {
 				const t = new Date(a.last_update).getTime();
 				return t > latest ? t : latest;
@@ -446,6 +453,7 @@
 			unitMappings = data.unit_mappings || {};
 			unitBrokerMinMargins = data.unit_broker_min_margins || {};
 			unitWithdrawals = data.unit_withdrawals || {};
+			accountDeposits = data.account_deposits || {};
 		} catch (error) {
 			console.error('Error loading settings:', error);
 			// Keep default values if loading fails
@@ -621,6 +629,26 @@
 		}
 	}
 
+	async function updateAccountDeposits() {
+		try {
+			const response = await fetch('/api/settings', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({ account_deposits: accountDeposits })
+			});
+
+			if (response.ok) {
+				const data = await response.json();
+				accountDeposits = data.account_deposits || accountDeposits;
+				await fetchData();
+			}
+		} catch (error) {
+			console.error('Error updating account deposits:', error);
+		}
+	}
+
 	function handleAccountWithdrawalChange(accountNumber: string, event: Event) {
 		const input = event.target as HTMLInputElement;
 		const raw = input.value.trim();
@@ -635,6 +663,21 @@
 		updateAccountWithdrawals();
 	}
 
+	function handleAccountDepositChange(accountNumber: string, event: Event) {
+		const input = event.target as HTMLInputElement;
+		const raw = input.value.trim();
+		const parsed = parseFloat(raw);
+		const value = !raw ? 0 : isNaN(parsed) || parsed < 0 ? 0 : parsed;
+
+		accountDeposits = { ...accountDeposits, [accountNumber]: value };
+		updateAccountDeposits();
+	}
+
+	function removeAccountDeposit(accountNumber: string) {
+		accountDeposits = { ...accountDeposits, [accountNumber]: 0 };
+		updateAccountDeposits();
+	}
+
 	$: accountByNumber = (summaries || []).reduce(
 		(map, a) => {
 			(map as any)[a.account_number] = a;
@@ -647,9 +690,23 @@
 		([_, v]) => typeof v === 'number' && (v as number) > 0
 	);
 
+	$: nonZeroAccountDPs = Object.entries(accountDeposits || {}).filter(
+		([_, v]) => typeof v === 'number' && (v as number) > 0
+	);
+
 	$: wdByUnit = (() => {
 		const grouped: Record<number, Array<{ account_number: string; amount: number }>> = {};
 		for (const [acc, amt] of nonZeroAccountWDs) {
+			const u = accountByNumber[acc]?.unit ?? 0;
+			if (!grouped[u]) grouped[u] = [];
+			grouped[u].push({ account_number: acc, amount: amt as number });
+		}
+		return grouped;
+	})();
+
+	$: dpByUnit = (() => {
+		const grouped: Record<number, Array<{ account_number: string; amount: number }>> = {};
+		for (const [acc, amt] of nonZeroAccountDPs) {
 			const u = accountByNumber[acc]?.unit ?? 0;
 			if (!grouped[u]) grouped[u] = [];
 			grouped[u].push({ account_number: acc, amount: amt as number });
@@ -1321,15 +1378,23 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						</p>
 					</div>
 
-							{#if totalWaitingWD !== 0}
+							{#if totalWaitingWD !== 0 || totalDeposits !== 0}
 						<p class="text-sm text-gray-300 mb-2 bg-gray-700/50 rounded px-2 py-1">
 							<span class="text-gray-300">
 								Real P/L: {stats.profit_loss >= 0 ? '+' : ''}{formatNumber(stats.profit_loss)}
 							</span>
-							<span class="mx-2 text-gray-500">|</span>
-							<span class="text-gray-300">
-								Waiting WD: {totalWaitingWD >= 0 ? '+' : ''}{formatNumber(totalWaitingWD)}
-							</span>
+							{#if totalWaitingWD !== 0}
+								<span class="mx-2 text-gray-500">|</span>
+								<span class="text-gray-300">
+									WD: {totalWaitingWD >= 0 ? '+' : ''}{formatNumber(totalWaitingWD)}
+								</span>
+							{/if}
+							{#if totalDeposits !== 0}
+								<span class="mx-2 text-gray-500">|</span>
+								<span class="text-gray-300">
+									DP: -{formatNumber(totalDeposits)}
+								</span>
+							{/if}
 						</p>
 					{/if}
 
@@ -1555,21 +1620,14 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										class="flex flex-col md:flex-row items-start md:items-center space-y-0.5 md:space-y-0 md:space-x-2 text-xs"
 									>
 										<span class="text-xs text-gray-500 bg-gray-600 px-1 py-0.5 rounded">
-											Cap: {formatNumber(unitInitialCapitals[unit] ?? 0)}
+											C: {formatNumber(unitInitialCapitals[unit] ?? 0)}
 										</span>
 										<span class="text-gray-400">
-											Total: {formatNumber(unitStat.totalBalance)}
-										</span>
-										<span
-											class="font-medium"
-											class:text-green-400={unitStat.profitLoss >= 0}
-											class:text-red-400={unitStat.profitLoss < 0}
-										>
-											P/L: {unitStat.profitLoss >= 0 ? '+' : ''}{formatNumber(unitStat.profitLoss)}
+											T: {formatNumber(unitStat.totalBalance)}
 										</span>
 										{#if (unitGroups[unit] || []).reduce((s, a) => s + (accountWithdrawals[a.account_number] ?? 0), 0) > 0}
 											<span class="text-gray-400">
-												WD Total: {formatNumber(
+												WD: +{formatNumber(
 													(unitGroups[unit] || []).reduce(
 														(s, a) => s + (accountWithdrawals[a.account_number] ?? 0),
 														0
@@ -1577,6 +1635,26 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												)}
 											</span>
 										{/if}
+										{#if (unitGroups[unit] || []).reduce((s, a) => s + (accountDeposits[a.account_number] ?? 0), 0) > 0}
+											<span class="text-gray-400">
+												DP: -{formatNumber(
+													(unitGroups[unit] || []).reduce(
+														(s, a) => s + (accountDeposits[a.account_number] ?? 0),
+														0
+													)
+												)}
+											</span>
+										{/if}
+										<span
+											class="font-medium"
+											class:text-green-400={unitStat.profitLoss >= 0}
+											class:text-red-400={unitStat.profitLoss < 0}
+										>
+											P/L: {unitStat.profitLoss >= 0 ? '+' : ''}{formatNumber(unitStat.profitLoss)}
+											{#if unitInitialCapitals[unit] && unitInitialCapitals[unit] > 0}
+												({((unitStat.profitLoss / unitInitialCapitals[unit]) * 100).toFixed(2)}%)
+											{/if}
+										</span>
 									</div>
 								{/if}
 							</div>
@@ -1592,7 +1670,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											<th class="text-left py-1 px-2 text-gray-400 font-medium">Broker</th>
 											<th class="text-right py-1 px-2 text-gray-400 font-medium">Balance</th>
 											<th class="text-right py-1 px-2 text-gray-400 font-medium">Equity</th>
-											<th class="text-right py-1 px-2 text-gray-400 font-medium">WD Note</th>
+											<th class="text-right py-1 px-2 text-gray-400 font-medium">WD Note (+)</th>
+											<th class="text-right py-1 px-2 text-gray-400 font-medium">DP Note (-)</th>
 											<th class="text-left py-1 px-2 text-gray-400 font-medium">Updated</th>
 										</tr>
 									</thead>
@@ -1645,6 +1724,17 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 														value={accountWithdrawals[account.account_number] ?? 0}
 														on:change={(e) =>
 															handleAccountWithdrawalChange(account.account_number, e)}
+														class="w-20 border border-gray-600 bg-gray-700 text-white rounded px-1 py-0.5 text-right text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+													/>
+												</td>
+												<td class="py-1 px-2 text-right">
+													<input
+														type="number"
+														min="0"
+														step="100"
+														value={accountDeposits[account.account_number] ?? 0}
+														on:change={(e) =>
+															handleAccountDepositChange(account.account_number, e)}
 														class="w-20 border border-gray-600 bg-gray-700 text-white rounded px-1 py-0.5 text-right text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
 													/>
 												</td>
@@ -2050,6 +2140,73 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					</fieldset>
 				</div>
 
+				<!-- DP Notes Setting (per account) -->
+				<div>
+					<fieldset>
+						<legend class="block text-sm font-medium text-gray-300 mb-2"> DP Notes </legend>
+						<p class="text-xs text-gray-500 mb-2">
+							Set deposit adjustment per account. This will reduce P/L calculation.
+						</p>
+						<div class="space-y-3 max-h-64 overflow-y-auto pr-1">
+							{#each Object.entries(dpByUnit || {}) as [uStr, entries]}
+								{@const u = parseInt(uStr)}
+								<div class="bg-gray-700 border border-gray-600 rounded-md">
+									<div class="px-3 py-2 border-b border-gray-600 flex items-center justify-between">
+										<span class="text-sm text-gray-300">Unit {u === 0 ? 'Unknown' : u}</span>
+										<span class="text-xs text-gray-400"
+											>DP Total: {formatNumber(
+												(entries || []).reduce((s, e) => s + (e.amount ?? 0), 0)
+											)}</span
+										>
+									</div>
+									<div class="divide-y divide-gray-600">
+										{#each entries as e}
+											<div class="flex items-center justify-between px-3 py-2">
+												<div class="text-xs text-gray-300 truncate mr-2">
+													<span class="font-mono">{e.account_number}</span>
+													{#if accountByNumber[e.account_number]}
+														<span class="text-gray-400">
+															— {shortName(accountByNumber[e.account_number].account_name)}</span
+														>
+													{/if}
+												</div>
+												<div class="flex items-center gap-2">
+													<span class="text-xs text-gray-300">{formatNumber(e.amount)}</span>
+													<button
+														on:click={() => removeAccountDeposit(e.account_number)}
+														class="text-red-400 hover:text-red-300 transition-colors"
+														aria-label="Remove DP for {e.account_number}"
+													>
+														<svg
+															class="w-4 h-4"
+															fill="none"
+															stroke="currentColor"
+															viewBox="0 0 24 24"
+														>
+															<path
+																stroke-linecap="round"
+																stroke-linejoin="round"
+																stroke-width="2"
+																d="M6 18L18 6M6 6l12 12"
+															/>
+														</svg>
+													</button>
+												</div>
+											</div>
+										{/each}
+									</div>
+								</div>
+							{/each}
+							{#if Object.keys(dpByUnit || {}).length === 0}
+								<div class="text-xs text-gray-500">No non-zero DP notes.</div>
+							{/if}
+						</div>
+						<p class="text-xs text-gray-500 mt-1">
+							Stored as mapping: account_number → amount (grouped by unit for display).
+						</p>
+					</fieldset>
+				</div>
+
 				<!-- Delete Account Data Section -->
 				<div class="border-t border-gray-700 pt-6">
 					<fieldset>
@@ -2138,7 +2295,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					<div class="bg-red-900/20 border border-red-700 rounded-md p-3">
 						<p class="text-xs text-red-200">
 							<strong>หมายเหตุ:</strong> การดำเนินการนี้จะลบเฉพาะข้อมูลบัญชีที่เข้ามาจาก EA เท่านั้น 
-							การตั้งค่าอื่นๆ เช่น Initial Capital, Unit Mappings, WD Notes จะไม่ถูกลบ
+							การตั้งค่าอื่นๆ เช่น Initial Capital, Unit Mappings, WD Notes, DP Notes จะไม่ถูกลบ
 						</p>
 					</div>
 				</div>

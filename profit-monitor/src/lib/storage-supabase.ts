@@ -200,14 +200,16 @@ class SupabaseStorage {
 		const groupedAccounts = await this.getAccountsByUnit();
 		const unitInitialCaps = await this.getUnitInitialCapitals();
 		const accountWithdrawals = await this.getAccountWithdrawals();
+		const accountDeposits = await this.getAccountDeposits();
 		const stats: Array<{unit: number, totalBalance: number, profitLoss: number, accountCount: number}> = [];
 		
 		Object.entries(groupedAccounts).forEach(([unitStr, accounts]) => {
 			const unit = parseInt(unitStr);
 			const totalBalance = accounts.reduce((sum, account) => sum + account.latest_balance, 0);
 			const withdrawalAdjust = accounts.reduce((sum, acc) => sum + (accountWithdrawals[acc.account_number] ?? 0), 0);
+			const depositAdjust = accounts.reduce((sum, acc) => sum + (accountDeposits[acc.account_number] ?? 0), 0);
 			const unitCap = unitInitialCaps[unit] ?? 0;
-			const profitLoss = totalBalance - unitCap + withdrawalAdjust;
+			const profitLoss = totalBalance - unitCap + withdrawalAdjust - depositAdjust;
 			const accountCount = accounts.length;
 			
 			stats.push({
@@ -283,6 +285,44 @@ class SupabaseStorage {
 				return JSON.parse(data.setting_value);
 			} catch (parseError) {
 				console.error('Error parsing account withdrawals:', parseError);
+			}
+		}
+
+		return {};
+	}
+
+	async setAccountDeposits(mappings: Record<string, number>): Promise<void> {
+		const { error } = await supabase
+			.from('settings')
+			.upsert({
+				setting_key: 'account_deposits',
+				setting_value: JSON.stringify(mappings),
+				updated_at: new Date().toISOString()
+			});
+
+		if (error) {
+			console.error('Error setting account deposits:', error);
+			throw error;
+		}
+	}
+
+	async getAccountDeposits(): Promise<Record<string, number>> {
+		const { data, error } = await supabase
+			.from('settings')
+			.select('setting_value')
+			.eq('setting_key', 'account_deposits')
+			.single();
+
+		if (error && error.code !== 'PGRST116') {
+			console.error('Error getting account deposits:', error);
+			throw error;
+		}
+
+		if (data) {
+			try {
+				return JSON.parse(data.setting_value);
+			} catch (parseError) {
+				console.error('Error parsing account deposits:', parseError);
 			}
 		}
 
@@ -379,29 +419,21 @@ class SupabaseStorage {
 			.select('setting_value')
 			.eq('setting_key', 'pl_snapshot')
 			.single();
-		
-		console.log('getSnapshotPL - Raw data from database:', { data, error });
-		
+				
 		if (error && error.code !== 'PGRST116') {
-			console.error('Error getting pl snapshot:', error);
 			throw error;
 		}
 		if (!data || !data.setting_value || data.setting_value === 'null' || data.setting_value === '{}') {
-			console.log('getSnapshotPL - Returning null (no data or null/empty value)');
 			return null;
 		}
 		try {
 			const obj = JSON.parse(data.setting_value);
-			console.log('getSnapshotPL - Parsed object:', obj);
 			if (typeof obj?.value === 'number' && (obj?.kind === 'adjusted' || obj?.kind === 'real')) {
 				const result = { value: obj.value, kind: obj.kind, timestamp: obj.timestamp ?? new Date().toISOString() };
-				console.log('getSnapshotPL - Returning valid snapshot:', result);
 				return result;
 			}
 		} catch (parseError) {
-			console.error('getSnapshotPL - JSON parse error:', parseError);
 		}
-		console.log('getSnapshotPL - Returning null (invalid data)');
 		return null;
 	}
 

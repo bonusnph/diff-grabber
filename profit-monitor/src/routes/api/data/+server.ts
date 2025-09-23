@@ -9,12 +9,13 @@ export const GET: RequestHandler = async () => {
 		const unitGroups = await storage.getAccountsByUnit();
 		const unitStats = await storage.getUnitStats();
 		const accountWithdrawals = await storage.getAccountWithdrawals();
+		const accountDeposits = await storage.getAccountDeposits();
 		const snapshot = await storage.getSnapshotPL();
-		console.log('API /api/data - Retrieved snapshot from storage:', snapshot);
 		
 		const currentAdjusted = (() => {
 			const totalWaitingWD = Object.values(accountWithdrawals || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
-			return (stats?.profit_loss || 0) + (totalWaitingWD || 0);
+			const totalDeposits = Object.values(accountDeposits || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
+			return (stats?.profit_loss || 0) + (totalWaitingWD || 0) - (totalDeposits || 0);
 		})();
 		const snapshotDelta = snapshot
 			? currentAdjusted - (snapshot.kind === 'adjusted' ? snapshot.value : stats.profit_loss)
@@ -26,6 +27,7 @@ export const GET: RequestHandler = async () => {
 			unitGroups,
 			unitStats,
 			accountWithdrawals,
+			accountDeposits,
 			snapshot: snapshot ? { kind: snapshot.kind, value: snapshot.value, timestamp: snapshot.timestamp } : null,
 			snapshotDelta
 		});

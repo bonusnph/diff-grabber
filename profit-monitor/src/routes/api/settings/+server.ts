@@ -12,13 +12,14 @@ export const GET: RequestHandler = async () => {
 		unit_broker_min_margins: await storage.getUnitBrokerMinMargins(),
 		unit_withdrawals: await storage.getUnitWithdrawals(),
 		account_withdrawals: await storage.getAccountWithdrawals(),
+		account_deposits: await storage.getAccountDeposits(),
 		snapshot: await storage.getSnapshotPL()
 	});
 };
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
-		const { initial_capital, unit_initial_capitals, total_active_accounts, unit_warning_equity_percentages, unit_mappings, unit_broker_min_margins, unit_withdrawals, account_withdrawals, snapshot, clear_snapshot } = await request.json();
+		const { initial_capital, unit_initial_capitals, total_active_accounts, unit_warning_equity_percentages, unit_mappings, unit_broker_min_margins, unit_withdrawals, account_withdrawals, account_deposits, snapshot, clear_snapshot } = await request.json();
 		// Snapshot operations (optional)
 		if (clear_snapshot === true) {
 			console.log('Clearing snapshot from database...');
@@ -127,6 +128,19 @@ export const POST: RequestHandler = async ({ request }) => {
 			}
 			await storage.setAccountWithdrawals(normalizedAcc);
 		}
+
+		if (account_deposits !== undefined) {
+			if (typeof account_deposits !== 'object' || Array.isArray(account_deposits)) {
+				return json({ error: 'Invalid account deposits' }, { status: 400 });
+			}
+			const normalizedDep: Record<string, number> = {};
+			for (const [k, v] of Object.entries(account_deposits)) {
+				const key = String(k);
+				const num = typeof v === 'number' && isFinite(v) ? v : 0;
+				normalizedDep[key] = num;
+			}
+			await storage.setAccountDeposits(normalizedDep);
+		}
 		
 		return json({ 
 			status: 'success',
@@ -138,6 +152,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			unit_broker_min_margins: await storage.getUnitBrokerMinMargins(),
 			unit_withdrawals: await storage.getUnitWithdrawals(),
 			account_withdrawals: await storage.getAccountWithdrawals(),
+			account_deposits: await storage.getAccountDeposits(),
 			snapshot: await storage.getSnapshotPL()
 		});
 		
