@@ -1531,17 +1531,16 @@ void MasterReconcilePositions()
   {
     if(!manualDrop) return;
   }
-  // Enhanced throttling: increase minimum interval to 3 seconds
-  ulong min_reconcile_interval = MathMax((ulong)input_reconcile_interval_ms, 3000);
+  // Enhanced throttling: reduce minimum interval for faster manual close detection
+  ulong min_reconcile_interval = MathMax((ulong)input_reconcile_interval_ms, 1000);
   if((NowMs()-g_last_reconcile_ms) < min_reconcile_interval) return;
   g_last_reconcile_ms = NowMs();
   // Deterministic pair-wise diff first: act on any specific missing/excess pair id (one per cycle)
   {
-    // ENHANCED: Add aggressive throttling to prevent reconcile loop
+    // ENHANCED: Add aggressive throttling to prevent reconcile loop - but don't update prev_pairs during throttle
     static ulong last_reconcile_action_ms = 0;
-    if((NowMs() - last_reconcile_action_ms) < 5000) { // 5 second throttle
-       g_prev_self_pairs=selfNow; g_prev_peer_pairs=peerNow; 
-       return;
+    if((NowMs() - last_reconcile_action_ms) < 2000) { // Reduced to 2 seconds for faster manual close detection
+       return; // Don't update prev_pairs during throttle
     }
     
     // CRITICAL: Skip pair-wise reconcile during grace period after master opens
@@ -1550,8 +1549,7 @@ void MasterReconcilePositions()
     if(g_master_last_open_ms > 0 && grace_elapsed_pair < grace_limit_pair) 
     {
        LogEvent("RECONCILE_PAIRWISE_GRACE_SKIP", StringFormat("elapsed_ms=%I64u;limit_ms=%I64u", grace_elapsed_pair, grace_limit_pair));
-       g_prev_self_pairs=selfNow; g_prev_peer_pairs=peerNow; 
-       return;
+       return; // Don't update prev_pairs during grace period
     }
     
     string peerPos, selfPos; string pRows[]; string sRows[]; int pn=0, sn=0;
@@ -4241,14 +4239,11 @@ void OnTimer()
    RebuildPairMapSelfFromCache();
    WritePositions(); // เขียนอีกครั้งหลัง rebuild
    
-   // Reconciliation - ลดความถี่เป็นทุก 3 วินาที
-   if(timer_count % 3 == 0)
-   {
-      MasterReconcilePositions();
-      if(input_role==ROLE_SLAVE) 
-      { 
-         SlaveLocalReconcile(); 
-      }
+   // Reconciliation - เพิ่มความถี่เป็นทุกวินาทีสำหรับ manual close detection
+   MasterReconcilePositions();
+   if(input_role==ROLE_SLAVE) 
+   { 
+      SlaveLocalReconcile(); 
    }
    
    // === LESS CRITICAL - ทุก 3 วินาที ===
