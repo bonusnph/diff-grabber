@@ -2950,7 +2950,8 @@ void SlaveProcessOpenCmd()
    g_pending_order_comment = ""; // do not expose pairing in comment
    g_pending_pair_id = pair_id;
    int ticket=-1; double price=0.0;
-   bool ok = PlaceOrderMaster(mside=="BUY", lot_slave, ticket, price);
+   bool slaveBuy = (mside=="BUY")?false:true;  // Slave trades opposite direction
+   bool ok = PlaceOrderMaster(slaveBuy, lot_slave, ticket, price);
    g_pending_pair_id = "";
    string ack = StringFormat("1,%s,%I64d,%s,%.5f,%d,%d\n", cmd_id, (long)g_seq, "N/A", price, ok?1:0, ok?0:GetLastError());
    FileWriteAllAtomic(PathOpenAckSelf(), ack);
