@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.07"
+#property version   "1.08"
 #property strict
 
 // =============================
@@ -263,6 +263,18 @@ int   g_prev_self_pairs = 0;
 int   g_prev_peer_pairs = 0;
 // Logs housekeeping
 ulong g_last_log_cleanup_ms = 0;
+
+// Heartbeat resilience system
+int g_heartbeat_consecutive_fails = 0;
+ulong g_last_successful_peer_read = 0;
+int g_heartbeat_write_fail_count = 0;
+ulong g_last_heartbeat_write_attempt = 0;
+const int MAX_CONSECUTIVE_FAILS = 2;
+
+// Display stability system
+bool g_display_peer_alive = false;
+int g_display_stability_count = 0;
+const int DISPLAY_STABILITY_THRESHOLD = 3;
 
 // Averaging state (EMA + optional Median pre-filter)
 double g_ema_open = 0.0; bool g_ema_open_init = false;
@@ -813,6 +825,25 @@ double EffectivePoint()
    if(g_peer_point > 0.0)
       return MathMax(g_point, g_peer_point);
    return g_point;
+}
+
+// Helper function to get file age from content timestamp
+ulong GetFileAgeFromContent(const string file_path)
+{
+   string content;
+   if(!FileReadAll(file_path, content)) return 999999; // ไฟล์อ่านไม่ได้
+   
+   // สำหรับ heartbeat file: timestamp อยู่ field แรก
+   int comma_pos = StringFind(content, ",");
+   if(comma_pos < 0) return 999999;
+   
+   string timestamp_str = StringSubstr(content, 0, comma_pos);
+   ulong file_timestamp = (ulong)StrToDouble(timestamp_str);
+   
+   if(file_timestamp == 0) return 999999;
+   
+   ulong now = NowMs();
+   return (now > file_timestamp) ? (now - file_timestamp) : 0;
 }
 
 bool IsMasterSideBuyEffective()
@@ -1480,8 +1511,32 @@ int PeerOpenCount()
 void MasterReconcilePositions()
 {
    if(!(input_role==ROLE_MASTER)) return;
-   if(!g_peer_alive) return; // require peer alive to avoid acting on stale files
    if(IsInSaturdayQuietWindow()) return; // Saturday quiet window: skip reconcile
+   
+   // แทนที่การ return เมื่อ !g_peer_alive ด้วย conditional logic
+   bool safe_to_reconcile = g_peer_alive;
+   
+   // ยอมให้ reconcile ในกรณีฉุกเฉิน แม้ peer ไม่ alive
+   if(!g_peer_alive)
+   {
+      // เช็คว่ามี position file ที่อ่านได้หรือไม่
+      string peerContent;
+      bool can_read_peer = FileReadAll(PathPositionsPeer(), peerContent);
+      
+      // หาก peer file อ่านได้และมี content ให้ทำ reconcile แบบระมัดระวัง
+      if(can_read_peer && StringLen(TrimAll(peerContent)) > 0)
+      {
+         // เช็คว่า peer heartbeat ไม่เก่าเกิน 30 วินาที (ใช้ heartbeat แทน position file)
+         ulong peer_hb_age = GetFileAgeFromContent(PathHeartbeatPeer());
+         if(peer_hb_age <= 30000) // 30 วินาที
+         {
+            safe_to_reconcile = true;
+            LogEvent("RECONCILE_EMERGENCY", StringFormat("peer_not_alive_but_heartbeat_fresh;hb_age_ms=%I64u", peer_hb_age));
+         }
+      }
+   }
+   
+   if(!safe_to_reconcile) return;
    
    // CRITICAL: Skip reconcile during grace period to prevent immediate close after open
    if(NowMs() < g_open_grace_until_ms) { 
@@ -1749,8 +1804,32 @@ void MasterReconcilePositions()
 void SlaveLocalReconcile()
 {
    if(input_role==ROLE_MASTER) return;
-   if(!g_peer_alive) return;
    if(IsInSaturdayQuietWindow()) return; // Saturday quiet window: skip local reconcile
+   
+   // แทนที่การ return เมื่อ !g_peer_alive ด้วย conditional logic
+   bool safe_to_reconcile = g_peer_alive;
+   
+   // ยอมให้ reconcile ในกรณีฉุกเฉิน แม้ peer ไม่ alive
+   if(!g_peer_alive)
+   {
+      // เช็คว่ามี position file ที่อ่านได้หรือไม่
+      string peerContent;
+      bool can_read_peer = FileReadAll(PathPositionsPeer(), peerContent);
+      
+      // หาก peer file อ่านได้และมี content ให้ทำ reconcile แบบระมัดระวัง
+      if(can_read_peer && StringLen(TrimAll(peerContent)) > 0)
+      {
+         // เช็คว่า peer heartbeat ไม่เก่าเกิน 30 วินาที (ใช้ heartbeat แทน position file)
+         ulong peer_hb_age = GetFileAgeFromContent(PathHeartbeatPeer());
+         if(peer_hb_age <= 30000) // 30 วินาที
+         {
+            safe_to_reconcile = true;
+            LogEvent("SLAVE_RECONCILE_EMERGENCY", StringFormat("peer_not_alive_but_heartbeat_fresh;hb_age_ms=%I64u", peer_hb_age));
+         }
+      }
+   }
+   
+   if(!safe_to_reconcile) return;
    
    // CRITICAL: Add dynamic grace period to prevent immediate close after slave opens order
    if(g_last_processed_open_cmd_id != g_slave_last_processed_cmd && g_last_processed_open_cmd_id != "")
@@ -1839,13 +1918,44 @@ string NewCmdId()
 void WriteHeartbeat()
 {
    if(DrySuppressHeartbeat()) return;
+   
+   ulong now = NowMs();
+   
+   // Retry หาก write ล้มเหลวครั้งก่อน (รอ 100ms ก่อน retry)
+   if(g_heartbeat_write_fail_count > 0 && g_last_heartbeat_write_attempt > 0 && 
+      (now - g_last_heartbeat_write_attempt) < 100)
+   {
+      return;
+   }
+   
+   g_last_heartbeat_write_attempt = now;
+   
    // Include basic account metrics so peer can read balance
    double bal = AccountBalance(); double eq = AccountEquity();
-   string line = StringFormat("%I64u,%d,%d,%d,%s,%.2f,%.2f,%d,%.10f\n", NowMs(), __MQLBUILD__, AccountNumber(), g_magic, "1.0.0", bal, eq, g_digits, g_point);
-   FileWriteAll(PathHeartbeatSelf(), line);
+   string line = StringFormat("%I64u,%d,%d,%d,%s,%.2f,%.2f,%d,%.10f\n", now, __MQLBUILD__, AccountNumber(), g_magic, "1.0.0", bal, eq, g_digits, g_point);
+   
+   // พยายาม write 2 ครั้งหาก fail
+   int result = FileWriteAll(PathHeartbeatSelf(), line);
+   if(result != 0 && g_heartbeat_write_fail_count < 1)
+   {
+      Sleep(50); // รอสั้น ๆ
+      result = FileWriteAll(PathHeartbeatSelf(), line);
+   }
+   
+   if(result == 0)
+   {
+      g_heartbeat_write_fail_count = 0;
+   }
+   else
+   {
+      g_heartbeat_write_fail_count++;
+      if(g_heartbeat_write_fail_count > 5) g_heartbeat_write_fail_count = 5; // cap ไว้
+      if(input_verbose_journal_logs)
+         LogEvent("HEARTBEAT_WRITE_FAIL", StringFormat("error=%d;fail_count=%d", result, g_heartbeat_write_fail_count));
+   }
 
    // Also write a compact account status file
-   string acc = StringFormat("1,%.2f,%.2f,%I64u\n", bal, eq, NowMs());
+   string acc = StringFormat("1,%.2f,%.2f,%I64u\n", bal, eq, now);
    FileWriteAll(PathAccountStatusSelf(), acc);
 }
 
@@ -1940,11 +2050,28 @@ void UpdatePeerStatus()
    if(ReadPeerHeartbeat(hb))
    {
       g_peer_hb_ms = hb;
+      g_last_successful_peer_read = NowMs();
+      g_heartbeat_consecutive_fails = 0;
+      
+      // เช็ค freshness ตามปกติ
       g_peer_alive = ((NowMs() - g_peer_hb_ms) <= (ulong)EffectiveHeartbeatTimeoutMs());
    }
    else
    {
-      g_peer_alive = false;
+      g_heartbeat_consecutive_fails++;
+      
+      // ให้ grace period เฉพาะกรณี consecutive failures น้อย
+      if(g_heartbeat_consecutive_fails <= MAX_CONSECUTIVE_FAILS && 
+         g_last_successful_peer_read > 0 &&
+         (NowMs() - g_last_successful_peer_read) <= (ulong)EffectiveHeartbeatTimeoutMs())
+      {
+         // ยังถือว่า alive ชั่วคราว (ใช้ heartbeat เก่าที่ยังไม่หมดอายุ)
+         g_peer_alive = ((NowMs() - g_peer_hb_ms) <= (ulong)EffectiveHeartbeatTimeoutMs());
+      }
+      else
+      {
+         g_peer_alive = false;
+      }
    }
 }
 
@@ -2657,6 +2784,29 @@ void MaybeClosePair()
    }
    if(!ReadPeerQuotes()) return;
    if(!QuotesFresh()) return;
+   
+   // เพิ่มการเช็ค peer data reliability ก่อนใช้ข้อมูล
+   bool peer_data_reliable = true;
+   
+   if(!g_peer_alive)
+   {
+      // หาก peer ไม่ alive ให้เช็คความน่าเชื่อถือของข้อมูล
+      ulong quote_age = NowMs() - g_peer_quote_ms;
+      ulong heartbeat_age = g_peer_hb_ms > 0 ? (NowMs() - g_peer_hb_ms) : 999999;
+      
+      // ยอมให้ใช้ข้อมูลเฉพาะเมื่อ:
+      // 1. Quote อายุไม่เกิน 2 วินาที
+      // 2. Heartbeat อายุไม่เกิน 10 วินาที
+      if(quote_age > 2000 || heartbeat_age > 10000)
+      {
+         peer_data_reliable = false;
+         LogEvent("CLOSE_BLOCKED", StringFormat("peer_data_unreliable;quote_age=%I64u;hb_age=%I64u", 
+                                              quote_age, heartbeat_age));
+      }
+   }
+   
+   if(!peer_data_reliable) return;
+   
    double diffClose = DiffClosePoints();
    bool triggerClose = false;
    
@@ -3517,6 +3667,29 @@ void UpdateProfitDisplay()
    }
 }
 
+// Update display peer status with stability check
+void UpdateDisplayPeerStatus()
+{
+   // ต้องการ stability: g_peer_alive ต้องเป็นค่าเดียวกัน 3 ครั้งติดต่อกัน
+   static bool last_peer_alive = false;
+   
+   if(g_peer_alive == last_peer_alive)
+   {
+      g_display_stability_count++;
+   }
+   else
+   {
+      g_display_stability_count = 1;
+      last_peer_alive = g_peer_alive;
+   }
+   
+   // อัปเดต display value เฉพาะเมื่อ stable
+   if(g_display_stability_count >= DISPLAY_STABILITY_THRESHOLD)
+   {
+      g_display_peer_alive = g_peer_alive;
+   }
+}
+
 // Update Diff Values Display only (for OnTick - high frequency)
 void UpdateDiffDisplay()
 {
@@ -3538,6 +3711,9 @@ void UpdateDiffDisplay()
 
 void DisplayUpdate()
 {
+   // เรียกใช้ stability check ก่อน
+   UpdateDisplayPeerStatus();
+   
    string role = (input_role==ROLE_MASTER)?"MASTER":"SLAVE";
    int spread = SpreadPointsSelf();
    double dOpen = DiffOpenPoints();
@@ -3547,10 +3723,19 @@ void DisplayUpdate()
    // Update peaks and histograms only on master with fresh quotes (lightweight O(1))
    int line = 0;
    DisplaySetLine(line++, StringFormat("role=%s  channel=%s  symbol=%s", role, input_channel_id, g_symbol));
-   string syncTxt = g_peer_alive?"OK":"WAITING";
+   
+   // ใช้ค่าที่ stable แทน
+   string syncTxt = g_display_peer_alive ? "OK" : "WAITING";
+   string activeTxt = g_display_peer_alive ? "YES" : "NO";
    int hb_age = (int)(NowMs() - g_peer_hb_ms);
-   string activeTxt = g_peer_alive?"YES":"NO";
-   DisplaySetLine(line++, StringFormat("sync=%s  peer_hb_age=%dms  active=%s", syncTxt, hb_age, activeTxt));
+   
+   // เพิ่มข้อมูล debug
+   string debug_info = StringFormat(" (raw=%s,fails=%d)", 
+                                   g_peer_alive?"T":"F", 
+                                   g_heartbeat_consecutive_fails);
+   
+   DisplaySetLine(line++, StringFormat("sync=%s  peer_hb_age=%dms  active=%s%s", 
+                                      syncTxt, hb_age, activeTxt, debug_info));
    line = DisplaySetWrappedLines(line, StringFormat("sync_path=%s", PathChannelRootAbs()));
    if(input_role==ROLE_MASTER)
    {
