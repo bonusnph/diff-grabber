@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.07"
+#property version   "1.08"
 #property strict
 
 // =============================
@@ -57,7 +57,7 @@ input double input_swap_trading_lots    = 0.01;      // Scope: Master — lots f
 #define input_lot_slave  input_lot
 input int    input_open_threshold_points    = 30;            // Scope: Master — open threshold (points)
 input int    input_close_threshold_points   = 30;            // Scope: Master — close threshold (points)
-int    input_open_cooldown_seconds    = 5400;           // Scope: Master — open cooldown after an open
+int    input_open_cooldown_seconds    = 7200;           // Scope: Master — open cooldown after an open
 int    input_close_cooldown_seconds   = 300;            // Scope: Master — close cooldown after both sides opened
 int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
 
@@ -89,9 +89,9 @@ int    input_max_spread_points_self   = 50;            // Scope: Master — bloc
 int    input_max_spread_points_peer   = 50;            // Scope: Master — check peer spread before opening (points)
 int    input_quotes_fresh_ms          = 400;           // Scope: Master — maximum acceptable quote age (ms)
 int    input_file_poll_ms             = 5;             // Scope: Master — background file polling cadence (ms)
-int    input_magic_number_base        = 900100;        // Scope: Master — magic base per channel/symbol
+input  int    input_magic_number_base = 0;             // Scope: Master — magic base per channel/symbol
 bool   input_retry_on_requote         = true;          // Scope: Master — retry on requote/off quotes
-int    input_max_retries              = 20;             // Scope: Master — max retry attempts
+int    input_max_retries              = 20;            // Scope: Master — max retry attempts
 
 // Smart Sync timeouts
 int    input_cmd_expire_ms            = 30000;         // Scope: Master — command expiry (ms)
