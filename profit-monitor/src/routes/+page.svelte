@@ -356,6 +356,11 @@
 	$: lowEquityWarningAccounts = summaries.filter(isLowEquityWarning);
 	$: lowEquityWarningCount = lowEquityWarningAccounts.length;
 
+	// Function to check if unit has stale data
+	function hasUnitStaleData(accounts: AccountSummary[]): boolean {
+		return accounts.some(account => getDataAge(account.last_update).status === 'stale');
+	}
+
 	async function fetchData() {
 		const showRefreshing = !loading;
 		if (showRefreshing) {
@@ -502,14 +507,13 @@
 
 	function getDataAge(timestamp: string): {
 		minutes: number;
-		status: 'fresh' | 'warning' | 'danger';
+		status: 'fresh' | 'stale';
 	} {
 		const now = new Date();
 		const dataTime = new Date(timestamp);
 		const diffMinutes = Math.floor((now.getTime() - dataTime.getTime()) / (1000 * 60));
 
-		if (diffMinutes >= 10) return { minutes: diffMinutes, status: 'danger' };
-		if (diffMinutes >= 5) return { minutes: diffMinutes, status: 'warning' };
+		if (diffMinutes >= 5) return { minutes: diffMinutes, status: 'stale' };
 		return { minutes: diffMinutes, status: 'fresh' };
 	}
 
@@ -1525,6 +1529,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								a.account_number.localeCompare(b.account_number)
 						)}
 						{@const visibleAccounts = sortedAccounts.filter((a) => activeBrokers.has(a.broker_name) && activeAccountNames.has(a.account_name))}
+						{@const unitHasStaleData = hasUnitStaleData(visibleAccounts)}
 						
 						{#if visibleAccounts.length > 0}
 						<div
@@ -1569,6 +1574,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											<span class="text-red-400 font-bold ml-1" title="มีบัญชีที่เงินไม่เพียงพอในกลุ่มนี้">*</span>
 										{:else if accounts.some(isLowEquityWarning)}
 											<span class="text-yellow-400 font-bold ml-1" title="มีบัญชีที่ equity ต่ำกว่าเกณฑ์เตือนในกลุ่มนี้">⚠</span>
+										{/if}
+										{#if unitHasStaleData}
+											<span class="text-orange-400 font-bold ml-1" title="มีบัญชีที่ข้อมูลเก่ากว่า 5 นาทีในกลุ่มนี้">⏰</span>
 										{/if}
 									</h3>
 									<span class="text-xs text-gray-500 bg-gray-600 px-1 py-0.5 rounded">
@@ -1672,6 +1680,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											<th class="text-right py-1 px-2 text-gray-400 font-medium">Equity</th>
 											<th class="text-right py-1 px-2 text-gray-400 font-medium">WD Note (+)</th>
 											<th class="text-right py-1 px-2 text-gray-400 font-medium">DP Note (-)</th>
+											<th class="text-center py-1 px-2 text-gray-400 font-medium">Status</th>
 											<th class="text-left py-1 px-2 text-gray-400 font-medium">Updated</th>
 										</tr>
 									</thead>
@@ -1680,9 +1689,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											{@const dataAge = getDataAge(account.last_update)}
 											<tr
 												class="border-b border-gray-700 hover:bg-gray-600 transition-colors"
-												class:bg-yellow-800={!isInsufficientBalance(account) && dataAge.status !== 'warning' && dataAge.status !== 'danger' && isLowEquityWarning(account)}
-												class:bg-yellow-900={dataAge.status === 'warning'}
-												class:bg-red-900={dataAge.status === 'danger'}
+												class:bg-yellow-800={!isInsufficientBalance(account) && dataAge.status === 'fresh' && isLowEquityWarning(account)}
 												class:bg-red-950={isInsufficientBalance(account)}
 											>
                                             <td
@@ -1737,6 +1744,17 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 															handleAccountDepositChange(account.account_number, e)}
 														class="w-20 border border-gray-600 bg-gray-700 text-white rounded px-1 py-0.5 text-right text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
 													/>
+												</td>
+												<td class="py-1 px-2 text-center">
+													{#if dataAge.status === 'stale'}
+														<span class="text-orange-400 font-bold" title="ข้อมูลเก่ากว่า 5 นาที ({dataAge.minutes} นาที)">
+															⏰
+														</span>
+													{:else}
+														<span class="text-green-400" title="ข้อมูลใหม่">
+															✓
+														</span>
+													{/if}
 												</td>
 												<td class="py-1 px-2 text-gray-400 text-xs"
 													>{formatDateTime(account.last_update)}</td
