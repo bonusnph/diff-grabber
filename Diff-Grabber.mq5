@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.09"
+#property version   "1.08"
 
 // =============================
 // EA Heading Master–Slave (MT5)
@@ -84,9 +84,9 @@ int    input_epsilon_diff_points      = 1;             // Scope: Master — smal
 int    input_avg_signal_cooldown_ms   = 400;           // Scope: Master — signal-level cooldown after order (ms)
 
 // Zone Stability Filter (works with all modes - Master only)
-bool   input_zone_stability_enabled    = false;     // Scope: Master — enable zone stability check for all modes
-int    input_zone_stability_ticks      = 7;        // Scope: Master — consecutive ticks required in positive zone
-int    input_zone_negative_threshold   = -1;        // Scope: Master — threshold for negative zone detection (points)
+input  bool   input_zone_stability_enabled    = true;     // Scope: Master — enable zone stability check for all modes
+input  int    input_zone_stability_ticks      = 7;        // Scope: Master — consecutive ticks required in positive zone
+input  int    input_zone_negative_threshold   = -1;        // Scope: Master — threshold for negative zone detection (points)
 
 // Quality guards
 int    input_max_spread_points_self   = 30;            // Scope: Master — block if own spread exceeds (points)
@@ -261,6 +261,13 @@ int    g_prev_self_pairs = 0;
 int    g_prev_peer_pairs = 0;
 // Logs housekeeping
 ulong  g_last_log_cleanup_ms = 0;
+
+// Heartbeat resilience system
+int g_heartbeat_consecutive_fails = 0;
+ulong g_last_successful_peer_read = 0;
+int g_heartbeat_write_fail_count = 0;
+ulong g_last_heartbeat_write_attempt = 0;
+const int MAX_CONSECUTIVE_FAILS = 2;
 
 // Display stability system
 bool g_display_peer_alive = false;
@@ -1845,11 +1852,43 @@ string NewCmdId()
 void WriteHeartbeat()
 {
    if(DrySuppressHeartbeat()) return;
+   
+   ulong now = NowMs();
+   
+   // Retry หาก write ล้มเหลวครั้งก่อน (รอ 100ms ก่อน retry)
+   if(g_heartbeat_write_fail_count > 0 && g_last_heartbeat_write_attempt > 0 && 
+      (now - g_last_heartbeat_write_attempt) < 100)
+   {
+      return;
+   }
+   
+   g_last_heartbeat_write_attempt = now;
+   
    double bal = AccountInfoDouble(ACCOUNT_BALANCE); double eq = AccountInfoDouble(ACCOUNT_EQUITY);
    // Append local digits/point for cross-broker normalization
-   string line = StringFormat("%I64u,%d,%I64d,%I64d,%s,%.2f,%.2f,%d,%.10f\n", NowMs(), __MQL5BUILD__, (long)AccountInfoInteger(ACCOUNT_LOGIN), (long)g_magic, "1.0.0", bal, eq, g_digits, g_point);
-   FileWriteAll(PathHeartbeatSelf(), line);
-   string acc = StringFormat("1,%.2f,%.2f,%I64u\n", bal, eq, NowMs());
+   string line = StringFormat("%I64u,%d,%I64d,%I64d,%s,%.2f,%.2f,%d,%.10f\n", now, __MQL5BUILD__, (long)AccountInfoInteger(ACCOUNT_LOGIN), (long)g_magic, "1.0.0", bal, eq, g_digits, g_point);
+   
+   // พยายาม write 2 ครั้งหาก fail
+   int result = FileWriteAll(PathHeartbeatSelf(), line);
+   if(result != 0 && g_heartbeat_write_fail_count < 1)
+   {
+      Sleep(50); // รอสั้น ๆ
+      result = FileWriteAll(PathHeartbeatSelf(), line);
+   }
+   
+   if(result == 0)
+   {
+      g_heartbeat_write_fail_count = 0;
+   }
+   else
+   {
+      g_heartbeat_write_fail_count++;
+      if(g_heartbeat_write_fail_count > 5) g_heartbeat_write_fail_count = 5; // cap ไว้
+      if(input_verbose_journal_logs)
+         LogEvent("HEARTBEAT_WRITE_FAIL", StringFormat("error=%d;fail_count=%d", result, g_heartbeat_write_fail_count));
+   }
+   
+   string acc = StringFormat("1,%.2f,%.2f,%I64u\n", bal, eq, now);
    FileWriteAll(PathAccountStatusSelf(), acc);
 }
 
@@ -1960,13 +1999,33 @@ bool ReadPeerHeartbeat(ulong &peer_ms)
 
 void UpdatePeerStatus()
 {
-   ulong hb=0;
+   ulong hb = 0;
    if(ReadPeerHeartbeat(hb))
    {
       g_peer_hb_ms = hb;
+      g_last_successful_peer_read = NowMs();
+      g_heartbeat_consecutive_fails = 0;
+      
+      // เช็ค freshness ตามปกติ
       g_peer_alive = ((NowMs() - g_peer_hb_ms) <= (ulong)EffectiveHeartbeatTimeoutMs());
    }
-   else g_peer_alive = false;
+   else
+   {
+      g_heartbeat_consecutive_fails++;
+      
+      // ให้ grace period เฉพาะกรณี consecutive failures น้อย
+      if(g_heartbeat_consecutive_fails <= MAX_CONSECUTIVE_FAILS && 
+         g_last_successful_peer_read > 0 &&
+         (NowMs() - g_last_successful_peer_read) <= (ulong)EffectiveHeartbeatTimeoutMs())
+      {
+         // ยังถือว่า alive ชั่วคราว (ใช้ heartbeat เก่าที่ยังไม่หมดอายุ)
+         g_peer_alive = ((NowMs() - g_peer_hb_ms) <= (ulong)EffectiveHeartbeatTimeoutMs());
+      }
+      else
+      {
+         g_peer_alive = false;
+      }
+   }
 }
 
 void WriteQuotes()
@@ -3499,8 +3558,13 @@ void DisplayUpdate()
    string activeTxt = g_display_peer_alive ? "YES" : "NO";
    int hb_age = (int)(NowMs() - g_peer_hb_ms);
    
-   DisplaySetLine(line++, StringFormat("sync=%s  peer_hb_age=%dms  active=%s", 
-                                      syncTxt, hb_age, activeTxt));
+   // เพิ่มข้อมูล debug
+   string debug_info = StringFormat(" (raw=%s,fails=%d)", 
+                                   g_peer_alive?"T":"F", 
+                                   g_heartbeat_consecutive_fails);
+   
+   DisplaySetLine(line++, StringFormat("sync=%s  peer_hb_age=%dms  active=%s%s", 
+                                      syncTxt, hb_age, activeTxt, debug_info));
    if(input_role==ROLE_MASTER)
    {
       DisplaySetLine(line++, StringFormat("lot(m/s)=%.2f/%.2f  side(M)=%s", input_lot_master, input_lot_slave, ((input_master_side==SIDE_BUY)?"BUY":"SELL")));
