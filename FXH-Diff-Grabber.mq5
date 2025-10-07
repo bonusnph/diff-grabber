@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.08"
+#property version   "1.10"
 
 // =============================
 // EA Heading Master–Slave (MT5)
@@ -101,6 +101,7 @@ int    input_max_retries              = 20;            // Scope: Master — max 
 int    input_cmd_expire_ms            = 30000;         // Scope: Master — command expiry (ms)
 int    input_ack_timeout_ms           = 10000;         // Scope: Master — ack wait timeout (ms)
 int    input_heartbeat_timeout_ms     = 3000;          // Scope: Master — peer heartbeat stale threshold (ms)
+input  bool   input_enable_heartbeat_retry   = true;          // Scope: Both — enable retry mechanism for heartbeat file reads (improves reliability, adds 10-30ms latency)
 ReconcileMode input_reconcile_mode    = RECONCILE_CLOSE;// Scope: Master — desync handling policy (CLOSE/REOPEN)
 int    input_reconcile_interval_ms    = 500;           // Scope: Master — reconcile cadence (ms)
 int    input_reconcile_freeze_seconds = 8;             // Scope: Master — freeze reconcile for N seconds after both sides open
@@ -262,12 +263,21 @@ int    g_prev_peer_pairs = 0;
 // Logs housekeeping
 ulong  g_last_log_cleanup_ms = 0;
 
+// Log throttling system
+ulong g_last_reconcile_emergency_log_ms = 0;
+int g_reconcile_emergency_count = 0;
+ulong g_last_slave_reconcile_emergency_log_ms = 0;
+int g_slave_reconcile_emergency_count = 0;
+bool g_last_peer_data_reliable = true;
+ulong g_last_close_blocked_log_ms = 0;
+int g_close_blocked_count = 0;
+
 // Heartbeat resilience system
 int g_heartbeat_consecutive_fails = 0;
 ulong g_last_successful_peer_read = 0;
 int g_heartbeat_write_fail_count = 0;
 ulong g_last_heartbeat_write_attempt = 0;
-const int MAX_CONSECUTIVE_FAILS = 2;
+const int MAX_CONSECUTIVE_FAILS = 4;
 
 // Display stability system
 bool g_display_peer_alive = false;
@@ -1560,7 +1570,20 @@ void MasterReconcilePositions()
          if(peer_hb_age <= 30000) // 30 วินาที
          {
             safe_to_reconcile = true;
-            LogEvent("RECONCILE_EMERGENCY", StringFormat("peer_not_alive_but_heartbeat_fresh;hb_age_ms=%I64u", peer_hb_age));
+            g_reconcile_emergency_count++;
+            
+            // Throttle log: first occurrence + every 60 seconds
+            ulong now_log = NowMs();
+            if(g_last_reconcile_emergency_log_ms == 0 || 
+               (now_log - g_last_reconcile_emergency_log_ms) >= 60000)
+            {
+               LogEvent("RECONCILE_EMERGENCY", 
+                        StringFormat("peer_not_alive_but_heartbeat_fresh;hb_age_ms=%I64u;occurrences=%d;interval_ms=%I64u", 
+                        peer_hb_age, g_reconcile_emergency_count, 
+                        (now_log - g_last_reconcile_emergency_log_ms)));
+               g_last_reconcile_emergency_log_ms = now_log;
+               g_reconcile_emergency_count = 0;
+            }
          }
       }
   }
@@ -1931,7 +1954,20 @@ void SlaveLocalReconcile()
          if(peer_hb_age <= 30000) // 30 วินาที
          {
             safe_to_reconcile = true;
-            LogEvent("SLAVE_RECONCILE_EMERGENCY", StringFormat("peer_not_alive_but_heartbeat_fresh;hb_age_ms=%I64u", peer_hb_age));
+            g_slave_reconcile_emergency_count++;
+            
+            // Throttle log: first occurrence + every 60 seconds
+            ulong now_log = NowMs();
+            if(g_last_slave_reconcile_emergency_log_ms == 0 || 
+               (now_log - g_last_slave_reconcile_emergency_log_ms) >= 60000)
+            {
+               LogEvent("SLAVE_RECONCILE_EMERGENCY", 
+                        StringFormat("peer_not_alive_but_heartbeat_fresh;hb_age_ms=%I64u;occurrences=%d;interval_ms=%I64u", 
+                        peer_hb_age, g_slave_reconcile_emergency_count, 
+                        (now_log - g_last_slave_reconcile_emergency_log_ms)));
+               g_last_slave_reconcile_emergency_log_ms = now_log;
+               g_slave_reconcile_emergency_count = 0;
+            }
          }
       }
   }
@@ -2151,19 +2187,50 @@ void WriteMasterConfig()
 
 bool ReadPeerHeartbeat(ulong &peer_ms)
 {
-   string s; if(!FileReadAll(PathHeartbeatPeer(), s)) return false;
-   string f[]; int n = StringSplit(TrimAll(s), ',', f);
-   if(n < 1) return false;
-   peer_ms = (ulong)StringToDouble(f[0]);
-   // Optional: peer digits/point appended by the other side
-   if(n >= 9)
+   const int MAX_RETRIES = input_enable_heartbeat_retry ? 3 : 1;
+   const int RETRY_DELAY_MS = 10;
+   
+   for(int attempt = 0; attempt < MAX_RETRIES; attempt++)
    {
-      int pd = (int)StringToInteger(f[7]);
-      double pp = StringToDouble(f[8]);
-      if(pd >= 0) g_peer_digits = pd;
-      if(pp > 0.0) g_peer_point = pp;
+      string s;
+      if(FileReadAll(PathHeartbeatPeer(), s))
+      {
+         // Read success - parse data
+         string f[]; 
+         int n = StringSplit(TrimAll(s), ',', f);
+         if(n < 1) 
+         {
+            // Parse failed - retry if enabled and not last attempt
+            if(input_enable_heartbeat_retry && attempt < MAX_RETRIES - 1)
+            {
+               Sleep(RETRY_DELAY_MS);
+               continue;
+            }
+            return false;
+         }
+         
+         peer_ms = (ulong)StringToDouble(f[0]);
+         
+         // Optional: peer digits/point appended by the other side
+         if(n >= 9)
+         {
+            int pd = (int)StringToInteger(f[7]);
+            double pp = StringToDouble(f[8]);
+            if(pd >= 0) g_peer_digits = pd;
+            if(pp > 0.0) g_peer_point = pp;
+         }
+         
+         return true; // Success
+      }
+      
+      // Read failed - retry if enabled and not last attempt
+      if(input_enable_heartbeat_retry && attempt < MAX_RETRIES - 1)
+      {
+         Sleep(RETRY_DELAY_MS);
+      }
    }
-   return true;
+   
+   return false; // Failed after all retries
 }
 
 
@@ -2701,8 +2768,9 @@ void MaybeClosePair()
    if(!g_peer_alive)
    {
       // หาก peer ไม่ alive ให้เช็คความน่าเชื่อถือของข้อมูล
-      ulong quote_age = NowMs() - g_peer_quote_ms;
-      ulong heartbeat_age = g_peer_hb_ms > 0 ? (NowMs() - g_peer_hb_ms) : 999999;
+      ulong now = NowMs();
+      ulong quote_age = (now >= g_peer_quote_ms) ? (now - g_peer_quote_ms) : 999999;
+      ulong heartbeat_age = (g_peer_hb_ms > 0 && now >= g_peer_hb_ms) ? (now - g_peer_hb_ms) : 999999;
       
       // ยอมให้ใช้ข้อมูลเฉพาะเมื่อ:
       // 1. Quote อายุไม่เกิน 2 วินาที
@@ -2710,8 +2778,40 @@ void MaybeClosePair()
       if(quote_age > 2000 || heartbeat_age > 10000)
       {
          peer_data_reliable = false;
-         LogEvent("CLOSE_BLOCKED", StringFormat("peer_data_unreliable;quote_age=%I64u;hb_age=%I64u", 
-                                              quote_age, heartbeat_age));
+         g_close_blocked_count++;
+         
+         // State-change detection: log only on transition or periodic summary
+         if(g_last_peer_data_reliable)
+         {
+            // First time becoming unreliable
+            LogEvent("CLOSE_BLOCKED_START", 
+                     StringFormat("peer_data_unreliable;quote_age=%I64u;hb_age=%I64u", 
+                     quote_age, heartbeat_age));
+            g_last_close_blocked_log_ms = now;
+         }
+         else if((now - g_last_close_blocked_log_ms) >= 60000)
+         {
+            // Periodic summary every 60 seconds
+            LogEvent("CLOSE_BLOCKED_SUMMARY", 
+                     StringFormat("still_unreliable;count=%d;duration_s=%I64u;last_quote_age=%I64u;last_hb_age=%I64u", 
+                     g_close_blocked_count, (now - g_last_close_blocked_log_ms)/1000, 
+                     quote_age, heartbeat_age));
+            g_last_close_blocked_log_ms = now;
+            g_close_blocked_count = 0;
+         }
+         g_last_peer_data_reliable = false;
+      }
+      else
+      {
+         // Data became reliable
+         if(!g_last_peer_data_reliable)
+         {
+            LogEvent("CLOSE_UNBLOCKED", 
+                     StringFormat("peer_data_reliable_restored;blocked_count=%d;total_duration_s=%I64u", 
+                     g_close_blocked_count, (now - g_last_close_blocked_log_ms)/1000));
+            g_close_blocked_count = 0;
+         }
+         g_last_peer_data_reliable = true;
       }
    }
    
@@ -3611,7 +3711,8 @@ void DisplayUpdate()
    // ใช้ค่าที่ stable แทน
    string syncTxt = g_display_peer_alive ? "OK" : "WAITING";
    string activeTxt = g_display_peer_alive ? "YES" : "NO";
-   int hb_age = (int)(NowMs() - g_peer_hb_ms);
+   ulong now_display = NowMs();
+   int hb_age = (int)((now_display >= g_peer_hb_ms) ? (now_display - g_peer_hb_ms) : 0);
    
    // เพิ่มข้อมูล debug
    string debug_info = StringFormat(" (raw=%s,fails=%d)", 
