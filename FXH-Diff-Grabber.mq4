@@ -2441,8 +2441,6 @@ void MaybeOpenPair()
          g_open_ok_count = 0;
          g_raw_open_pending = false;
          g_raw_open_stable_count = 0;
-         LogEvent("ZONE_OPEN_UNSTABLE", StringFormat("diff=%.1f;positive_count=%d;negative_count=%d;threshold=%.1f;neg_threshold=%d", 
-                  diffOpen, g_open_positive_count, g_open_negative_count, (double)GetOpenThresholdPoints(), input_zone_negative_threshold));
          return;
       }
    }
