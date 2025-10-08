@@ -1905,11 +1905,11 @@ void WriteHeartbeat()
    string line = StringFormat("%I64u,%d,%I64d,%I64d,%s,%.2f,%.2f,%d,%.10f\n", now, __MQL5BUILD__, (long)AccountInfoInteger(ACCOUNT_LOGIN), (long)g_magic, "1.0.0", bal, eq, g_digits, g_point);
    
    // พยายาม write 2 ครั้งหาก fail
-   int result = FileWriteAll(PathHeartbeatSelf(), line);
+   int result = FileWriteAllAtomic(PathHeartbeatSelf(), line);
    if(result != 0 && g_heartbeat_write_fail_count < 1)
    {
       Sleep(50); // รอสั้น ๆ
-      result = FileWriteAll(PathHeartbeatSelf(), line);
+      result = FileWriteAllAtomic(PathHeartbeatSelf(), line);
    }
    
    if(result == 0)
@@ -2147,7 +2147,7 @@ void WriteQuotes()
    SymbolInfoDouble(g_symbol, SYMBOL_ASK, g_self_ask);
    g_self_quote_ms = NowMs();
    string line = StringFormat("%I64u,%.10f,%.10f\n", g_self_quote_ms, g_self_bid, g_self_ask);
-   FileWriteAll(PathQuotesSelf(), line);
+   FileWriteAllAtomic(PathQuotesSelf(), line);
 }
 
 bool ReadPeerQuotes()
