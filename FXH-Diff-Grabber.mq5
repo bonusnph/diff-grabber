@@ -3368,7 +3368,7 @@ void DisplayInit()
       ObjectCreate(0, eq_bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
       ObjectSetInteger(0, eq_bg, OBJPROP_CORNER, 0);
       ObjectSetInteger(0, eq_bg, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
-      ObjectSetInteger(0, eq_bg, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8);
+      ObjectSetInteger(0, eq_bg, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 30);
       ObjectSetInteger(0, eq_bg, OBJPROP_XSIZE, EQUITY_W);
       ObjectSetInteger(0, eq_bg, OBJPROP_YSIZE, EQUITY_H);
       ObjectSetInteger(0, eq_bg, OBJPROP_COLOR, clrLightGray);
@@ -3378,7 +3378,7 @@ void DisplayInit()
       ObjectCreate(0, eq_label, OBJ_LABEL, 0, 0, 0);
       ObjectSetInteger(0, eq_label, OBJPROP_CORNER, 0);
       ObjectSetInteger(0, eq_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
-      ObjectSetInteger(0, eq_label, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8 + 5);
+      ObjectSetInteger(0, eq_label, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 30 + 5);
       ObjectSetString(0, eq_label, OBJPROP_TEXT, "Profit");
       ObjectSetString(0, eq_label, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, eq_label, OBJPROP_FONTSIZE, 9);
@@ -3388,14 +3388,14 @@ void DisplayInit()
       ObjectCreate(0, eq_value, OBJ_LABEL, 0, 0, 0);
       ObjectSetInteger(0, eq_value, OBJPROP_CORNER, 0);
       ObjectSetInteger(0, eq_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
-      ObjectSetInteger(0, eq_value, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8 + 22);
+      ObjectSetInteger(0, eq_value, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 30 + 22);
       ObjectSetString(0, eq_value, OBJPROP_TEXT, "$0.00");
       ObjectSetString(0, eq_value, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, eq_value, OBJPROP_FONTSIZE, 12);
       ObjectSetInteger(0, eq_value, OBJPROP_COLOR, clrDarkGreen);
 
       // Realtime diffOpen/diffClose labels and values (below Profit)
-      int diff_base_y = CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8 + EQUITY_H + 8;
+      int diff_base_y = CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 30 + EQUITY_H + 8;
 
       // Background for diff section (white)
       string diff_bg = OBJ_PREFIX + "DIFF_BG";
