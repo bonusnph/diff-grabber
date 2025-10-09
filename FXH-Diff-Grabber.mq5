@@ -45,7 +45,7 @@ int    input_display_width_pixels      = 520;           // Scope: Both — width
 // Master decision parameters
 int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
 input MasterSide input_master_side          = SIDE_SELL;     // Scope: Master — master direction (Slave auto-opposite)
-input double input_lot                      = 0.01;          // Scope: Both — lot size for orders (applies to Master and Slave)
+input double input_lot                      = 0.01;          // Scope: Master — lot size for orders (applies to Master and Slave)
 
 // Centralized mode control (Master only)
 input bool   input_trading_positive_swap        = false;    // Scope: Master — Positive Swap mode: true=optimize for positive swap (disable scheduled/threshold/force-close; weekend only), false=enable scheduled/threshold/force-close
@@ -100,8 +100,8 @@ int    input_max_retries              = 20;            // Scope: Master — max 
 // Smart Sync timeouts
 int    input_cmd_expire_ms            = 30000;         // Scope: Master — command expiry (ms)
 int    input_ack_timeout_ms           = 10000;         // Scope: Master — ack wait timeout (ms)
-int    input_heartbeat_timeout_ms     = 3000;          // Scope: Master — peer heartbeat stale threshold (ms)
-input  bool   input_enable_heartbeat_retry   = true;          // Scope: Both — enable retry mechanism for heartbeat file reads (improves reliability, adds 10-30ms latency)
+int    input_heartbeat_timeout_ms     = 5000;          // Scope: Master — peer heartbeat stale threshold (ms)
+bool   input_enable_heartbeat_retry   = true;          // Scope: Both — enable retry mechanism for heartbeat file reads (improves reliability, adds 10-30ms latency)
 ReconcileMode input_reconcile_mode    = RECONCILE_CLOSE;// Scope: Master — desync handling policy (CLOSE/REOPEN)
 int    input_reconcile_interval_ms    = 500;           // Scope: Master — reconcile cadence (ms)
 int    input_reconcile_freeze_seconds = 8;             // Scope: Master — freeze reconcile for N seconds after both sides open
@@ -282,6 +282,14 @@ int g_heartbeat_write_fail_count = 0;
 ulong g_last_heartbeat_write_attempt = 0;
 const int MAX_CONSECUTIVE_FAILS = 4;
 
+// Peer status stability system (anti-flapping)
+bool g_stable_peer_alive = false;
+int g_peer_alive_stability_count = 0;
+const int PEER_STABILITY_THRESHOLD = 15;
+
+// Double buffering system for heartbeat files
+int g_heartbeat_buffer_index = 0;
+
 // Display stability system
 bool g_display_peer_alive = false;
 int g_display_stability_count = 0;
@@ -383,8 +391,15 @@ string PathCloseAckSelf(){ return PathChannelRoot() + ((input_role==ROLE_MASTER)
 string PathCloseAckPeer(){ return PathChannelRoot() + ((input_role==ROLE_MASTER) ? "close_ack_slave.csv" : "close_ack_master.csv"); }
 string PathPositionsSelf(){ return PathChannelRoot() + ((input_role==ROLE_MASTER) ? "positions_master.csv" : "positions_slave.csv"); }
 string PathPositionsPeer(){ return PathChannelRoot() + ((input_role==ROLE_MASTER) ? "positions_slave.csv" : "positions_master.csv"); }
-string PathHeartbeatSelf(){ return PathChannelRoot() + ((input_role==ROLE_MASTER) ? "heartbeat_master.csv" : "heartbeat_slave.csv"); }
-string PathHeartbeatPeer(){ return PathChannelRoot() + ((input_role==ROLE_MASTER) ? "heartbeat_slave.csv" : "heartbeat_master.csv"); }
+string PathHeartbeatSelf()
+{ 
+   string base = PathChannelRoot() + ((input_role==ROLE_MASTER) ? "heartbeat_master" : "heartbeat_slave");
+   return base + "_" + IntegerToString(g_heartbeat_buffer_index) + ".csv";
+}
+string PathHeartbeatPeer()
+{ 
+   return PathHeartbeatPeerNewest();
+}
 string PathConfigMaster()  { return PathChannelRoot() + "config_master.csv"; }
 string PathRoleLock()      { return PathChannelRoot() + ((input_role==ROLE_MASTER)? "lock_master.csv":"lock_slave.csv"); }
 string PathPairMapSelf()   { return PathChannelRoot() + ((input_role==ROLE_MASTER)? "pair_map_master.csv":"pair_map_slave.csv"); }
@@ -882,9 +897,10 @@ int FileWriteAll(const string relPath, const string content)
 int FileWriteAllAtomic(const string relPath, const string content)
 {
    string tmp = relPath + ".tmp";
-   int h = FileOpen(tmp, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   int h = FileOpen(tmp, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ);
    if(h == INVALID_HANDLE) return GetLastError();
    FileWriteString(h, content);
+   FileFlush(h);  // Force OS to write immediately
    FileClose(h);
    bool mv = FileMove(tmp, FILE_COMMON, relPath, FILE_COMMON);
    if(!mv) 
@@ -898,12 +914,77 @@ int FileWriteAllAtomic(const string relPath, const string content)
 bool FileReadAll(const string relPath, string &out)
 {
    out = "";
-   int h = FileOpen(relPath, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   int h = FileOpen(relPath, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
    if(h == INVALID_HANDLE) return false;
    int size = (int)FileSize(h);
    out = FileReadString(h, size);
    FileClose(h);
    return true;
+}
+
+// Parse heartbeat timestamp from file content
+ulong ParseHeartbeatTimestamp(const string content)
+{
+   string trimmed = TrimAll(content);
+   if(StringLen(trimmed) == 0) return 0;
+   
+   string parts[];
+   int n = StringSplit(trimmed, ',', parts);
+   if(n < 1) return 0;
+   
+   ulong ts = (ulong)StringToDouble(parts[0]);
+   
+   // Validate timestamp range (year 2001-2286)
+   if(ts < 1000000000000 || ts > 9999999999999) return 0;
+   
+   return ts;
+}
+
+// Get newest heartbeat file from peer's double buffer
+string PathHeartbeatPeerNewest()
+{
+   string base = PathChannelRoot() + ((input_role==ROLE_MASTER) ? "heartbeat_slave" : "heartbeat_master");
+   string file0 = base + "_0.csv";
+   string file1 = base + "_1.csv";
+   
+   string content0, content1;
+   bool ok0 = FileReadAll(file0, content0);
+   bool ok1 = FileReadAll(file1, content1);
+   
+   // Validate that files have sufficient content (not empty or incomplete)
+   bool valid0 = ok0 && StringLen(TrimAll(content0)) > 10;
+   bool valid1 = ok1 && StringLen(TrimAll(content1)) > 10;
+   
+   if(!valid0 && !valid1) return "";
+   if(!valid0) return file1;
+   if(!valid1) return file0;
+   
+   ulong ts0 = ParseHeartbeatTimestamp(content0);
+   ulong ts1 = ParseHeartbeatTimestamp(content1);
+   
+   // Check timestamp validity
+   bool ts0_valid = (ts0 > 1000000000000 && ts0 < 9999999999999);
+   bool ts1_valid = (ts1 > 1000000000000 && ts1 < 9999999999999);
+   
+   if(!ts0_valid && !ts1_valid) {
+      // Both timestamps invalid, use file with longer content
+      return (StringLen(content0) > StringLen(content1)) ? file0 : file1;
+   }
+   
+   if(!ts0_valid) return file1;
+   if(!ts1_valid) return file0;
+   
+   // Check timestamp age (avoid using stale files > 30 seconds)
+   ulong now = NowMs();
+   ulong age0 = (now > ts0) ? (now - ts0) : 999999;
+   ulong age1 = (now > ts1) ? (now - ts1) : 999999;
+   
+   // If one file is stale (>30s) and other is fresh, prefer fresh
+   if(age0 > 30000 && age1 <= 30000) return file1;
+   if(age1 > 30000 && age0 <= 30000) return file0;
+   
+   // Normal case: return newest timestamp
+   return (ts0 > ts1) ? file0 : file1;
 }
 
 string NodeId()
@@ -1559,7 +1640,7 @@ void MasterReconcilePositions()
   bool safe_to_reconcile = g_peer_alive;
   
   // ยอมให้ reconcile ในกรณีฉุกเฉิน แม้ peer ไม่ alive
-  if(!g_peer_alive)
+  if(!g_stable_peer_alive)
   {
      // เช็คว่ามี position file ที่อ่านได้หรือไม่
      string peerContent;
@@ -1807,9 +1888,57 @@ void MasterReconcilePositions()
     string peerPos, selfPos; string pRows[]; string sRows[]; int pn=0, sn=0;
     if(FileReadAll(PathPositionsPeer(), peerPos)) pn = StringSplit(TrimAll(peerPos), '\n', pRows);
     if(FileReadAll(PathPositionsSelf(), selfPos)) sn = StringSplit(TrimAll(selfPos), '\n', sRows);
+    
+    // DEBUG: Log positions file contents only when there's N/A or mismatch
+    bool has_na_self = (StringFind(selfPos, "N/A") >= 0);
+    bool has_na_peer = (StringFind(peerPos, "N/A") >= 0);
+    bool has_mismatch = (sn != pn);
+    if(has_na_self || has_na_peer || has_mismatch)
+    {
+       LogEvent("RECONCILE_POSITIONS_DEBUG", StringFormat("self_lines=%d;peer_lines=%d;has_na_self=%s;has_na_peer=%s;self_content=%s;peer_content=%s", 
+                 sn, pn, has_na_self?"true":"false", has_na_peer?"true":"false", 
+                 StringSubstr(selfPos, 0, MathMin(200, StringLen(selfPos))), StringSubstr(peerPos, 0, MathMin(200, StringLen(peerPos)))));
+    }
+    
     // extra on peer -> ask peer to close
     string pidExtraPeer="";
-    for(int i=0;i<pn && pidExtraPeer==""; ++i){ string c[]; int cn=StringSplit(TrimAll(pRows[i]), ',', c); if(cn>=1){ string pid=c[0]; if(pid==""||pid=="N/A") continue; bool found=false; for(int j=0;j<sn; ++j){ string c2[]; int c2n=StringSplit(TrimAll(sRows[j]), ',', c2); if(c2n>=1 && c2[0]==pid){ found=true; break; } } if(!found) pidExtraPeer=pid; } }
+    ulong ticketExtraPeer=0;
+    for(int i=0;i<pn && pidExtraPeer==""; ++i)
+    { 
+      string c[]; int cn=StringSplit(TrimAll(pRows[i]), ',', c); 
+      if(cn>=2)
+      { 
+        string pid=c[0]; 
+        ulong tkt=(ulong)StringToInteger(c[1]);
+        
+        // Match by pair_id first (if valid)
+        if(pid!="" && pid!="N/A")
+        {
+          bool found=false; 
+          for(int j=0;j<sn; ++j)
+          { 
+            string c2[]; int c2n=StringSplit(TrimAll(sRows[j]), ',', c2); 
+            if(c2n>=1 && c2[0]==pid){ found=true; break; } 
+          } 
+          if(!found) pidExtraPeer=pid;
+        }
+        // Fallback: if pair_id is N/A, match by ticket to avoid false positive
+        else if(pid=="N/A" && tkt>0)
+        {
+          bool foundByTicket=false;
+          for(int j=0;j<sn; ++j)
+          { 
+            string c2[]; int c2n=StringSplit(TrimAll(sRows[j]), ',', c2); 
+            if(c2n>=2)
+            {
+              ulong selfTkt=(ulong)StringToInteger(c2[1]);
+              if(selfTkt==tkt){ foundByTicket=true; break; }
+            }
+          }
+          if(!foundByTicket){ pidExtraPeer=pid; ticketExtraPeer=tkt; }
+        }
+      } 
+    }
     if(pidExtraPeer!="")
     {
       last_reconcile_action_ms = NowMs(); // Update throttle timestamp
@@ -1823,7 +1952,43 @@ void MasterReconcilePositions()
     }
     // extra on self -> close self
     string pidExtraSelf="";
-    for(int i=0;i<sn && pidExtraSelf==""; ++i){ string c[]; int cn=StringSplit(TrimAll(sRows[i]), ',', c); if(cn>=1){ string pid=c[0]; if(pid==""||pid=="N/A") continue; bool found=false; for(int j=0;j<pn; ++j){ string c2[]; int c2n=StringSplit(TrimAll(pRows[j]), ',', c2); if(c2n>=1 && c2[0]==pid){ found=true; break; } } if(!found) pidExtraSelf=pid; } }
+    ulong ticketExtraSelf=0;
+    for(int i=0;i<sn && pidExtraSelf==""; ++i)
+    { 
+      string c[]; int cn=StringSplit(TrimAll(sRows[i]), ',', c); 
+      if(cn>=2)
+      { 
+        string pid=c[0]; 
+        ulong tkt=(ulong)StringToInteger(c[1]);
+        
+        // Match by pair_id first (if valid)
+        if(pid!="" && pid!="N/A")
+        {
+          bool found=false; 
+          for(int j=0;j<pn; ++j)
+          { 
+            string c2[]; int c2n=StringSplit(TrimAll(pRows[j]), ',', c2); 
+            if(c2n>=1 && c2[0]==pid){ found=true; break; } 
+          } 
+          if(!found) pidExtraSelf=pid;
+        }
+        // Fallback: if pair_id is N/A, match by ticket to avoid false positive
+        else if(pid=="N/A" && tkt>0)
+        {
+          bool foundByTicket=false;
+          for(int j=0;j<pn; ++j)
+          { 
+            string c2[]; int c2n=StringSplit(TrimAll(pRows[j]), ',', c2); 
+            if(c2n>=2)
+            {
+              ulong peerTkt=(ulong)StringToInteger(c2[1]);
+              if(peerTkt==tkt){ foundByTicket=true; break; }
+            }
+          }
+          if(!foundByTicket){ pidExtraSelf=pid; ticketExtraSelf=tkt; }
+        }
+      } 
+    }
     if(pidExtraSelf!="")
     {
       bool ok1 = CloseSelfByPairId(pidExtraSelf);
@@ -1941,7 +2106,7 @@ void SlaveLocalReconcile()
   bool safe_to_reconcile = g_peer_alive;
   
   // ยอมให้ reconcile ในกรณีฉุกเฉิน แม้ peer ไม่ alive
-  if(!g_peer_alive)
+  if(!g_stable_peer_alive)
   {
      // เช็คว่ามี position file ที่อ่านได้หรือไม่
      string peerContent;
@@ -2086,6 +2251,8 @@ void WriteHeartbeat()
    if(result == 0)
    {
       g_heartbeat_write_fail_count = 0;
+      // Switch buffer for next write (Double Buffering)
+      g_heartbeat_buffer_index = 1 - g_heartbeat_buffer_index;
    }
    else
    {
@@ -2188,14 +2355,28 @@ void WriteMasterConfig()
 
 bool ReadPeerHeartbeat(ulong &peer_ms)
 {
-   const int MAX_RETRIES = input_enable_heartbeat_retry ? 3 : 1;
-   const int RETRY_DELAY_MS = 10;
+   const int MAX_RETRIES = input_enable_heartbeat_retry ? 10 : 1;
+   const int RETRY_DELAY_MS = 100;
    string fail_reason = "";
+   int retry_delay = RETRY_DELAY_MS;
    
    for(int attempt = 0; attempt < MAX_RETRIES; attempt++)
    {
       string s;
-      if(FileReadAll(PathHeartbeatPeer(), s))
+      string peer_path = PathHeartbeatPeer();
+      if(peer_path == "") 
+      {
+         fail_reason = "no_peer_file";
+         if(input_enable_heartbeat_retry && attempt < MAX_RETRIES - 1)
+         {
+            Sleep(retry_delay);
+            retry_delay = MathMin(retry_delay * 2, 500);
+            continue;
+         }
+         return false;
+      }
+      
+      if(FileReadAll(peer_path, s))
       {
          // Read success - parse data
          string f[]; 
@@ -2206,7 +2387,8 @@ bool ReadPeerHeartbeat(ulong &peer_ms)
             fail_reason = "parse_failed";
             if(input_enable_heartbeat_retry && attempt < MAX_RETRIES - 1)
             {
-               Sleep(RETRY_DELAY_MS);
+               Sleep(retry_delay);
+               retry_delay = MathMin(retry_delay * 2, 500);
                continue;
             }
             
@@ -2226,6 +2408,19 @@ bool ReadPeerHeartbeat(ulong &peer_ms)
          
          peer_ms = (ulong)StringToDouble(f[0]);
          
+         // Validate timestamp to prevent race condition issues
+         if(peer_ms == 0 || peer_ms < 1000000000000)
+         {
+            fail_reason = "invalid_timestamp";
+            if(input_enable_heartbeat_retry && attempt < MAX_RETRIES - 1)
+            {
+               Sleep(retry_delay);
+               retry_delay = MathMin(retry_delay * 2, 500);
+               continue;
+            }
+            return false;
+         }
+         
          // Optional: peer digits/point appended by the other side
          if(n >= 9)
          {
@@ -2242,7 +2437,8 @@ bool ReadPeerHeartbeat(ulong &peer_ms)
       fail_reason = "file_read_failed";
       if(input_enable_heartbeat_retry && attempt < MAX_RETRIES - 1)
       {
-         Sleep(RETRY_DELAY_MS);
+         Sleep(retry_delay);
+         retry_delay = MathMin(retry_delay * 2, 500);
       }
    }
    
@@ -2266,6 +2462,7 @@ void UpdatePeerStatus()
 {
    ulong hb = 0;
    bool was_alive = g_peer_alive;
+   bool was_stable_alive = g_stable_peer_alive;
    
    if(ReadPeerHeartbeat(hb))
    {
@@ -2286,7 +2483,8 @@ void UpdatePeerStatus()
          (NowMs() - g_last_successful_peer_read) <= (ulong)EffectiveHeartbeatTimeoutMs())
       {
          // ยังถือว่า alive ชั่วคราว (ใช้ heartbeat เก่าที่ยังไม่หมดอายุ)
-         g_peer_alive = ((NowMs() - g_peer_hb_ms) <= (ulong)EffectiveHeartbeatTimeoutMs());
+         // ต้องเช็ค g_peer_hb_ms > 0 ก่อน (cold start protection)
+         g_peer_alive = (g_peer_hb_ms > 0 && (NowMs() - g_peer_hb_ms) <= (ulong)EffectiveHeartbeatTimeoutMs());
       }
       else
       {
@@ -2294,20 +2492,38 @@ void UpdatePeerStatus()
       }
    }
    
-   // Log peer status changes and periodic updates (throttled)
+   // Stability check: require consistent value before changing stable status
+   static bool last_peer_alive = false;
+   if(g_peer_alive == last_peer_alive)
+   {
+      g_peer_alive_stability_count++;
+   }
+   else
+   {
+      g_peer_alive_stability_count = 1;
+      last_peer_alive = g_peer_alive;
+   }
+   
+   // Update stable value only when threshold reached
+   if(g_peer_alive_stability_count >= PEER_STABILITY_THRESHOLD)
+   {
+      g_stable_peer_alive = g_peer_alive;
+   }
+   
+   // Log only stable status changes (reduces spam from race conditions)
    ulong now = NowMs();
-   if(was_alive != g_peer_alive || 
-      (g_last_heartbeat_status_log_ms == 0 || (now - g_last_heartbeat_status_log_ms) >= 300000))
+   if(was_stable_alive != g_stable_peer_alive || 
+      (!g_stable_peer_alive && (g_last_heartbeat_status_log_ms == 0 || (now - g_last_heartbeat_status_log_ms) >= 300000)))
    {
       ulong hb_age = (g_peer_hb_ms > 0 && now >= g_peer_hb_ms) ? (now - g_peer_hb_ms) : 999999;
       ulong last_read_age = (g_last_successful_peer_read > 0 && now >= g_last_successful_peer_read) ? 
                             (now - g_last_successful_peer_read) : 999999;
       
       LogEvent("HEARTBEAT_STATUS", 
-               StringFormat("peer_alive=%s;consec_fails=%d;hb_age=%I64u;last_read_age=%I64u;timeout=%d;state_changed=%s", 
-               (g_peer_alive ? "true" : "false"), g_heartbeat_consecutive_fails, 
+               StringFormat("peer_alive=%s;consec_fails=%d;hb_age=%I64u;last_read_age=%I64u;timeout=%d;state_changed=%s;stability=%d", 
+               (g_stable_peer_alive ? "true" : "false"), g_heartbeat_consecutive_fails, 
                hb_age, last_read_age, EffectiveHeartbeatTimeoutMs(),
-               (was_alive != g_peer_alive ? "yes" : "no")));
+               (was_stable_alive != g_stable_peer_alive ? "yes" : "no"), g_peer_alive_stability_count));
       g_last_heartbeat_status_log_ms = now;
    }
 }
@@ -2544,7 +2760,7 @@ void MaybeOpenPair()
    if(g_close_only_mode) return;
    // Saturday quiet window: block opens
    if(IsInSaturdayQuietWindow()) return;
-   if(!g_peer_alive) return; // do not operate without peer
+   if(!g_stable_peer_alive) return; // do not operate without peer
    if((int)(TimeCurrent() - g_last_open_time) < input_open_cooldown_seconds) return;
    if(CountOpenPairs() >= input_max_open_pairs) return;
    if(!ReadPeerQuotes()) return;
@@ -2812,7 +3028,7 @@ void MaybeClosePair()
    // เพิ่มการเช็ค peer data reliability ก่อนใช้ข้อมูล
    bool peer_data_reliable = true;
    
-   if(!g_peer_alive)
+   if(!g_stable_peer_alive)
    {
       // หาก peer ไม่ alive ให้เช็คความน่าเชื่อถือของข้อมูล
       ulong now = NowMs();
@@ -3206,6 +3422,7 @@ void WritePositions()
   // Build quick cache map for lookup
   int cn = ArraySize(g_cache_pair_ids);
   string buf = "";
+  int na_count = 0; // Track N/A pair_ids
   for(int i=PositionsTotal()-1; i>=0; --i)
   {
      ulong ticket = PositionGetTicket(i); if(!PositionSelectByTicket(ticket)) continue;
@@ -3224,12 +3441,20 @@ void WritePositions()
          for(int k=0;k<mapLn;k++){ string cols[]; int cn=StringSplit(TrimAll(mapLines[k]), ',', cols); if(cn>=2){ if((ulong)StringToInteger(cols[1])==ticket){ pid=cols[0]; break; } } }
        }
      }
+     if(pid=="N/A") na_count++;
      long type = PositionGetInteger(POSITION_TYPE);
      string side = (type==POSITION_TYPE_BUY)?"BUY":"SELL";
      double vol = PositionGetDouble(POSITION_VOLUME);
      double price = PositionGetDouble(POSITION_PRICE_OPEN);
      buf += StringFormat("%s,%I64d,%s,%s,%.2f,%.5f\n", pid, (long)ticket, g_symbol, side, vol, price);
      current_count++;
+  }
+  
+  // Log warning if N/A pair_ids detected
+  if(na_count > 0)
+  {
+     LogEvent("WRITE_POSITIONS_NA_WARNING", StringFormat("role=%s;na_count=%d;total_positions=%d;cache_size=%d;map_lines=%d", 
+               RoleName(), na_count, current_count, ArraySize(g_cache_pair_ids), mapLn));
   }
   
   // ENHANCED: Add stability check before detecting manual close to prevent false positives
