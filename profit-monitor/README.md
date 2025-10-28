@@ -175,7 +175,7 @@ npx vercel logout && npx vercel login
 npx vercel link
 
 # Deploy
-npx vercel deploy
+npx vercel deploy --prod
 ```
 
 Git Integration (Dashboard):
