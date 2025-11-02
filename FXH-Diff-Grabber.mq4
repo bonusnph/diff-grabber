@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.10"
+#property version   "1.11"
 #property strict
 
 // =============================
@@ -50,7 +50,7 @@ input bool   input_trading_positive_swap        = false;    // Scope: Master —
 int    input_pswap_close_th_points        = 10000;     // Scope: Master — close threshold to enforce during positive swap window (03:00-05:30 local, non-Saturday)
 
 // Positive Swap Thursday auto-open (Master only)
-input string input_swap_thursday_open_time    = "03:30";  // Scope: Master — Thursday auto-open time (HH:mm, local)
+input string input_swap_thursday_open_time    = "04:30";  // Scope: Master — Thursday auto-open time (HH:mm, local)
 input double input_swap_trading_lots    = 0.01;      // Scope: Master — lots for Thursday auto-open
 
 #define input_lot_master input_lot
@@ -123,30 +123,30 @@ double input_initial_capital_usd       = 0.00;         // Scope: Master — init
 
 // Scheduled Close Only Mode (Master only)
 bool   input_scheduled_close_only_enabled = true;    // Scope: Master — enable scheduled close only mode
-string input_close_only_start_time        = "00:00";  // Scope: Master — start time for close only mode (HH:mm format)
-string input_close_only_end_time          = "06:00";  // Scope: Master — end time for close only mode (HH:mm format)
+string input_close_only_start_time        = "02:00";  // Scope: Master — start time for close only mode (HH:mm format)
+string input_close_only_end_time          = "07:00";  // Scope: Master — end time for close only mode (HH:mm format)
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
 bool   input_sat_close_only_enabled       = true;     // Scope: Master — enable weekend close-only schedule (Sat start -> Mon end)
-string input_sat_close_only_start_time    = "00:00";  // Scope: Master — Saturday start time (HH:mm)
-string input_mon_close_only_end_time      = "06:00";  // Scope: Master — Monday end time (HH:mm)
+string input_sat_close_only_start_time    = "02:00";  // Scope: Master — Saturday start time (HH:mm)
+string input_mon_close_only_end_time      = "07:00";  // Scope: Master — Monday end time (HH:mm)
 
 // Close Threshold Scheduler (Master only)
 bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes
-string input_close_th_time1               = "01:00";  // HH:mm — schedule slot 1
+string input_close_th_time1               = "02:00";  // HH:mm — schedule slot 1
 int    input_close_th_value1              = 10;       // points — threshold at time1
-string input_close_th_time2               = "02:00";  // HH:mm — schedule slot 2
+string input_close_th_time2               = "03:00";  // HH:mm — schedule slot 2
 int    input_close_th_value2              = 5;       // points — threshold at time2
-string input_close_th_time3               = "03:00";  // HH:mm — schedule slot 3
+string input_close_th_time3               = "04:00";  // HH:mm — schedule slot 3
 int    input_close_th_value3              = 0;        // points — threshold at time3
-string input_close_th_time4               = "03:15";  // HH:mm — schedule (prevent close time)
+string input_close_th_time4               = "04:15";  // HH:mm — schedule (prevent close time)
 int   input_close_th_value4               = 10000;     // points — threshold at time4
-string input_close_th_time5               = "05:30";  // HH:mm — schedule reset to initial close threshold
-string input_close_th_time6               = "06:00";  // HH:mm — schedule freeze close threshold all day
+string input_close_th_time5               = "06:30";  // HH:mm — schedule reset to initial close threshold
+string input_close_th_time6               = "07:00";  // HH:mm — schedule freeze close threshold all day
 
 // Force Close at Time (Master only)
 bool   input_force_close_time_enabled     = false;    // Scope: Master — enable daily forced close at a specific time
-string input_force_close_time             = "03:15";  // Scope: Master — time to force close all (HH:mm)
+string input_force_close_time             = "04:15";  // Scope: Master — time to force close all (HH:mm)
 
 // Account Authorization via Google Sheets
 string input_auth_sheet_url            = "https://script.google.com/macros/s/AKfycbwu4NytwY2ycRFsonoyEJFJICqT-ooS6Wszb5LTY3PEysF1hxXMEZ0ThgAlzUlCZr1gdg/exec";           // Scope: Both — Google Sheets CSV export URL for account authorization
