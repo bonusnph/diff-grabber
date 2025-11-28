@@ -647,6 +647,7 @@ void RebuildPairMapSelfFromCache()
 // -----------------------------
 bool   g_account_authorized = false;
 datetime g_account_expires_at = 0;
+double g_account_max_lots = 0.0;
 ulong  g_last_auth_check_ms = 0;
 string g_auth_error_message = "";
 bool   g_auth_check_in_progress = false;
@@ -681,9 +682,10 @@ bool HttpGetRequest(const string url, string &response)
 }
 
 // Parse CSV response and check account authorization
-bool ParseAuthorizationData(const string csv_data, const int account_number, datetime &expires_out)
+bool ParseAuthorizationData(const string csv_data, const int account_number, datetime &expires_out, double &max_lots_out)
 {
    expires_out = 0;
+   max_lots_out = 0.0;
    if(StringLen(csv_data) == 0)
    {
       g_auth_error_message = "Empty response from authorization server";
@@ -718,13 +720,22 @@ bool ParseAuthorizationData(const string csv_data, const int account_number, dat
                      int month = (int)StrToInteger(date_fields[1]);
                      int day = (int)StrToInteger(date_fields[2]);
                      expires_out = StrToTime(StringFormat("%04d.%02d.%02d 23:59:59", year, month, day));
-                     if(expires_out > 0) return true;
+                  }
+                  else
+                  {
+                     expires_out = StrToTime(expire_str);
                   }
                }
-               expires_out = StrToTime(expire_str);
-               return (expires_out > 0);
             }
-            return true; // Account found but no expiration date
+            if(field_count >= 3)
+            {
+               string max_lots_str = TrimAll(fields[2]);
+               if(StringLen(max_lots_str) > 0)
+               {
+                  max_lots_out = StringToDouble(max_lots_str);
+               }
+            }
+            return true; // Account found
          }
       }
    }
@@ -753,7 +764,8 @@ bool CheckAccountAuthorization()
       LogEvent("AUTH_CHECK_FAILED", StringFormat("account=%d;error=%s", account_num, g_auth_error_message));
       return false;
    }
-   datetime expires_at = 0; bool authorized = ParseAuthorizationData(response, account_num, expires_at);
+   datetime expires_at = 0; double max_lots = 0.0;
+   bool authorized = ParseAuthorizationData(response, account_num, expires_at, max_lots);
    if(authorized)
    {
       datetime now = TimeCurrent();
@@ -761,11 +773,12 @@ bool CheckAccountAuthorization()
       {
          authorized = false; g_auth_error_message = StringFormat("Account %d expired on %s", account_num, TimeToString(expires_at));
       }
-      else { g_account_expires_at = expires_at; g_auth_error_message = ""; }
+      else { g_account_expires_at = expires_at; g_account_max_lots = max_lots; g_auth_error_message = ""; }
    }
    g_account_authorized = authorized; g_last_auth_check_ms = NowMs(); g_auth_check_in_progress = false;
    string status = authorized ? "AUTHORIZED" : "DENIED"; string expire_info = (expires_at > 0) ? TimeToString(expires_at) : "NO_EXPIRY";
-   LogEvent("AUTH_CHECK_RESULT", StringFormat("account=%d;status=%s;expires=%s;error=%s", account_num, status, expire_info, g_auth_error_message));
+   string max_lots_info = (max_lots > 0) ? StringFormat(";max_lots=%.2f", max_lots) : "";
+   LogEvent("AUTH_CHECK_RESULT", StringFormat("account=%d;status=%s;expires=%s%s;error=%s", account_num, status, expire_info, max_lots_info, g_auth_error_message));
    return authorized;
 }
 
@@ -4816,7 +4829,16 @@ int OnInit()
       if(input_verbose_journal_logs)
       {
          string expire_info = (g_account_expires_at > 0) ? StringFormat(" (expires: %s)", TimeToString(g_account_expires_at)) : " (no expiry)";
-         Print("[AUTH] Account ", AccountNumber(), " authorized", expire_info);
+         string max_lots_info = (g_account_max_lots > 0) ? StringFormat(" (max_lots: %.2f)", g_account_max_lots) : "";
+         Print("[AUTH] Account ", AccountNumber(), " authorized", expire_info, max_lots_info);
+      }
+      if(input_role == ROLE_MASTER && g_account_max_lots > 0 && input_lot > g_account_max_lots)
+      {
+         string error_msg = StringFormat("Account %d lot size violation: input_lot=%.2f exceeds max_lots=%.2f", AccountNumber(), input_lot, g_account_max_lots);
+         Print("[AUTH ERROR] ", error_msg);
+         Alert("EA Lot Size Violation: " + error_msg);
+         LogEvent("AUTH_LOT_LIMIT_VIOLATION", StringFormat("account=%d;input_lot=%.2f;max_lots=%.2f", AccountNumber(), input_lot, g_account_max_lots));
+         return(INIT_FAILED);
       }
    }
    if(!AcquireRoleLock()) { g_role_conflict = true; }
