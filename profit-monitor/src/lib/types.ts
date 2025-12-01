@@ -8,6 +8,7 @@ export interface AccountData {
 	timestamp: string;
 	lastPositionSide?: 'BUY' | 'SELL' | 'UNKNOWN';
 	lastPositionEntryPrice?: number;
+	lastSize?: number;
 }
 
 export interface AccountSummary {
@@ -20,6 +21,7 @@ export interface AccountSummary {
 	last_update: string;
 	lastPositionSide?: 'BUY' | 'SELL' | 'UNKNOWN';
 	lastPositionEntryPrice?: number;
+	lastSize?: number;
 }
 
 export interface DashboardStats {

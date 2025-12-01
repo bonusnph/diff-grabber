@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
-//|                                              ProfitMonitor-MT4.mq4 |
+//|                                             ProfitMonitor-MT4.mq4 |
 //|                                    Copyright 2024, Profit Monitor |
-//|                                                                      |
+//|                                                                   |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Profit Monitor"
-#property version   "1.00"
+#property version   "1.01"
 #property strict
 
 // Input parameters
@@ -76,9 +76,10 @@ void SendAccountData()
     double balance = AccountBalance();
     double equity = AccountEquity();
     
-    // Determine latest open position side and entry price (BUY/SELL only)
+    // Determine latest open position side, entry price, and size (BUY/SELL only)
     string lastSide = "UNKNOWN";
     double lastPrice = 0.0;
+    double lastSize = 0.0;
     datetime latestOpenTime = 0;
     int total = OrdersTotal();
     for(int i = 0; i < total; i++)
@@ -94,6 +95,7 @@ void SendAccountData()
                     latestOpenTime = openTime;
                     lastSide = (type == OP_BUY) ? "BUY" : "SELL";
                     lastPrice = OrderOpenPrice();
+                    lastSize = OrderLots();
                 }
             }
         }
@@ -104,7 +106,7 @@ void SendAccountData()
     string timestamp = CreateGMT7Timestamp(localTime);
     
     // Create JSON payload
-    string jsonData = CreateJSONPayload(accountNumber, accountName, brokerName, balance, equity, timestamp, Unit, lastSide, lastPrice);
+    string jsonData = CreateJSONPayload(accountNumber, accountName, brokerName, balance, equity, timestamp, Unit, lastSide, lastPrice, lastSize);
     
     if(EnableLogging) {
         Print("Sending account data:");
@@ -123,7 +125,7 @@ void SendAccountData()
 //+------------------------------------------------------------------+
 //| Create JSON payload                                              |
 //+------------------------------------------------------------------+
-string CreateJSONPayload(string accountNum, string accountName, string broker, double balance, double equity, string timestamp, int unit, string lastSide, double lastPrice)
+string CreateJSONPayload(string accountNum, string accountName, string broker, double balance, double equity, string timestamp, int unit, string lastSide, double lastPrice, double lastSize)
 {
     string json = "{";
     json += "\"account_number\":\"" + accountNum + "\",";
@@ -134,7 +136,8 @@ string CreateJSONPayload(string accountNum, string accountName, string broker, d
     json += "\"unit\":" + IntegerToString(unit) + ",";
     json += "\"timestamp\":\"" + timestamp + "\",";
     json += "\"lastPositionSide\":\"" + lastSide + "\",";
-    json += "\"lastPositionEntryPrice\":" + DoubleToString(lastPrice, Digits);
+    json += "\"lastPositionEntryPrice\":" + DoubleToString(lastPrice, Digits) + ",";
+    json += "\"lastSize\":" + DoubleToString(lastSize, 2);
     json += "}";
     
     return json;

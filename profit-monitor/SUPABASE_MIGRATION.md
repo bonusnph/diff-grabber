@@ -11,6 +11,8 @@
 3. รอให้ project setup เสร็จ
 
 ### 2. **สร้าง Database Tables**
+
+#### **สำหรับ Database ใหม่:**
 ไปที่ **SQL Editor** ใน Supabase Dashboard และรัน:
 
 ```sql
@@ -26,6 +28,7 @@ CREATE TABLE accounts (
     timestamp TIMESTAMPTZ NOT NULL,
     position_side VARCHAR(10) DEFAULT 'UNKNOWN',
     position_price DECIMAL(15,5) DEFAULT 0,
+    position_size DECIMAL(15,2) DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -62,6 +65,21 @@ INSERT INTO settings (setting_key, setting_value) VALUES
 ('access_pin', '250514'),
 ('unit_mappings', '{"1":"neex-sell","2":"neex-buy","3":"neex-avg-sell","4":"neex-avg-buy","5":"xs-sell","6":"xs-buy","7":"xs-avg-sell","8":"xs-avg-buy"}')
 ON CONFLICT (setting_key) DO NOTHING;
+```
+
+#### **สำหรับ Database เดิมที่มีอยู่แล้ว (Migration):**
+ถ้าคุณมี database อยู่แล้วและต้องการเพิ่ม column ใหม่:
+
+```sql
+-- เพิ่ม position_size column (สำหรับ DB เดิม)
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS position_size DECIMAL(15,2) DEFAULT 0;
+```
+
+**หมายเหตุ:**
+- ✅ **DB ใหม่**: ใช้ `CREATE TABLE` ด้านบน (มี `position_size` อยู่แล้ว)
+- 🔄 **DB เดิม**: รัน `ALTER TABLE` เพื่อเพิ่ม column ใหม่
+- 📊 **ข้อมูลเก่า**: จะได้ค่า default = 0 สำหรับ `position_size`
+- 🔄 **ข้อมูลใหม่**: EA จะส่ง `lastSize` มาอัตโนมัติ
 ```
 
 ### 3. **หา API Keys**
@@ -184,7 +202,7 @@ account_number | timestamp           | balance | updated_at
 ```sql
 -- ดูข้อมูลทั้งหมด (แต่ละ account มีแค่ row เดียว)
 SELECT account_number, account_name, balance, equity, unit, timestamp, 
-       position_side, position_price, updated_at
+       position_side, position_price, position_size, updated_at
 FROM accounts 
 ORDER BY broker_name, account_number;
 
@@ -196,9 +214,19 @@ WHERE timestamp > NOW() - INTERVAL '5 minutes';
 -- ดู accounts ที่มีการเทรด (balance != equity)
 SELECT account_number, account_name, balance, equity, 
        (balance - equity) as floating_pnl,
-       position_side, position_price
+       position_side, position_price, position_size
 FROM accounts 
 WHERE ABS(balance - equity) > 0.01;
+
+-- ดูรวม position size แยกตาม unit
+SELECT unit, 
+       COUNT(*) as account_count,
+       SUM(position_size) as total_lots,
+       AVG(position_size) as avg_lots_per_account
+FROM accounts 
+WHERE position_size > 0
+GROUP BY unit 
+ORDER BY unit;
 
 -- ดู unit mappings และ settings อื่นๆ
 SELECT * FROM settings WHERE setting_key IN ('unit_mappings', 'initial_capital', 'access_pin');
@@ -216,18 +244,49 @@ ORDER BY updated_at DESC;
 ### **🔧 การปรับปรุงล่าสุด:**
 - ✅ **One Row Per Account**: ประหยัดพื้นที่ฐานข้อมูล
 - ✅ **UPSERT Logic**: อัพเดทข้อมูลแทนการสร้างใหม่
-- ✅ **Position Tracking**: ติดตาม position_side และ position_price
+- ✅ **Position Tracking**: ติดตาม position_side, position_price และ position_size
+- ✅ **Position Size Display**: แสดง total lots ของแต่ละ unit ใน frontend
 - ✅ **Auto Timestamps**: updated_at อัพเดทอัตโนมัติ
 - ✅ **Simplified Schema**: ใช้ชื่อคอลัมน์ที่ง่ายและชัดเจน
 
+### **📌 Latest Update (Position Size Feature):**
+#### **เพิ่ม Column ใหม่:**
+- **`position_size`**: เก็บ lot size ของ position ล่าสุด (DECIMAL 15,2)
+
+#### **EA Updates:**
+- MT4: ดึงจาก `OrderLots()`
+- MT5: ดึงจาก `PositionGetDouble(POSITION_VOLUME)`
+- ส่งมาใน field `"lastSize"` ของ JSON payload
+
+#### **Frontend Display:**
+- แสดง total lots ของแต่ละ unit ใน unit header
+- Badge สีม่วง แสดงผลรวม position size เช่น `"2.50 lots"`
+- แสดงเฉพาะเมื่อมี position เปิดอยู่
+
+#### **Migration Required:**
+```sql
+-- สำหรับ Database เดิม รันคำสั่งนี้:
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS position_size DECIMAL(15,2) DEFAULT 0;
+```
+
 **Next Steps:**
+
+#### **สำหรับ Database ใหม่:**
 1. ตั้งค่า Supabase project
-2. รัน SQL commands ตามโครงสร้างล่าสุด
+2. รัน SQL commands สำหรับ `CREATE TABLE` (มี `position_size` แล้ว)
 3. เพิ่ม environment variables  
 4. Deploy และทดสอบ
 
+#### **สำหรับ Database เดิม (Migration):**
+1. รัน `ALTER TABLE` เพื่อเพิ่ม `position_size` column
+2. Deploy code ใหม่
+3. EA จะส่ง `lastSize` มาในครั้งถัดไป (ภายใน 10-30 วินาที)
+4. ตรวจสอบว่า frontend แสดง total lots ใน unit header
+
 ### **⚠️ Migration Notes:**
-- ใช้โครงสร้างตารางล่าสุดที่ระบุไว้ข้างต้น
-- EA จะส่งข้อมูลมาใหม่อัตโนมัติ
-- ระบบจะทำงานแบบ real-time update
+- ✅ **DB ใหม่**: ใช้โครงสร้างตารางล่าสุดที่มี `position_size`
+- 🔄 **DB เดิม**: ต้องรัน `ALTER TABLE` เพิ่ม column
+- 📊 **ข้อมูลเก่า**: จะได้ default value = 0
+- 🔄 **EA จะส่งข้อมูล**: อัตโนมัติทุก 10-30 วินาที
+- 🎯 **Frontend**: แสดง badge สีม่วงของ total lots ใน unit header
 

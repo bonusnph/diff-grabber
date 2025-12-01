@@ -32,6 +32,7 @@ class SupabaseStorage {
 			timestamp TIMESTAMPTZ NOT NULL,
 			lastPositionSide VARCHAR(10) DEFAULT 'UNKNOWN',
 			lastPositionEntryPrice DECIMAL(15,5) DEFAULT 0,
+			position_size DECIMAL(15,2) DEFAULT 0,
 			created_at TIMESTAMPTZ DEFAULT NOW(),
 			updated_at TIMESTAMPTZ DEFAULT NOW()
 		);
@@ -83,7 +84,8 @@ class SupabaseStorage {
 				unit: data.unit,
 				timestamp: data.timestamp,
 				position_side: data.lastPositionSide ?? 'UNKNOWN',
-				position_price: data.lastPositionEntryPrice ?? 0
+				position_price: data.lastPositionEntryPrice ?? 0,
+				position_size: data.lastSize ?? 0
 			}, {
 				onConflict: 'account_number'
 			});
@@ -97,7 +99,7 @@ class SupabaseStorage {
 	async getAllAccountData(): Promise<AccountData[]> {
 		const { data, error } = await supabase
 			.from('accounts')
-			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price')
+			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price, position_size')
 			.order('timestamp', { ascending: false });
 
 		if (error) {
@@ -114,14 +116,15 @@ class SupabaseStorage {
 			unit: record.unit,
 			timestamp: record.timestamp,
 			lastPositionSide: record.position_side ?? 'UNKNOWN',
-			lastPositionEntryPrice: record.position_price ?? 0
+			lastPositionEntryPrice: record.position_price ?? 0,
+			lastSize: record.position_size ?? 0
 		}));
 	}
 
 	async getAccountSummaries(): Promise<AccountSummary[]> {
 		const { data, error } = await supabase
 			.from('accounts')
-			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price')
+			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price, position_size')
 			.order('timestamp', { ascending: false });
 
 		if (error) {
@@ -139,7 +142,8 @@ class SupabaseStorage {
 			unit: record.unit,
 			last_update: record.timestamp,
 			lastPositionSide: record.position_side ?? 'UNKNOWN',
-			lastPositionEntryPrice: record.position_price ?? 0
+			lastPositionEntryPrice: record.position_price ?? 0,
+			lastSize: record.position_size ?? 0
 		}));
 	}
 
@@ -478,7 +482,7 @@ class SupabaseStorage {
 	async getAccountHistory(accountNumber: string, limit: number = 100): Promise<AccountData[]> {
 		const { data, error } = await supabase
 			.from('accounts')
-			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price')
+			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price, position_size')
 			.eq('account_number', accountNumber)
 			.order('timestamp', { ascending: false })
 			.limit(limit);
@@ -497,7 +501,8 @@ class SupabaseStorage {
 			unit: record.unit,
 			timestamp: record.timestamp,
 			lastPositionSide: record.position_side ?? 'UNKNOWN',
-			lastPositionEntryPrice: record.position_price ?? 0
+			lastPositionEntryPrice: record.position_price ?? 0,
+			lastSize: record.position_size ?? 0
 		}));
 	}
 

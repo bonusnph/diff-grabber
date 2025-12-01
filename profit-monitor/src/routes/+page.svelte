@@ -1582,16 +1582,28 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 									<span class="text-xs text-gray-500 bg-gray-600 px-1 py-0.5 rounded">
 										#{unit}
 									</span>
-									{#if computeUnitDelta(accounts) !== null}
-										{@const delta = computeUnitDelta(accounts) as number}
-										<span
-											class="text-xs px-1 py-0.5 rounded font-semibold text-white"
-											class:bg-green-600={delta >= 0}
-											class:bg-red-600={delta < 0}
-										>
-											Open {delta > 0 ? '+' : ''}{delta.toFixed(0)} points
-										</span>
-									{/if}
+								{#if computeUnitDelta(accounts) !== null}
+									{@const delta = computeUnitDelta(accounts) as number}
+									<span
+										class="text-xs px-1 py-0.5 rounded font-semibold text-white"
+										class:bg-green-600={delta >= 0}
+										class:bg-red-600={delta < 0}
+									>
+										Open {delta > 0 ? '+' : ''}{delta.toFixed(0)} points
+									</span>
+								{/if}
+							{#if true}
+								{@const accountWithPosition = visibleAccounts.find(a => (a.lastSize || 0) > 0)}
+								{@const positionLots = accountWithPosition?.lastSize || 0}
+								{#if positionLots > 0}
+									<span
+										class="text-xs px-1 py-0.5 rounded font-semibold text-white bg-purple-600"
+										title="Current position size"
+									>
+										{positionLots.toFixed(2)} lots
+									</span>
+								{/if}
+							{/if}
                                     {#if true}
                                         {@const targetEquity = getUnitTargetEquity(unit)}
 										{@const sumsByBroker = (() => {
