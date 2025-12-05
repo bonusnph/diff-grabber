@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
-//|                                             FXH-Diff-Grabber.mq5 |
+//|                                                 Diff-Grabber.mq5 |
 //|                                  Copyright 2025, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.12"
+#property version   "1.11"
 
 // =============================
 // EA Heading Master–Slave (MT5)
@@ -54,25 +54,25 @@ input bool   input_trading_positive_swap        = false;    // Scope: Master —
 int    input_pswap_close_th_points        = 10000;     // Scope: Master — close threshold to enforce during positive swap window (03:00-05:30 local, non-Saturday)
 
 // Positive Swap Thursday auto-open (Master only)
-input string input_swap_thursday_open_time    = "04:30";  // Scope: Master — Thursday auto-open time (HH:mm, local)
-input double input_swap_trading_lots    = 0.01;      // Scope: Master — lots for Thursday auto-open
+string input_swap_thursday_open_time    = "04:30";   // Scope: Master — Thursday auto-open time (HH:mm, local)
+input double input_swap_trading_lots    = 0.01;       // Scope: Master — lots for Thursday auto-open
 
 #define input_lot_master input_lot
 #define input_lot_slave  input_lot
-input int    input_open_threshold_points    = 30;            // Scope: Master — open threshold (points)
-input int    input_close_threshold_points   = 30;            // Scope: Master — close threshold (points)
-int    input_open_cooldown_seconds    = 7200;           // Scope: Master — open cooldown after an open
-int    input_close_cooldown_seconds   = 300;            // Scope: Master — close cooldown after both sides opened
+input int    input_open_threshold_points    = 20;            // Scope: Master — open threshold (points)
+input int    input_close_threshold_points   = 20;            // Scope: Master — close threshold (points)
+int    input_open_cooldown_seconds    = 300;           // Scope: Master — open cooldown after an open
+int    input_close_cooldown_seconds   = 60;            // Scope: Master — close cooldown after both sides opened
 int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
 
 // Raw stability check (alternative to averaging - Master only)
-bool   input_raw_stability_enabled   = false;         // Scope: Master — enable raw stability check (alternative to averaging)
+bool   input_raw_stability_enabled   = true;         // Scope: Master — enable raw stability check (alternative to averaging)
 int    input_raw_stability_ticks     = 3;             // Scope: Master — consecutive stable ticks required
 int    input_raw_stability_timeout_ms = 500;          // Scope: Master — max wait time for stability confirmation (ms)
 int    input_raw_hysteresis_offset   = 10;           // Scope: Master — hysteresis offset below threshold for reset (points)
 
 // Averaged diff gating (Master-only)
-input bool   input_avg_filter_enabled       = false;         // Scope: Master — enable EMA-based averaged diff gating
+input bool   input_avg_filter_enabled       = true;         // Scope: Master — enable EMA-based averaged diff gating
 int    input_avg_period               = 9;             // Scope: Master — EMA period (ticks)
 bool   input_use_prefilter_median     = true;          // Scope: Master — apply median pre-filter before EMA
 int    input_prefilter_window         = 3;             // Scope: Master — median window (odd 3/5)
@@ -85,15 +85,15 @@ int    input_avg_signal_cooldown_ms   = 400;           // Scope: Master — sign
 
 // Zone Stability Filter (works with all modes - Master only)
 input  bool   input_zone_stability_enabled    = true;     // Scope: Master — enable zone stability check for all modes
-int    input_zone_stability_ticks      = 7;        // Scope: Master — consecutive ticks required in positive zone
-int    input_zone_negative_threshold   = -1;        // Scope: Master — threshold for negative zone detection (points)
+input  int    input_zone_stability_ticks      = 7;        // Scope: Master — consecutive ticks required in positive zone
+input  int    input_zone_negative_threshold   = -1;        // Scope: Master — threshold for negative zone detection (points)
 
 // Quality guards
-input  int    input_max_spread_points_self   = 50;            // Scope: Master — block if own spread exceeds (points)
-input  int    input_max_spread_points_peer   = 50;            // Scope: Master — check peer spread before opening (points)
+int    input_max_spread_points_self   = 30;            // Scope: Master — block if own spread exceeds (points)
+int    input_max_spread_points_peer   = 30;            // Scope: Master — check peer spread before opening (points)
 int    input_quotes_fresh_ms          = 400;           // Scope: Master — maximum acceptable quote age (ms)
 int    input_file_poll_ms             = 5;             // Scope: Master — background file polling cadence (ms)
-input  int    input_magic_number_base = 0;             // Scope: Master — magic base per channel/symbol
+int    input_magic_number_base        = 900100;        // Scope: Master — magic base per channel/symbol
 bool   input_retry_on_requote         = true;          // Scope: Master — retry on requote/off quotes
 int    input_max_retries              = 20;            // Scope: Master — max retry attempts
 
@@ -118,12 +118,12 @@ bool   input_dry_run_suppress_heartbeat   = false;     // Scope: Master — supp
 // Debug UI (Master only)
 bool   input_debug_buttons_enabled     = true;         // Scope: Master — show Open/Close test buttons (simulate diffOpen/diffClose)
 // Reset Stats button (Master only)
-bool   input_reset_stats_button_enabled = false;       // Scope: Master — show Reset Stats button next to Close Only
+bool   input_reset_stats_button_enabled = true;       // Scope: Master — show Reset Stats button next to Close Only
 
 // Extended controls (Master-only; synced to Slave via config)
 input double input_min_balance_master_usd    = 0.00;          // Scope: Master — minimum balance required on Master to allow new open
 input double input_min_balance_slave_usd     = 0.00;          // Scope: Master — minimum balance required on Slave to allow new open
-double input_initial_capital_usd       = 0.00;          // Scope: Master — initial capital for profit calculation
+input double input_initial_capital_usd       = 0.00;          // Scope: Master — initial capital for profit calculation
 
 // Scheduled Close Only Mode (Master only)
 bool   input_scheduled_close_only_enabled = true;     // Scope: Master — enable scheduled close only mode
@@ -138,11 +138,11 @@ string input_mon_close_only_end_time      = "07:00";   // Scope: Master — Mond
 // Close Threshold Scheduler (Master only)
 bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes
 string input_close_th_time1               = "02:00";  // HH:mm — schedule slot 1
-int    input_close_th_value1              = 10;       // points — threshold at time1
+input int    input_close_th_value1              = 10;       // points — threshold at time1
 string input_close_th_time2               = "03:00";  // HH:mm — schedule slot 2
-int    input_close_th_value2              = 5;       // points — threshold at time2
+input int    input_close_th_value2              = 5;       // points — threshold at time2
 string input_close_th_time3               = "04:00";  // HH:mm — schedule slot 3
-int    input_close_th_value3              = 0;        // points — threshold at time3
+input int    input_close_th_value3              = 0;        // points — threshold at time3
 string input_close_th_time4               = "04:15";  // HH:mm — schedule (prevent close time)
 int    input_close_th_value4              = 10000;    // points — threshold at time4
 string input_close_th_time5               = "06:30";  // HH:mm — schedule reset to initial close threshold
@@ -152,32 +152,9 @@ string input_close_th_time6               = "07:00";  // HH:mm — schedule free
 bool   input_force_close_time_enabled     = false;    // Scope: Master — enable daily forced close at a specific time
 string input_force_close_time             = "04:15";  // Scope: Master — time to force close all (HH:mm)
 
-// ========================================
-// API System Configuration
-// ========================================
-
-// Master API Switch
-bool   input_api_enabled = true;                  // Scope: Both — Enable/Disable ALL API features
-
-// Authorization API
-bool   input_api_auth_enabled = true;              // Scope: Both — Enable account authorization via API
-string input_api_auth_url = "https://script.google.com/macros/s/AKfycbzC_H3jaxzhxkhIGcj37PJtYAbRwc6049ShzdYGtmZeb7pABPeBnWKlvVsqq5XCBMYWuA/exec?action=auth";                    // Scope: Both — Authorization API endpoint URL
-int    input_api_auth_interval_hours = 24;         // Scope: Both — Authorization check interval (hours)
-
-// Signal API (Master only)
-input bool   input_api_signal_enabled = true;           // Scope: Master — Enable signal fetching via API
-string input_api_signal_url = "https://script.google.com/macros/s/AKfycbzC_H3jaxzhxkhIGcj37PJtYAbRwc6049ShzdYGtmZeb7pABPeBnWKlvVsqq5XCBMYWuA/exec?action=signal";                  // Scope: Master — Signal API endpoint URL
-int    input_api_signal_interval_hours = 1;        // Scope: Master — Signal fetch interval (hours)
-bool   input_api_signal_auto_apply = true;         // Scope: Master — Auto-apply signal to master_side
-double input_api_signal_min_confidence = 0.0;      // Scope: Master — Minimum confidence to apply signal (0.0-1.0)
-
-// ========================================
-// TP/SL Active Diff Close (Master only)
-// ========================================
-input bool   input_tp_active_diff_close_enabled = false; // Scope: Master — Enable TP for active diff close
-input int    input_tp_active_diff_close_points = 50;     // Scope: Master — TP points threshold to activate diff close
-input bool   input_sl_active_diff_close_enabled = false; // Scope: Master — Enable SL for active diff close
-input int    input_sl_active_diff_close_points = 30;     // Scope: Master — SL points threshold to activate diff close
+// Account Authorization via Google Sheets
+string input_auth_sheet_url            = "https://script.google.com/macros/s/AKfycbyy-TUP96gx8IBvsHr4GvdRM-6_bDPe8RcNhybVFy9bTxL9NK2lEKiO4NRo-56IpN7z/exec";           // Scope: Both — Google Sheets CSV export URL for account authorization
+bool   input_auth_enabled              = false;          // Scope: Both — enable account authorization check
 
 // -----------------------------
 // Globals
@@ -317,7 +294,6 @@ int g_heartbeat_buffer_index = 0;
 bool g_display_peer_alive = false;
 int g_display_stability_count = 0;
 const int DISPLAY_STABILITY_THRESHOLD = 3;
-
 // Account Authorization globals
 bool   g_account_authorized = false;
 datetime g_account_expires_at = 0;
@@ -325,45 +301,49 @@ double g_account_max_lots = 0.0;
 ulong  g_last_auth_check_ms = 0;
 string g_auth_error_message = "";
 bool   g_auth_check_in_progress = false;
-
-// ========================================
-// API System Globals
-// ========================================
-
-// Authorization state
-datetime g_api_auth_last_check_time = 0;
-bool g_api_auth_valid = false;
-datetime g_api_auth_expires = 0;
-double g_api_auth_max_lots = 0.0;
-string g_api_auth_error = "";
-
-// Signal state
-datetime g_api_signal_last_fetch_time = 0;
-string g_api_signal_current = "";                        // "BUY" or "SELL"
-datetime g_api_signal_timestamp = 0;
-double g_api_signal_confidence = 0.0;
-bool g_api_signal_valid = false;
-string g_api_signal_error = "";
-
-// Signal change tracking
-MasterSide g_api_signal_pending_side = SIDE_BUY;
-bool g_api_signal_pending_change = false;
-
-// Effective master side (can be changed by API signal, initialized from input_master_side)
-MasterSide g_effective_master_side = SIDE_SELL;
-
-// ========================================
-// TP/SL Active Diff Close State
-// ========================================
-bool g_diff_close_blocked_by_tp = false;
-bool g_diff_close_blocked_by_sl = false;
-
 // Anchor time when both sides confirmed open (used for close cooldown)
 datetime g_last_pair_both_open_time = 0;
 // Master-provided new settings (for Slave consumption)
 int    g_master_close_cooldown_seconds = 0;
 double g_master_min_balance_master_usd = 0.0;
 double g_master_min_balance_slave_usd = 0.0;
+
+// -----------------------------
+// In-memory cache: pair_id <-> ticket (current symbol/magic)
+// -----------------------------
+string g_cache_pair_ids[];
+ulong  g_cache_tickets[];
+
+// Dynamic open/close threshold (initial vs current)
+#define OPEN_TH_UNSET -9999
+int    g_open_threshold_initial = 0;
+int    g_open_threshold_current = OPEN_TH_UNSET;
+
+// Dynamic close threshold (initial vs current)
+int    g_close_threshold_initial = 0;
+int    g_close_threshold_current = OPEN_TH_UNSET;
+
+#define NUMBER_UNSET -9999
+
+int GetOpenThresholdPoints()
+{
+   return (g_open_threshold_current != OPEN_TH_UNSET ? g_open_threshold_current : input_open_threshold_points);
+}
+
+void SetOpenThresholdPoints(const int new_threshold_points)
+{
+   g_open_threshold_current = new_threshold_points;
+}
+
+int GetCloseThresholdPoints()
+{
+   return (g_close_threshold_current != OPEN_TH_UNSET ? g_close_threshold_current : input_close_threshold_points);
+}
+
+void SetCloseThresholdPoints(const int new_threshold_points)
+{
+   g_close_threshold_current = new_threshold_points;
+}
 
 // Averaging state (EMA + optional Median pre-filter)
 double g_ema_open = 0.0; bool g_ema_open_init = false;
@@ -468,13 +448,11 @@ string PathPairMapPeer()   { return PathChannelRoot() + ((input_role==ROLE_MASTE
 string PathLogsDir() { return PathChannelRoot() + "logs\\"; }
 
 
-
 string FormatDateYYYYMMDD(datetime t)
 {
    MqlDateTime dt; TimeToStruct(t, dt);
    return StringFormat("%04d%02d%02d", dt.year, dt.mon, dt.day);
 }
-
 
 
 string PathDailyLogFile()
@@ -534,28 +512,6 @@ void LogsCleanupRetention()
       FileDelete(oldPath, FILE_COMMON);
    }
 }
-
-// -----------------------------
-// In-memory cache: pair_id <-> ticket (current symbol/magic)
-// -----------------------------
-string g_cache_pair_ids[];
-ulong  g_cache_tickets[];
-
-// Dynamic open/close threshold (initial vs current)
-#define OPEN_TH_UNSET -9999
-int    g_open_threshold_initial = 0;
-int    g_open_threshold_current = OPEN_TH_UNSET;
-
-// Dynamic close threshold (initial vs current)
-int    g_close_threshold_initial = 0;
-int    g_close_threshold_current = OPEN_TH_UNSET;
-
-#define NUMBER_UNSET -9999
-
-int GetOpenThresholdPoints(){ return (g_open_threshold_current != OPEN_TH_UNSET ? g_open_threshold_current : input_open_threshold_points); }
-void SetOpenThresholdPoints(const int v){ g_open_threshold_current = v; }
-int GetCloseThresholdPoints(){ return (g_close_threshold_current != OPEN_TH_UNSET ? g_close_threshold_current : input_close_threshold_points); }
-void SetCloseThresholdPoints(const int v){ g_close_threshold_current = v; }
 
 int CacheFindIndexByPairId(const string pair_id)
 {
@@ -734,556 +690,6 @@ void RebuildPairMapSelfFromCache()
   string out=""; for(int i=0;i<cnt;i++){ out += StringFormat("%s,%I64d\n", pids[i], (long)tks[i]); }
   if(TrimAll(existing) == TrimAll(out)) return; // no changes
   FileWriteAllAtomic(PathPairMapSelf(), out);
-}
-
-// -----------------------------
-// Account Authorization Functions
-// -----------------------------
-
-// HTTP request function for MQL5 (using WebRequest)
-bool HttpGetRequest(const string url, string &response)
-{
-   response = "";
-   
-   // Reset last error
-   ResetLastError();
-   
-   // Prepare headers
-   string headers = "User-Agent: MetaTrader EA Authorization Client/1.0\r\n";
-   
-   // Make HTTP request
-   char data[], result[];
-   string result_headers;
-   
-   int res = WebRequest("GET", url, headers, 5000, data, result, result_headers);
-   
-   if(res == -1)
-   {
-      int error = GetLastError();
-      g_auth_error_message = StringFormat("WebRequest failed: %d", error);
-      if(input_verbose_journal_logs)
-         Print("[AUTH] WebRequest error: ", error, " - Make sure URL is in allowed list");
-      return false;
-   }
-   
-   if(res != 200)
-   {
-      g_auth_error_message = StringFormat("HTTP error: %d", res);
-      if(input_verbose_journal_logs)
-         Print("[AUTH] HTTP error: ", res);
-      return false;
-   }
-   
-   response = CharArrayToString(result);
-   return true;
-}
-
-// Parse CSV response and check account authorization
-bool ParseAuthorizationData(const string csv_data, const long account_number, datetime &expires_out, double &max_lots_out)
-{
-   expires_out = 0;
-   max_lots_out = 0.0;
-   
-   if(StringLen(csv_data) == 0)
-   {
-      g_auth_error_message = "Empty response from authorization server";
-      return false;
-   }
-   
-   string lines[];
-   int line_count = StringSplit(csv_data, '\n', lines);
-   
-   // Skip header line (if exists)
-   int start_line = 0;
-   if(line_count > 0)
-   {
-      string first_line = TrimAll(lines[0]);
-      if(StringFind(first_line, "account") >= 0 || StringFind(first_line, "Account") >= 0)
-         start_line = 1;
-   }
-   
-   for(int i = start_line; i < line_count; i++)
-   {
-      string line = TrimAll(lines[i]);
-      if(StringLen(line) == 0) continue;
-      
-      string fields[];
-      int field_count = StringSplit(line, ',', fields);
-      
-      if(field_count >= 2)
-      {
-         long csv_account = StringToInteger(TrimAll(fields[0]));
-         if(csv_account == account_number)
-         {
-            // Found matching account
-            if(field_count >= 2)
-            {
-               string expire_str = TrimAll(fields[1]);
-               
-               // Parse expiration date (expected format: YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)
-               if(StringLen(expire_str) >= 10)
-               {
-                  // Extract date parts
-                  string date_part = StringSubstr(expire_str, 0, 10);
-                  string date_fields[];
-                  if(StringSplit(date_part, '-', date_fields) == 3)
-                  {
-                     int year = (int)StringToInteger(date_fields[0]);
-                     int month = (int)StringToInteger(date_fields[1]);
-                     int day = (int)StringToInteger(date_fields[2]);
-                     
-                     // Create datetime (set to end of day for safety)
-                     expires_out = StringToTime(StringFormat("%04d.%02d.%02d 23:59:59", year, month, day));
-                  }
-                  else
-                  {
-                     // If date parsing failed, try direct StringToTime
-                     expires_out = StringToTime(expire_str);
-                  }
-               }
-            }
-            
-            // Check for max_lots in column C (optional)
-            if(field_count >= 3)
-            {
-               string max_lots_str = TrimAll(fields[2]);
-               if(StringLen(max_lots_str) > 0)
-               {
-                  max_lots_out = StringToDouble(max_lots_str);
-               }
-            }
-            
-            return true; // Account found
-         }
-      }
-   }
-   
-   g_auth_error_message = StringFormat("Account %d not found in authorization list", account_number);
-   return false;
-}
-
-//+------------------------------------------------------------------+
-//| API System Control Functions                                      |
-//+------------------------------------------------------------------+
-
-// Check if API system is enabled
-bool IsAPIEnabled()
-{
-   return input_api_enabled;
-}
-
-// Check if authorization API is enabled
-bool IsAuthAPIEnabled()
-{
-   return IsAPIEnabled() && input_api_auth_enabled;
-}
-
-// Check if signal API is enabled
-bool IsSignalAPIEnabled()
-{
-   return IsAPIEnabled() && input_api_signal_enabled && (input_role == ROLE_MASTER);
-}
-
-//+------------------------------------------------------------------+
-//| Authorization API Functions                                       |
-//+------------------------------------------------------------------+
-
-// Check if authorization check is needed
-bool NeedAuthorizationCheck()
-{
-   if (!IsAuthAPIEnabled())
-      return false;
-   
-   datetime now = TimeCurrent();
-   int hours_since_last = (int)((now - g_api_auth_last_check_time) / 3600);
-   
-   return (hours_since_last >= input_api_auth_interval_hours) || !g_api_auth_valid;
-}
-
-// Perform authorization check via API (MQL5)
-bool CheckAccountAuthorization()
-{
-   if (!IsAuthAPIEnabled())
-      return true;
-   
-   if (!NeedAuthorizationCheck())
-      return g_api_auth_valid;
-   
-   string url = input_api_auth_url;
-   
-   if (StringLen(url) == 0)
-   {
-      Print("[API-AUTH] Error: No authorization URL configured");
-      return false;
-   }
-   
-   string response;
-   if (!HttpGetRequest(url, response))
-   {
-      g_api_auth_error = "HTTP request failed";
-      Print("[API-AUTH] ", g_api_auth_error);
-      return false;
-   }
-   
-   datetime expires;
-   double max_lots;
-   long account_num = AccountInfoInteger(ACCOUNT_LOGIN);
-   
-   if (!ParseAuthorizationData(response, account_num, expires, max_lots))
-   {
-      g_api_auth_error = "Account not authorized or expired";
-      g_api_auth_valid = false;
-      Print("[API-AUTH] ", g_api_auth_error);
-      return false;
-   }
-   
-   g_api_auth_last_check_time = TimeCurrent();
-   g_api_auth_expires = expires;
-   g_api_auth_max_lots = max_lots;
-   g_api_auth_valid = true;
-   g_api_auth_error = "";
-   
-   if (input_verbose_journal_logs)
-      Print("[API-AUTH] Account authorized (expires: ", TimeToString(expires, TIME_DATE), 
-            ", max_lots: ", DoubleToString(max_lots, 2), ")");
-   
-      return true;
-   }
-   
-// Check if we need to refresh authorization (legacy compatibility)
-bool ShouldRefreshAuthorization()
-{
-   return NeedAuthorizationCheck();
-}
-
-//+------------------------------------------------------------------+
-//| Signal API Functions                                              |
-//+------------------------------------------------------------------+
-
-// Check if signal fetch is needed
-bool NeedSignalFetch()
-{
-   if (!IsSignalAPIEnabled())
-      return false;
-   
-   datetime now = TimeCurrent();
-   int hours_since_last = (int)((now - g_api_signal_last_fetch_time) / 3600);
-   
-   return (hours_since_last >= input_api_signal_interval_hours) || !g_api_signal_valid;
-}
-
-// Fetch trading signal from API
-bool FetchTradingSignal()
-{
-   if (!IsSignalAPIEnabled())
-      return true;
-   
-   if (!NeedSignalFetch())
-      return g_api_signal_valid;
-   
-   string url = input_api_signal_url;
-   
-   if (StringLen(url) == 0)
-   {
-      Print("[API-SIGNAL] Error: No signal URL configured");
-      return false;
-   }
-   
-   string response;
-   if (!HttpGetRequest(url, response))
-   {
-      g_api_signal_error = "HTTP request failed";
-      Print("[API-SIGNAL] ", g_api_signal_error);
-      return false;
-   }
-   
-   if (!ParseSignalData(response))
-   {
-      g_api_signal_error = "Failed to parse signal data";
-      Print("[API-SIGNAL] ", g_api_signal_error);
-      return false;
-   }
-   
-   if (g_api_signal_confidence < input_api_signal_min_confidence)
-   {
-      if (input_verbose_journal_logs)
-         Print("[API-SIGNAL] Signal confidence too low: ", 
-               DoubleToString(g_api_signal_confidence, 2), 
-               " < ", DoubleToString(input_api_signal_min_confidence, 2));
-      return false;
-   }
-   
-   g_api_signal_last_fetch_time = TimeCurrent();
-   g_api_signal_valid = true;
-   g_api_signal_error = "";
-   
-   if (input_verbose_journal_logs)
-      Print("[API-SIGNAL] Fetched signal: ", g_api_signal_current, 
-            " (confidence: ", DoubleToString(g_api_signal_confidence, 2), ")");
-   
-   return true;
-}
-
-// Parse signal CSV response
-bool ParseSignalData(const string csv_data)
-{
-   if (StringLen(csv_data) == 0)
-      return false;
-   
-   string lines[];
-   int line_count = StringSplit(csv_data, '\n', lines);
-   
-   if (line_count < 2)
-      return false;
-   
-   string fields[];
-   int field_count = StringSplit(lines[1], ',', fields);
-   
-   if (field_count < 1)
-      return false;
-   
-   string signal = fields[0];
-   StringTrimLeft(signal);
-   StringTrimRight(signal);
-   StringToUpper(signal);
-   
-   if (signal != "BUY" && signal != "SELL")
-   {
-      Print("[API-SIGNAL] Invalid signal value: ", signal);
-      return false;
-   }
-   
-   g_api_signal_current = signal;
-   
-   if (field_count > 1)
-   {
-      string timestamp_str = fields[1];
-      StringTrimLeft(timestamp_str);
-      StringTrimRight(timestamp_str);
-      // Parse timestamp if needed
-   }
-   
-   if (field_count > 2)
-   {
-      g_api_signal_confidence = StringToDouble(fields[2]);
-      }
-      else
-      {
-      g_api_signal_confidence = 1.0;
-   }
-   
-   return true;
-}
-
-// Apply signal to master_side with safety checks
-bool ApplySignalToMasterSide()
-{
-   if (!IsSignalAPIEnabled() || !input_api_signal_auto_apply)
-      return true;
-   
-   if (!g_api_signal_valid || StringLen(g_api_signal_current) == 0)
-      return true;
-   
-   MasterSide new_side;
-   if (g_api_signal_current == "BUY")
-      new_side = SIDE_BUY;
-   else if (g_api_signal_current == "SELL")
-      new_side = SIDE_SELL;
-   else
-      return false;
-   
-   if (new_side == g_effective_master_side)
-      return true;
-   
-   int self_pairs = CountOpenPairs();
-   if (self_pairs > 0)
-   {
-      g_api_signal_pending_side = new_side;
-      g_api_signal_pending_change = true;
-      
-      if (input_verbose_journal_logs)
-         Print("[API-SIGNAL] Side change pending (", g_api_signal_current, 
-               ") - waiting for positions to close");
-      
-      return false;
-   }
-   
-   g_effective_master_side = new_side;
-   g_api_signal_pending_change = false;
-   
-   if (input_verbose_journal_logs)
-   {
-      Print("[API-SIGNAL] Master side changed to ", g_api_signal_current, 
-            " (confidence: ", DoubleToString(g_api_signal_confidence, 2), ")");
-   }
-   
-   string event_data = "new_side=" + g_api_signal_current + 
-                       ",confidence=" + DoubleToString(g_api_signal_confidence, 2);
-   LogEvent("SIGNAL_SIDE_CHANGED", event_data);
-   
-   return true;
-}
-
-// Check and apply pending signal change
-void CheckPendingSignalChange()
-{
-   if (!g_api_signal_pending_change)
-      return;
-   
-   if (!IsSignalAPIEnabled() || !input_api_signal_auto_apply)
-      return;
-   
-   int self_pairs = CountOpenPairs();
-   if (self_pairs > 0)
-      return;
-   
-   g_effective_master_side = g_api_signal_pending_side;
-   g_api_signal_pending_change = false;
-   
-   if (input_verbose_journal_logs)
-   {
-      Print("[API-SIGNAL] Pending side change applied to ", 
-            (g_api_signal_pending_side==SIDE_BUY?"BUY":"SELL"));
-   }
-   
-   string event_data = "new_side=" + (g_api_signal_pending_side==SIDE_BUY?"BUY":"SELL");
-   LogEvent("SIGNAL_SIDE_APPLIED", event_data);
-}
-
-//+------------------------------------------------------------------+
-//| TP/SL Active Diff Close Functions                                |
-//+------------------------------------------------------------------+
-
-// Calculate Master order profit/loss in points
-double CalculateMasterOrderPnLPoints()
-{
-   double total_pnl_points = 0.0;
-   int master_orders = 0;
-   
-   for (int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if (ticket == 0)
-         continue;
-      
-      if (PositionGetString(POSITION_SYMBOL) != g_symbol)
-         continue;
-      
-      if (PositionGetInteger(POSITION_MAGIC) != g_magic)
-         continue;
-      
-      string comment = PositionGetString(POSITION_COMMENT);
-      if (StringFind(comment, "MASTER") == -1)
-         continue;
-      
-      double order_pnl_points = 0.0;
-      double current_price = 0.0;
-      double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
-      
-      if (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
-      {
-         current_price = SymbolInfoDouble(g_symbol, SYMBOL_BID);
-         order_pnl_points = (current_price - open_price) / g_point;
-      }
-      else if (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
-      {
-         current_price = SymbolInfoDouble(g_symbol, SYMBOL_ASK);
-         order_pnl_points = (open_price - current_price) / g_point;
-      }
-      
-      total_pnl_points += order_pnl_points;
-      master_orders++;
-   }
-   
-   if (master_orders > 0)
-      return total_pnl_points / master_orders;
-   
-   return 0.0;
-}
-
-// Check TP condition for activating diff close
-bool CheckTPActiveCondition()
-{
-   if (!input_tp_active_diff_close_enabled)
-      return true;
-   
-   double pnl_points = CalculateMasterOrderPnLPoints();
-   
-   if (pnl_points >= input_tp_active_diff_close_points)
-   {
-      g_diff_close_blocked_by_tp = false;
-      return true;
-   }
-   
-   g_diff_close_blocked_by_tp = true;
-   return false;
-}
-
-// Check SL condition for activating diff close
-bool CheckSLActiveCondition()
-{
-   if (!input_sl_active_diff_close_enabled)
-      return true;
-   
-   double pnl_points = CalculateMasterOrderPnLPoints();
-   
-   if (pnl_points <= -input_sl_active_diff_close_points)
-   {
-      g_diff_close_blocked_by_sl = false;
-      return true;
-   }
-   
-   g_diff_close_blocked_by_sl = true;
-   return false;
-}
-
-// Check if diff close should be blocked
-bool IsDiffCloseBlocked()
-{
-   bool blocked = false;
-   
-   if (input_tp_active_diff_close_enabled)
-   {
-      if (!CheckTPActiveCondition())
-         blocked = true;
-   }
-   
-   if (input_sl_active_diff_close_enabled)
-   {
-      if (CheckSLActiveCondition())
-         blocked = false;
-   }
-   
-   return blocked;
-}
-
-// Update diff close block state (call this every tick)
-void UpdateDiffCloseBlockState()
-{
-   if (!input_tp_active_diff_close_enabled && !input_sl_active_diff_close_enabled)
-   {
-      g_diff_close_blocked_by_tp = false;
-      g_diff_close_blocked_by_sl = false;
-      return;
-   }
-   
-   double pnl_points = CalculateMasterOrderPnLPoints();
-   
-   if (input_tp_active_diff_close_enabled)
-   {
-      if (pnl_points >= input_tp_active_diff_close_points)
-         g_diff_close_blocked_by_tp = false;
-      else
-         g_diff_close_blocked_by_tp = true;
-   }
-   
-   if (input_sl_active_diff_close_enabled)
-   {
-      if (pnl_points <= -input_sl_active_diff_close_points)
-         g_diff_close_blocked_by_sl = false;
-      else
-         g_diff_close_blocked_by_sl = true;
-   }
 }
 
 // -----------------------------
@@ -1567,13 +973,11 @@ void MaybeOpenSwapThursday()
 {
    if(!(input_role==ROLE_MASTER)) return;
    if(!input_trading_positive_swap) return;
-   // Do not interfere with Saturday policies (not applicable on Thursday but keep for safety)
-   if(IsInSaturdayQuietWindow()) return;
-   // Skip if there is any open order
+   // Skip if any position is open
    if(CountOpenPairs() > 0) return;
 
-   // Parse and cache target minutes from input
-   static int target_minutes = -2; // -2 = uninitialized; -1 = invalid
+   // Parse and cache target minutes
+   static int target_minutes = -2; // -2=uninitialized; -1=invalid
    static string cached_time = "";
    if(cached_time != input_swap_thursday_open_time)
    {
@@ -1582,24 +986,22 @@ void MaybeOpenSwapThursday()
    }
    if(target_minutes < 0) return;
 
-   // Compute current local minutes and ensure fire-once per day
+   // Fire once per day at exact minute on Thursday (MT5: 0=Sunday ... 6=Saturday)
    static int last_day_of_year = -1;
    static bool fired_today = false;
    MqlDateTime dt; TimeToStruct(TimeLocal(), dt);
-   int minutes_now = dt.hour * 60 + dt.min;
+   int minutes_now = dt.hour*60 + dt.min;
    int day_of_year = dt.day_of_year;
    if(day_of_year != last_day_of_year)
    {
       last_day_of_year = day_of_year;
       fired_today = false;
    }
-   // Only on Thursday (MT5: 0=Sunday ... 6=Saturday, same as MT4)
-   if(dt.day_of_week != 4) return;
+   if(dt.day_of_week != 4) return; // only Thursday
 
    if(!fired_today && minutes_now == target_minutes)
    {
       LogEvent("OPEN_TRIGGER", StringFormat("source=THURSDAY_SWAP_SCHEDULE;time=%s;lots=%.2f", cached_time, input_swap_trading_lots));
-      // Use the same flow as manual Open Now, but with custom lots
       MasterOpenNowWithLots(input_swap_trading_lots);
       fired_today = true;
    }
@@ -1608,7 +1010,17 @@ void MaybeOpenSwapThursday()
 // Check if current time is within scheduled close only period
 bool IsInScheduledCloseOnlyPeriod()
 {
-   if(!input_scheduled_close_only_enabled) return false;
+   // Centralized control: effective flag
+   bool eff_scheduled_close_only_enabled = input_scheduled_close_only_enabled;
+   if(input_trading_positive_swap)
+   {
+      eff_scheduled_close_only_enabled = false;
+   }
+   else
+   {
+      eff_scheduled_close_only_enabled = true;
+   }
+   if(!eff_scheduled_close_only_enabled) return false;
    if(!(input_role==ROLE_MASTER)) return false;
    
    int startMinutes = ParseTimeToMinutes(input_close_only_start_time);
@@ -1842,10 +1254,10 @@ bool CanUserToggleCloseOnly()
 
 bool IsMasterSideBuyEffective()
 {
-   if(input_role==ROLE_MASTER) return (g_effective_master_side==SIDE_BUY);
+   if(input_role==ROLE_MASTER) return (input_master_side==SIDE_BUY);
    if(g_have_master_cmd || g_have_master_th || g_last_cmd_seen_ms>0)
       return (g_last_cmd_side=="BUY");
-   return (g_effective_master_side==SIDE_BUY);
+   return (input_master_side==SIDE_BUY);
 }
 
 void GetMasterSlaveQuotes(double &m_bid, double &m_ask, double &s_bid, double &s_ask)
@@ -2568,16 +1980,18 @@ void SlaveLocalReconcile()
   int guard_ms = (int)MathMax((double)guard_ack_ms, (double)MathMax(guard_close_ms, 15000));
   // Evaluate mismatch early to allow immediate reconcile when self>peer even during guard
   int selfGuard = CountOpenPairs(); int peerGuard = PeerOpenCount(); if(peerGuard<0) return; bool needImmediate = (selfGuard > peerGuard);
-  if(g_slave_last_open_ms > 0)
-  {
-     ulong elapsed = NowMs() - g_slave_last_open_ms;
-     // CRITICAL FIX: Force minimum 10 second grace period for file sync
-     if(elapsed < 10000) return;
-     if(elapsed < (ulong)guard_ms && !needImmediate)
-     {
-        return;
-     }
-  }
+   if(g_slave_last_open_ms > 0)
+   {
+      ulong elapsed = NowMs() - g_slave_last_open_ms;
+      // CRITICAL FIX: Force minimum 10 second grace period for file sync
+      if(elapsed < 10000) {
+         return;
+      }
+      if(elapsed < (ulong)guard_ms && !needImmediate)
+      {
+         return;
+      }
+   }
 
   if((NowMs()-g_last_reconcile_ms) < (ulong)EffectiveHeartbeatTimeoutMs()/2 && !needImmediate) return; // light throttle with override
   g_last_reconcile_ms = NowMs();
@@ -2738,7 +2152,7 @@ void WriteMasterConfig()
    // max_spread_self,max_spread_peer,quotes_fresh_ms,file_poll_ms,retry_on_requote,max_retries,cmd_expire_ms,ack_timeout_ms,heartbeat_timeout_ms,reconcile_mode,reconcile_interval_ms,close_cooldown,min_balance_master,min_balance_slave
    string line = StringFormat("1,%s,%s,%.2f,%.2f,%d,%d,%d,%d,%I64u,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.2f,%.2f\n",
       g_symbol,
-      ((g_effective_master_side==SIDE_BUY)?"BUY":"SELL"),
+      ((input_master_side==SIDE_BUY)?"BUY":"SELL"),
       input_lot_master,
       input_lot_slave,
       input_open_threshold_points,
@@ -3020,6 +2434,146 @@ double DiffClosePoints()
 // Averaging helpers (EMA + Median pre-filter)
 // -----------------------------
 
+// -----------------------------
+// Account Authorization Functions
+// -----------------------------
+
+// HTTP request function for MQL5 (using WebRequest)
+bool HttpGetRequest(const string url, string &response)
+{
+   response = "";
+   ResetLastError();
+   string headers = "User-Agent: MetaTrader EA Authorization Client/1.0\r\n";
+   char data[], result[]; string result_headers;
+   int res = WebRequest("GET", url, headers, 5000, data, result, result_headers);
+   if(res == -1)
+   {
+      int error = GetLastError();
+      g_auth_error_message = StringFormat("WebRequest failed: %d", error);
+      if(input_verbose_journal_logs)
+         Print("[AUTH] WebRequest error: ", error, " - Make sure URL is in allowed list");
+      return false;
+   }
+   if(res != 200)
+   {
+      g_auth_error_message = StringFormat("HTTP error: %d", res);
+      if(input_verbose_journal_logs)
+         Print("[AUTH] HTTP error: ", res);
+      return false;
+   }
+   response = CharArrayToString(result);
+   return true;
+}
+
+// Parse CSV response and check account authorization (MQL5 types)
+bool ParseAuthorizationData(const string csv_data, const long account_number, datetime &expires_out, double &max_lots_out)
+{
+   expires_out = 0;
+   max_lots_out = 0.0;
+   if(StringLen(csv_data) == 0)
+   {
+      g_auth_error_message = "Empty response from authorization server";
+      return false;
+   }
+   string lines[]; int line_count = StringSplit(csv_data, '\n', lines);
+   int start_line = 0;
+   if(line_count > 0)
+   {
+      string first_line = TrimAll(lines[0]);
+      if(StringFind(first_line, "account") >= 0 || StringFind(first_line, "Account") >= 0)
+         start_line = 1;
+   }
+   for(int i = start_line; i < line_count; i++)
+   {
+      string line = TrimAll(lines[i]); if(StringLen(line) == 0) continue;
+      string fields[]; int field_count = StringSplit(line, ',', fields);
+      if(field_count >= 2)
+      {
+         long csv_account = StringToInteger(TrimAll(fields[0]));
+         if(csv_account == account_number)
+         {
+            if(field_count >= 2)
+            {
+               string expire_str = TrimAll(fields[1]);
+               if(StringLen(expire_str) >= 10)
+               {
+                  string date_part = StringSubstr(expire_str, 0, 10);
+                  string date_fields[]; if(StringSplit(date_part, '-', date_fields) == 3)
+                  {
+                     int year = (int)StringToInteger(date_fields[0]);
+                     int month = (int)StringToInteger(date_fields[1]);
+                     int day = (int)StringToInteger(date_fields[2]);
+                     expires_out = StringToTime(StringFormat("%04d.%02d.%02d 23:59:59", year, month, day));
+                  }
+                  else
+                  {
+                     expires_out = StringToTime(expire_str);
+                  }
+               }
+            }
+            if(field_count >= 3)
+            {
+               string max_lots_str = TrimAll(fields[2]);
+               if(StringLen(max_lots_str) > 0)
+               {
+                  max_lots_out = StringToDouble(max_lots_str);
+               }
+            }
+            return true; // Account found
+         }
+      }
+   }
+   g_auth_error_message = StringFormat("Account %I64d not found in authorization list", (long)account_number);
+   return false;
+}
+
+// Check account authorization (MQL5)
+bool CheckAccountAuthorization()
+{
+   if(!input_auth_enabled || StringLen(input_auth_sheet_url) == 0)
+   {
+      g_account_authorized = true; g_auth_error_message = ""; return true;
+   }
+   if(g_auth_check_in_progress)
+   {
+      if(input_verbose_journal_logs) Print("[AUTH] Authorization check already in progress");
+      return g_account_authorized;
+   }
+   g_auth_check_in_progress = true;
+   long account_num = AccountInfoInteger(ACCOUNT_LOGIN); string response;
+   LogEvent("AUTH_CHECK_START", StringFormat("account=%I64d", (long)account_num));
+   if(!HttpGetRequest(input_auth_sheet_url, response))
+   {
+      g_auth_check_in_progress = false;
+      LogEvent("AUTH_CHECK_FAILED", StringFormat("account=%I64d;error=%s", (long)account_num, g_auth_error_message));
+      return false;
+   }
+   datetime expires_at = 0; double max_lots = 0.0;
+   bool authorized = ParseAuthorizationData(response, account_num, expires_at, max_lots);
+   if(authorized)
+   {
+      datetime now = TimeCurrent();
+      if(expires_at > 0 && now > expires_at)
+      {
+         authorized = false; g_auth_error_message = StringFormat("Account %I64d expired on %s", (long)account_num, TimeToString(expires_at));
+      }
+      else { g_account_expires_at = expires_at; g_account_max_lots = max_lots; g_auth_error_message = ""; }
+   }
+   g_account_authorized = authorized; g_last_auth_check_ms = NowMs(); g_auth_check_in_progress = false;
+   string status = authorized ? "AUTHORIZED" : "DENIED"; string expire_info = (expires_at > 0) ? TimeToString(expires_at) : "NO_EXPIRY";
+   string max_lots_info = (max_lots > 0) ? StringFormat(";max_lots=%.2f", max_lots) : "";
+   LogEvent("AUTH_CHECK_RESULT", StringFormat("account=%I64d;status=%s;expires=%s%s;error=%s", (long)account_num, status, expire_info, max_lots_info, g_auth_error_message));
+   return authorized;
+}
+
+// Check if we need to refresh authorization (every 24 hours)
+bool ShouldRefreshAuthorization()
+{
+   if(!input_auth_enabled) return false;
+   if(g_last_auth_check_ms == 0) return true;
+   ulong now_ms = NowMs();
+   return (now_ms - g_last_auth_check_ms) >= (ulong)86400000; // 24h
+}
 void PushMedianOpen(const double v)
 {
    int maxN = (input_prefilter_window>16?16:input_prefilter_window);
@@ -3169,7 +2723,7 @@ void MaybeOpenPair()
    if(g_role_conflict) return;
    if(!(input_role==ROLE_MASTER)) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(input_auth_enabled && !g_account_authorized) return;
    // Update scheduled close only mode state
    UpdateScheduledCloseOnlyMode();
    // Close Only mode: prevent new orders
@@ -3207,7 +2761,7 @@ void MaybeOpenPair()
    // === ZONE STABILITY CHECK (applies to all modes) ===
    if(input_zone_stability_enabled)
    {
-      if(!g_open_zone_stable)
+      if(!CheckZoneStability(diffOpen, GetOpenThresholdPoints(), g_open_zone_stable, g_open_positive_count, g_open_negative_count))
       {
          // Zone not stable - reset all pending states
          g_open_pending = false;
@@ -3364,10 +2918,10 @@ void MaybeOpenPair()
       int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0)? DryOverrideExpireMs(): input_cmd_expire_ms;
       if(expire_ms <= 0) expire_ms = 60000; // Default 60 seconds if invalid (increased for timezone safety)
       string lineDR = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d,%.5f,%.5f,%.5f,%.5f,%.1f\n",
-         cmd_id,(long)g_seq,cmd_id,g_symbol,((g_effective_master_side==SIDE_BUY)?"BUY":"SELL"),input_lot_master,input_lot_slave,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
+         cmd_id,(long)g_seq,cmd_id,g_symbol,((input_master_side==SIDE_BUY)?"BUY":"SELL"),input_lot_master,input_lot_slave,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
          g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpen);
       FileWriteAllAtomic(PathOpenCmd(), lineDR);
-      LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;dOpen=%.1f;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((g_effective_master_side==SIDE_BUY)?"BUY":"SELL"), input_lot_master, input_lot_slave, expire_ms, diffOpen, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
+      LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;dOpen=%.1f;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((input_master_side==SIDE_BUY)?"BUY":"SELL"), input_lot_master, input_lot_slave, expire_ms, diffOpen, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
       g_waiting_slave_open_ack=true; g_pending_open_cmd_id=cmd_id; g_pending_open_created_ms=created_ms; g_rollback_initiated=false;
       g_early_warning_sent = false; // reset warning flag
       string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0);
@@ -3380,7 +2934,7 @@ void MaybeOpenPair()
    }
 
    // Real trading: send master order first
-   ulong tkt=0; double price=0.0; bool ok = PlaceOrder((g_effective_master_side==SIDE_BUY), input_lot_master, tkt, price);
+   ulong tkt=0; double price=0.0; bool ok = PlaceOrder((input_master_side==SIDE_BUY), input_lot_master, tkt, price);
    string ackSelf2 = StringFormat("1,%s,%I64d,%s,%.5f,%d,%d\n", cmd_id, (long)g_seq, "N/A", price, ok?1:0, ok?0:(int)GetLastError());
    FileWriteAllAtomic(PathOpenAckSelf(), ackSelf2);
    LogEvent("OPEN_ACK_MASTER", StringFormat("cmd_id=%s;ok=%d;price=%.5f;err=%d", cmd_id, ok?1:0, price, ok?0:(int)GetLastError()));
@@ -3395,10 +2949,10 @@ void MaybeOpenPair()
    int expire_ms2 = (DryEnabled() && DryOverrideExpireMs()>0)? DryOverrideExpireMs(): input_cmd_expire_ms;
    if(expire_ms2 <= 0) expire_ms2 = 60000; // Default 60 seconds if invalid (increased for timezone safety)
    string line = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d,%.5f,%.5f,%.5f,%.5f,%.1f\n",
-      cmd_id,(long)g_seq,cmd_id,g_symbol,((g_effective_master_side==SIDE_BUY)?"BUY":"SELL"),input_lot_master,input_lot_slave,input_slippage_points,created_ms2,expire_ms2,input_open_threshold_points,input_close_threshold_points,
+      cmd_id,(long)g_seq,cmd_id,g_symbol,((input_master_side==SIDE_BUY)?"BUY":"SELL"),input_lot_master,input_lot_slave,input_slippage_points,created_ms2,expire_ms2,input_open_threshold_points,input_close_threshold_points,
       g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpen);
    FileWriteAllAtomic(PathOpenCmd(), line);
-   LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;dOpen=%.1f;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((g_effective_master_side==SIDE_BUY)?"BUY":"SELL"), input_lot_master, input_lot_slave, expire_ms2, diffOpen, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
+   LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;dOpen=%.1f;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((input_master_side==SIDE_BUY)?"BUY":"SELL"), input_lot_master, input_lot_slave, expire_ms2, diffOpen, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
    g_waiting_slave_open_ack=true; g_pending_open_cmd_id=cmd_id; g_pending_open_created_ms=created_ms2; g_rollback_initiated=false;
    g_early_warning_sent = false; // reset warning flag
    // ENHANCED: Set extended grace period to prevent immediate close (consistent with MT4)
@@ -3411,29 +2965,7 @@ void MaybeClosePair()
    if(g_role_conflict) return;
    if(!(input_role==ROLE_MASTER)) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
-   
-   // Check if diff close is blocked by TP/SL conditions
-   if (IsDiffCloseBlocked())
-   {
-      if (input_verbose_journal_logs && (g_diff_close_blocked_by_tp || g_diff_close_blocked_by_sl))
-      {
-         string reason = "";
-         if (g_diff_close_blocked_by_tp)
-            reason += "[TP not met] ";
-         if (g_diff_close_blocked_by_sl)
-            reason += "[SL not met] ";
-         
-         static datetime last_log_time = 0;
-         if (TimeCurrent() - last_log_time > 60)
-         {
-            Print("[DIFF-CLOSE] Blocked: ", reason);
-            last_log_time = TimeCurrent();
-         }
-      }
-      return;
-   }
-   
+   if(input_auth_enabled && !g_account_authorized) return;
    // Saturday quiet window: block any closes
    if(IsInSaturdayQuietWindow()) return;
    
@@ -3735,7 +3267,7 @@ void SlaveProcessOpenCmd()
    if(g_role_conflict) return;
    if(input_role==ROLE_MASTER) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(input_auth_enabled && !g_account_authorized) return;
    string s; if(!FileReadAll(PathOpenCmd(), s)) {
       // If command file missing for a while, no-op
       if(input_verbose_journal_logs) Print("[Slave] open_cmd.csv not found or not readable");
@@ -3805,7 +3337,7 @@ void SlaveProcessCloseCmd()
    if(g_role_conflict) return;
    if(input_role==ROLE_MASTER) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(input_auth_enabled && !g_account_authorized) return;
    string s; if(!FileReadAll(PathCloseCmd(), s)) return;
    string fields[]; int n = StringSplit(TrimAll(s), ',', fields); if(n<7) return;
    string cmd_id = fields[1]; string pair_id = fields[3]; ulong created_ms = (ulong)StringToDouble(fields[5]); int expire_ms=(int)StringToInteger(fields[6]);
@@ -3957,6 +3489,9 @@ int    CLOSE_ONLY_BTN_X = 6;
 int    CLOSE_ONLY_BTN_Y = 240; // Will be adjusted dynamically based on monitor height
 int    CLOSE_ONLY_BTN_W = 120;
 int    CLOSE_ONLY_BTN_H = 24;
+// Reset Stats button geometry (same row as Close Only)
+int    RESET_BTN_W = 120;
+int    RESET_BTN_H = 24;
 
 int CooldownRemainSeconds()
 {
@@ -4026,12 +3561,12 @@ void DisplayInit()
       ObjectSetString(0, b2, OBJPROP_TEXT, "Close Now");
       ObjectSetInteger(0, b2, OBJPROP_FONTSIZE, 8);
       
-      // Profit Display (below debug buttons)
+      // Sum Equity Display (below debug buttons)
       string eq_bg = OBJ_PREFIX + "EQUITY_BG";
       ObjectCreate(0, eq_bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
       ObjectSetInteger(0, eq_bg, OBJPROP_CORNER, 0);
       ObjectSetInteger(0, eq_bg, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
-      ObjectSetInteger(0, eq_bg, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 30);
+      ObjectSetInteger(0, eq_bg, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8);
       ObjectSetInteger(0, eq_bg, OBJPROP_XSIZE, EQUITY_W);
       ObjectSetInteger(0, eq_bg, OBJPROP_YSIZE, EQUITY_H);
       ObjectSetInteger(0, eq_bg, OBJPROP_COLOR, clrLightGray);
@@ -4041,24 +3576,24 @@ void DisplayInit()
       ObjectCreate(0, eq_label, OBJ_LABEL, 0, 0, 0);
       ObjectSetInteger(0, eq_label, OBJPROP_CORNER, 0);
       ObjectSetInteger(0, eq_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
-      ObjectSetInteger(0, eq_label, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 30 + 5);
+      ObjectSetInteger(0, eq_label, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8 + 5);
       ObjectSetString(0, eq_label, OBJPROP_TEXT, "Profit");
-      ObjectSetString(0, eq_label, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, eq_label, OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, eq_label, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, eq_label, OBJPROP_COLOR, clrBlack);
       
       string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
       ObjectCreate(0, eq_value, OBJ_LABEL, 0, 0, 0);
       ObjectSetInteger(0, eq_value, OBJPROP_CORNER, 0);
       ObjectSetInteger(0, eq_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
-      ObjectSetInteger(0, eq_value, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 30 + 22);
+      ObjectSetInteger(0, eq_value, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8 + 22);
       ObjectSetString(0, eq_value, OBJPROP_TEXT, "$0.00");
-      ObjectSetString(0, eq_value, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, eq_value, OBJPROP_FONTSIZE, 12);
+      ObjectSetString(0, eq_value, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, eq_value, OBJPROP_COLOR, clrDarkGreen);
-
+      
       // Realtime diffOpen/diffClose labels and values (below Profit)
-      int diff_base_y = CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 30 + EQUITY_H + 8;
+      int diff_base_y = CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 8 + EQUITY_H + 8;
 
       // Background for diff section (white)
       string diff_bg = OBJ_PREFIX + "DIFF_BG";
@@ -4070,15 +3605,15 @@ void DisplayInit()
       ObjectSetInteger(0, diff_bg, OBJPROP_YSIZE, 44);
       ObjectSetInteger(0, diff_bg, OBJPROP_COLOR, clrWhite);
       ObjectSetInteger(0, diff_bg, OBJPROP_BACK, false);
-
+      
       string dopen_label = OBJ_PREFIX + "DIFF_OPEN_LABEL";
       ObjectCreate(0, dopen_label, OBJ_LABEL, 0, 0, 0);
       ObjectSetInteger(0, dopen_label, OBJPROP_CORNER, 0);
       ObjectSetInteger(0, dopen_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
       ObjectSetInteger(0, dopen_label, OBJPROP_YDISTANCE, diff_base_y);
       ObjectSetString(0, dopen_label, OBJPROP_TEXT, "diffOpen");
-      ObjectSetString(0, dopen_label, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, dopen_label, OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, dopen_label, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, dopen_label, OBJPROP_COLOR, clrBlack);
 
       string dopen_value = OBJ_PREFIX + "DIFF_OPEN_VALUE";
@@ -4087,8 +3622,8 @@ void DisplayInit()
       ObjectSetInteger(0, dopen_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 110);
       ObjectSetInteger(0, dopen_value, OBJPROP_YDISTANCE, diff_base_y);
       ObjectSetString(0, dopen_value, OBJPROP_TEXT, "0.0");
-      ObjectSetString(0, dopen_value, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, dopen_value, OBJPROP_FONTSIZE, 12);
+      ObjectSetString(0, dopen_value, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, dopen_value, OBJPROP_COLOR, clrBlack);
 
       string dclose_label = OBJ_PREFIX + "DIFF_CLOSE_LABEL";
@@ -4097,8 +3632,8 @@ void DisplayInit()
       ObjectSetInteger(0, dclose_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
       ObjectSetInteger(0, dclose_label, OBJPROP_YDISTANCE, diff_base_y + 20);
       ObjectSetString(0, dclose_label, OBJPROP_TEXT, "diffClose");
-      ObjectSetString(0, dclose_label, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, dclose_label, OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, dclose_label, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, dclose_label, OBJPROP_COLOR, clrBlack);
 
       string dclose_value = OBJ_PREFIX + "DIFF_CLOSE_VALUE";
@@ -4107,8 +3642,8 @@ void DisplayInit()
       ObjectSetInteger(0, dclose_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 110);
       ObjectSetInteger(0, dclose_value, OBJPROP_YDISTANCE, diff_base_y + 20);
       ObjectSetString(0, dclose_value, OBJPROP_TEXT, "0.0");
-      ObjectSetString(0, dclose_value, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, dclose_value, OBJPROP_FONTSIZE, 12);
+      ObjectSetString(0, dclose_value, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(0, dclose_value, OBJPROP_COLOR, clrBlack);
    }
 
@@ -4135,8 +3670,8 @@ void DisplayInit()
          ObjectSetInteger(0, b4, OBJPROP_CORNER, 0);
          ObjectSetInteger(0, b4, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + CLOSE_ONLY_BTN_W + 10);
          ObjectSetInteger(0, b4, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y);
-         ObjectSetInteger(0, b4, OBJPROP_XSIZE, 120);
-         ObjectSetInteger(0, b4, OBJPROP_YSIZE, 24);
+         ObjectSetInteger(0, b4, OBJPROP_XSIZE, RESET_BTN_W);
+         ObjectSetInteger(0, b4, OBJPROP_YSIZE, RESET_BTN_H);
          ObjectSetInteger(0, b4, OBJPROP_BGCOLOR, clrWhite);
          ObjectSetString(0, b4, OBJPROP_TEXT, "Reset Stats");
          ObjectSetInteger(0, b4, OBJPROP_FONTSIZE, 9);
@@ -4252,6 +3787,66 @@ void UpdateCachedSlaveBalance()
    }
 }
 
+// Get fresh equity from peer account status file
+bool ReadPeerEquityFresh(double &equity_out, ulong &ts_out)
+{
+   equity_out = 0.0; ts_out = 0;
+   string s; if(!FileReadAll(PathAccountStatusPeer(), s)) return false;
+   string f[]; int n = StringSplit(TrimAll(s), ',', f);
+   if(n<4) return false;
+   // format: version,balance,equity,updated_ms
+   equity_out = StringToDouble(f[2]);
+   ts_out = (ulong)StringToDouble(f[3]);
+   // freshness: require within EffectiveHeartbeatTimeoutMs
+   if((NowMs()-ts_out) > (ulong)EffectiveHeartbeatTimeoutMs()) return false;
+   return true;
+}
+
+// Update cached slave equity if fresh data is available
+void UpdateCachedSlaveEquity()
+{
+   double slave_equity = 0.0;
+   ulong slave_ts = 0;
+   bool slave_ok = ReadPeerEquityFresh(slave_equity, slave_ts);
+   if(slave_ok && slave_equity > 0.0)
+   {
+      g_cached_slave_equity = slave_equity;
+      g_has_slave_equity = true;
+   }
+}
+
+// Get cached slave equity (returns last known value, never shows STALE)
+double GetCachedSlaveEquity()
+{
+   return g_has_slave_equity ? g_cached_slave_equity : 0.0;
+}
+
+// Get sum of master and slave equity (realtime)
+double GetSumEquity()
+{
+   double master_equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double slave_equity = 0.0;
+   ulong slave_ts = 0;
+   
+   // Prefer fresh equity; when fresh, also refresh cache
+   if(ReadPeerEquityFresh(slave_equity, slave_ts))
+   {
+      if(slave_equity > 0.0)
+      {
+         g_cached_slave_equity = slave_equity;
+         g_has_slave_equity = true;
+      }
+      return master_equity + slave_equity;
+   }
+   
+   // Fallback to cached slave equity to avoid flicker when peer inactive
+   if(g_has_slave_equity)
+      return master_equity + g_cached_slave_equity;
+   
+   // If no cache yet, return only master equity
+   return master_equity;
+}
+
 // Get cached slave balance (returns last known value, never shows STALE)
 double GetCachedSlaveBalance()
 {
@@ -4338,98 +3933,20 @@ void UpdateDiffDisplay()
    }
 }
 
-// Get fresh equity from peer account status file
-bool ReadPeerEquityFresh(double &equity_out, ulong &ts_out)
-{
-   equity_out = 0.0; ts_out = 0;
-   string s; if(!FileReadAll(PathAccountStatusPeer(), s)) return false;
-   string f[]; int n = StringSplit(TrimAll(s), ',', f);
-   if(n<4) return false;
-   // format: version,balance,equity,updated_ms
-   equity_out = StringToDouble(f[2]);
-   ts_out = (ulong)StringToInteger(f[3]);
-   // freshness: require within EffectiveHeartbeatTimeoutMs
-   if((NowMs()-ts_out) > (ulong)EffectiveHeartbeatTimeoutMs()) return false;
-   return true;
-}
-
-// Update cached slave equity if fresh data is available
-void UpdateCachedSlaveEquity()
-{
-   double slave_equity = 0.0;
-   ulong slave_ts = 0;
-   bool slave_ok = ReadPeerEquityFresh(slave_equity, slave_ts);
-   if(slave_ok && slave_equity > 0.0)
-   {
-      g_cached_slave_equity = slave_equity;
-      g_has_slave_equity = true;
-   }
-}
-
-// Get cached slave equity (returns last known value, never shows STALE)
-double GetCachedSlaveEquity()
-{
-   return g_has_slave_equity ? g_cached_slave_equity : 0.0;
-}
-
-// Get sum of master and slave equity (realtime)
-double GetSumEquity()
-{
-   double master_equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   double slave_equity = 0.0;
-   ulong slave_ts = 0;
-   
-   // Prefer fresh equity; when fresh, also refresh cache
-   if(ReadPeerEquityFresh(slave_equity, slave_ts))
-   {
-      if(slave_equity > 0.0)
-      {
-         g_cached_slave_equity = slave_equity;
-         g_has_slave_equity = true;
-      }
-      return master_equity + slave_equity;
-   }
-   
-   // Fallback to cached slave equity to avoid flicker when peer inactive
-   if(g_has_slave_equity)
-      return master_equity + g_cached_slave_equity;
-   
-   // If no cache yet, return only master equity
-   return master_equity;
-}
-
 void DisplayUpdate()
 {
+   // เรียกใช้ stability check ก่อน
+   UpdateDisplayPeerStatus();
+   
    string role = (input_role==ROLE_MASTER)?"MASTER":"SLAVE";
    int spread = SpreadPointsSelf();
    double dOpen = DiffOpenPoints();
    double dClose = DiffClosePoints();
    double aOpen = input_avg_filter_enabled ? SmoothedOpenDiff(dOpen) : dOpen;
    double aClose = input_avg_filter_enabled ? SmoothedCloseDiff(dClose) : dClose;
-   
    int line = 0;
    DisplaySetLine(line++, StringFormat("role=%s  channel=%s  symbol=%s", role, input_channel_id, g_symbol));
-   
-   // Account authorization status
-   if(input_api_auth_enabled)
-   {
-      string auth_status = g_account_authorized ? "AUTHORIZED" : "DENIED";
-      string expire_info = "";
-      if(g_account_authorized && g_account_expires_at > 0)
-      {
-         datetime now = TimeCurrent();
-         int days_left = (int)((g_account_expires_at - now) / 86400);
-         expire_info = StringFormat(" (expires in %d days)", days_left);
-      }
-      else if(!g_account_authorized && StringLen(g_auth_error_message) > 0)
-      {
-         expire_info = StringFormat(" (%s)", g_auth_error_message);
-      }
-      DisplaySetLine(line++, StringFormat("auth=%s%s", auth_status, expire_info));
-   }
-   
-   // เรียกใช้ stability check ก่อน
-   UpdateDisplayPeerStatus();
+   line = DisplaySetWrappedLines(line, StringFormat("sync_path=%s", PathChannelRootAbs()));
    
    // ใช้ค่าที่ stable แทน
    string syncTxt = g_display_peer_alive ? "OK" : "WAITING";
@@ -4444,25 +3961,24 @@ void DisplayUpdate()
    
    DisplaySetLine(line++, StringFormat("sync=%s  peer_hb_age=%dms  active=%s%s", 
                                       syncTxt, hb_age, activeTxt, debug_info));
-   line = DisplaySetWrappedLines(line, StringFormat("sync_path=%s", PathChannelRootAbs()));
    if(input_role==ROLE_MASTER)
    {
-      DisplaySetLine(line++, StringFormat("lot(m/s)=%.2f/%.2f  side(M)=%s", input_lot_master, input_lot_slave, ((g_effective_master_side==SIDE_BUY)?"BUY":"SELL")));
+      DisplaySetLine(line++, StringFormat("lot(m/s)=%.2f/%.2f  side(M)=%s", input_lot_master, input_lot_slave, ((input_master_side==SIDE_BUY)?"BUY":"SELL")));
       DisplaySetLine(line++, StringFormat("open_th(init)=%d  open_th(cur)=%d  close_th(init)=%d  close_th(cur)=%d  spread=%d", input_open_threshold_points, GetOpenThresholdPoints(), input_close_threshold_points, GetCloseThresholdPoints(), spread));
       int cd = CooldownRemainSeconds(); string cdLeft = (cd>=0)? IntegerToString(cd):"-";
       int closeLeft = -1; if(g_last_pair_both_open_time>0){ int el=(int)(TimeCurrent()-g_last_pair_both_open_time); int rem=input_close_cooldown_seconds-el; if(rem<0) rem=0; closeLeft=rem; }
       // Split into two lines to avoid clipping on narrow charts
-      /* DisplaySetLine(line++, StringFormat("open_cooldown=%ds left=%s  close_cooldown=%ds left=%s",
+      DisplaySetLine(line++, StringFormat("open_cooldown=%ds left=%s  close_cooldown=%ds left=%s",
          input_open_cooldown_seconds, cdLeft, input_close_cooldown_seconds, (closeLeft>=0?IntegerToString(closeLeft):"0")));
-      DisplaySetLine(line++, StringFormat("max_pairs=%d  open_now=%d", input_max_open_pairs, CountOpenPairs())); */
+      DisplaySetLine(line++, StringFormat("max_pairs=%d  open_now=%d", input_max_open_pairs, CountOpenPairs()));
       
       // Performance Metrics
-      /*   double success_rate = (g_total_opens>0) ? ((double)g_successful_opens / g_total_opens * 100.0) : 0.0;
+         double success_rate = (g_total_opens>0) ? ((double)g_successful_opens / g_total_opens * 100.0) : 0.0;
          ulong avg_ack = (g_total_opens>0) ? g_avg_ack_time_ms : 0;
          DisplaySetLine(line++, StringFormat("Success Rate: %.1f%% (%I64u/%I64u) AvgAck: %I64ums", 
                         success_rate, g_successful_opens, g_total_opens, avg_ack));
          DisplaySetLine(line++, StringFormat("Rollbacks: %I64u", g_rollback_count));
-      */
+      
    }
    else
    {
@@ -4476,7 +3992,7 @@ void DisplayUpdate()
       }
       DisplaySetLine(line++, StringFormat("spread=%d", spread));
       int closeLeftS=-1; if(g_last_pair_both_open_time>0){ int el=(int)(TimeCurrent()-g_last_pair_both_open_time); int rem=g_master_close_cooldown_seconds-el; if(rem<0) rem=0; closeLeftS=rem; }
-      // DisplaySetLine(line++, StringFormat("close_cooldown=%ds left=%s", g_master_close_cooldown_seconds, (closeLeftS>=0?IntegerToString(closeLeftS):"-")));
+      DisplaySetLine(line++, StringFormat("close_cooldown=%ds left=%s", g_master_close_cooldown_seconds, (closeLeftS>=0?IntegerToString(closeLeftS):"-")));
    }
    if(input_role==ROLE_MASTER)
    {
@@ -4563,15 +4079,15 @@ void DisplayUpdate()
          // Signal cooldown status
          if(input_avg_signal_cooldown_ms > 0)
          {
-            ulong openCooldown = (NowMs() > g_last_avg_open_signal_ms) ? 
-               (NowMs() - g_last_avg_open_signal_ms) : 0;
-            ulong closeCooldown = (NowMs() > g_last_avg_close_signal_ms) ? 
-               (NowMs() - g_last_avg_close_signal_ms) : 0;
+            int openCooldown = (int)((NowMs() > g_last_avg_open_signal_ms) ? 
+               (NowMs() - g_last_avg_open_signal_ms) : 0);
+            int closeCooldown = (int)((NowMs() > g_last_avg_close_signal_ms) ? 
+               (NowMs() - g_last_avg_close_signal_ms) : 0);
             string cooldownStatus = "";
-            if(openCooldown < input_avg_signal_cooldown_ms)
-               cooldownStatus += StringFormat("OpenCD:%dms ", (int)(input_avg_signal_cooldown_ms - openCooldown));
-            if(closeCooldown < input_avg_signal_cooldown_ms)
-               cooldownStatus += StringFormat("CloseCD:%dms", (int)(input_avg_signal_cooldown_ms - closeCooldown));
+            if(openCooldown < (ulong)input_avg_signal_cooldown_ms)
+               cooldownStatus += StringFormat("OpenCD:%dms ", input_avg_signal_cooldown_ms - openCooldown);
+            if(closeCooldown < (ulong)input_avg_signal_cooldown_ms)
+               cooldownStatus += StringFormat("CloseCD:%dms", input_avg_signal_cooldown_ms - closeCooldown);
             if(cooldownStatus != "") DisplaySetLine(line++, "Signal Cooldown: " + cooldownStatus);
          }
       }
@@ -4614,20 +4130,20 @@ void DisplayUpdate()
          // Simple display for non-averaging mode
          string stOpen = "READY";
          string stClose = "READY";
-         DisplaySetLine(line++, StringFormat("Open: %.1f (Thr=%d) | %s", dOpen, input_open_threshold_points, stOpen));
-         DisplaySetLine(line++, StringFormat("Close: %.1f (Thr=%d) | %s", dClose, input_close_threshold_points, stClose));
+         DisplaySetLine(line++, StringFormat("Open: Real=%.1f Thr=%d|init=%d | %s", dOpen, GetOpenThresholdPoints(), input_open_threshold_points, stOpen));
+         DisplaySetLine(line++, StringFormat("Close: Real=%.1f Thr=%d|init=%d | %s", dClose, GetCloseThresholdPoints(), input_close_threshold_points, stClose));
       }
    }
          else
       {
          // Simple display for Slave or non-averaging Master
          string freshStatus = QuotesFresh() ? "OK" : "STALE";
-         DisplaySetLine(line++, StringFormat("diffOpen=%.1f  diffClose=%.1f  fresh=%s", dOpen, dClose, freshStatus));
+         DisplaySetLine(line++, StringFormat("Open: %.1f  Close: %.1f  Fresh: %s", dOpen, dClose, freshStatus));
       }
    if(g_role_conflict) DisplaySetLine(line++, "role_conflict=YES (single-instance per channel)" );
    int effMode = DryMode();
    string dryMode = (effMode==DRY_NONE?"NONE":(effMode==DRY_WRITE_CMD_ONLY?"WRITE_CMD_ONLY":"WRITE_CMD_AND_FAKE_ACK"));
-   // DisplaySetLine(line++, StringFormat("dry_run=%s mode=%s", (DryEnabled()?"ON":"OFF"), dryMode));
+   DisplaySetLine(line++, StringFormat("dry_run=%s mode=%s", (DryEnabled()?"ON":"OFF"), dryMode));
    if(input_role==ROLE_MASTER)
    {
       // Update scheduled close only mode state
@@ -4671,7 +4187,7 @@ void DisplayUpdate()
       AutoDetectInitialCapital();
       
       // Capital and profit display (Master only)
-      /* double master_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+      double master_balance = AccountInfoDouble(ACCOUNT_BALANCE);
       double slave_balance = GetCachedSlaveBalance();
       
       double sum_balance = master_balance + slave_balance;
@@ -4683,61 +4199,13 @@ void DisplayUpdate()
       DisplaySetLine(line++, StringFormat("Initial Capital: $%.2f [%s]", effective_initial_capital, capital_source));
       DisplaySetLine(line++, StringFormat("Sum Balance: $%.2f (M:$%.2f + S:$%.2f%s)", 
          sum_balance, master_balance, slave_balance, slave_status));
-      DisplaySetLine(line++, StringFormat("Net Profit: $%.2f", net_profit)); */
+      DisplaySetLine(line++, StringFormat("Net Profit: $%.2f", net_profit));
    }
-
-   // Update Profit and Diff Displays (Master only, when debug buttons enabled)
-   if(input_debug_buttons_enabled && input_role==ROLE_MASTER)
-   {
-      string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
-      if(ObjectFind(0, eq_value) != -1)
-      {
-         // Keep caches fresh opportunistically
-         UpdateCachedSlaveEquity();
-         UpdateCachedSlaveBalance();
-
-         // Realtime sums
-         double master_equity = AccountInfoDouble(ACCOUNT_EQUITY);
-         double master_balance = AccountInfoDouble(ACCOUNT_BALANCE);
-         double slave_equity = 0.0; ulong slave_eq_ts = 0; bool eq_ok = ReadPeerEquityFresh(slave_equity, slave_eq_ts);
-         double slave_balance = 0.0; ulong slave_bal_ts = 0; bool bal_ok = ReadPeerBalanceFresh(slave_balance, slave_bal_ts);
-         if(!eq_ok && g_has_slave_equity) slave_equity = g_cached_slave_equity;
-         if(!bal_ok && g_has_slave_balance) slave_balance = g_cached_slave_balance;
-
-         double sum_equity = master_equity + slave_equity;
-         double sum_balance = master_balance + slave_balance;
-         double profit_value = sum_equity - sum_balance;
-
-         // Color by PnL
-         color profit_color = (profit_value>0.0? clrDarkGreen : (profit_value<0.0? clrDarkRed : clrBlack));
-         string profit_text = StringFormat("$%.2f", profit_value);
-         ObjectSetString(0, eq_value, OBJPROP_TEXT, profit_text);
-         ObjectSetInteger(0, eq_value, OBJPROP_COLOR, profit_color);
-
-         // Update realtime diffOpen/diffClose values with color coding
-         double dOpen = DiffOpenPoints();
-         double dClose = DiffClosePoints();
-         string dopen_value = OBJ_PREFIX + "DIFF_OPEN_VALUE";
-         string dclose_value = OBJ_PREFIX + "DIFF_CLOSE_VALUE";
-         color dOpenColor = (dOpen>0.0? clrDarkGreen : (dOpen<0.0? clrRed : clrBlack));
-         color dCloseColor = (dClose>0.0? clrDarkGreen : (dClose<0.0? clrRed : clrBlack));
-         if(ObjectFind(0, dopen_value) != -1)
-         {
-            ObjectSetString(0, dopen_value, OBJPROP_TEXT, StringFormat("%.1f", dOpen));
-            ObjectSetInteger(0, dopen_value, OBJPROP_COLOR, dOpenColor);
-         }
-         if(ObjectFind(0, dclose_value) != -1)
-         {
-            ObjectSetString(0, dclose_value, OBJPROP_TEXT, StringFormat("%.1f", dClose));
-            ObjectSetInteger(0, dclose_value, OBJPROP_COLOR, dCloseColor);
-         }
-      }
-   }
+   
 
    DisplayTrimLines(line);
 
    // Resize background to cover lines
-
    string bg2 = OBJ_PREFIX + "BG";
    if(ObjectFind(0, bg2) != -1)
    {
@@ -4792,7 +4260,7 @@ void DisplayUpdate()
             ObjectSetString(0, btnCloseOnly, OBJPROP_TEXT, "Close Only");
          }
 
-         // Reposition debug buttons under Close Only button (Master only)
+         // Reposition debug buttons under Close Only button on the same row (Master only)
          if(input_debug_buttons_enabled)
          {
             string btnOpen = OBJ_PREFIX + "BTN_OPEN";
@@ -4809,6 +4277,62 @@ void DisplayUpdate()
                ObjectSetInteger(0, btnClose, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + BTN_W + 10);
                ObjectSetInteger(0, btnClose, OBJPROP_YDISTANCE, close_y);
             }
+            
+            // Reposition Sum Equity Display (below debug buttons)
+            string eq_bg = OBJ_PREFIX + "EQUITY_BG";
+            string eq_label = OBJ_PREFIX + "EQUITY_LABEL";
+            string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
+            int equity_y = open_y + BTN_H + 8;
+            
+            if(ObjectFind(0, eq_bg) != -1)
+            {
+               ObjectSetInteger(0, eq_bg, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
+               ObjectSetInteger(0, eq_bg, OBJPROP_YDISTANCE, equity_y);
+            }
+            if(ObjectFind(0, eq_label) != -1)
+            {
+               ObjectSetInteger(0, eq_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+               ObjectSetInteger(0, eq_label, OBJPROP_YDISTANCE, equity_y + 5);
+            }
+            if(ObjectFind(0, eq_value) != -1)
+            {
+               ObjectSetInteger(0, eq_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+               ObjectSetInteger(0, eq_value, OBJPROP_YDISTANCE, equity_y + 22);
+            }
+            
+            // Reposition Diff displays (below Sum Equity)
+            string diff_bg = OBJ_PREFIX + "DIFF_BG";
+            string dopen_label = OBJ_PREFIX + "DIFF_OPEN_LABEL";
+            string dopen_value = OBJ_PREFIX + "DIFF_OPEN_VALUE";
+            string dclose_label = OBJ_PREFIX + "DIFF_CLOSE_LABEL";
+            string dclose_value = OBJ_PREFIX + "DIFF_CLOSE_VALUE";
+            int diff_y = equity_y + EQUITY_H + 8;
+            
+            if(ObjectFind(0, diff_bg) != -1)
+            {
+               ObjectSetInteger(0, diff_bg, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
+               ObjectSetInteger(0, diff_bg, OBJPROP_YDISTANCE, diff_y - 6);
+            }
+            if(ObjectFind(0, dopen_label) != -1)
+            {
+               ObjectSetInteger(0, dopen_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+               ObjectSetInteger(0, dopen_label, OBJPROP_YDISTANCE, diff_y);
+            }
+            if(ObjectFind(0, dopen_value) != -1)
+            {
+               ObjectSetInteger(0, dopen_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 110);
+               ObjectSetInteger(0, dopen_value, OBJPROP_YDISTANCE, diff_y);
+            }
+            if(ObjectFind(0, dclose_label) != -1)
+            {
+               ObjectSetInteger(0, dclose_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
+               ObjectSetInteger(0, dclose_label, OBJPROP_YDISTANCE, diff_y + 20);
+            }
+            if(ObjectFind(0, dclose_value) != -1)
+            {
+               ObjectSetInteger(0, dclose_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 110);
+               ObjectSetInteger(0, dclose_value, OBJPROP_YDISTANCE, diff_y + 20);
+            }
          }
       }
    }
@@ -4818,6 +4342,8 @@ void DisplayUpdate()
 void MasterOpenNow()
 {
    if(!(input_role==ROLE_MASTER)) return;
+   // Account authorization check
+   if(input_auth_enabled && !g_account_authorized) return;
    // Update scheduled close only mode state
    UpdateScheduledCloseOnlyMode();
    // Close Only mode: prevent new orders
@@ -4841,10 +4367,10 @@ void MasterOpenNow()
      // Include audit fields similar to auto flow
      double diffOpenAudit = DiffOpenPoints();
      string lineDR = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d,%.5f,%.5f,%.5f,%.5f,%.1f\n",
-        cmd_id,(long)g_seq,cmd_id,g_symbol,((g_effective_master_side==SIDE_BUY)?"BUY":"SELL"),input_lot_master,input_lot_slave,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
+        cmd_id,(long)g_seq,cmd_id,g_symbol,((input_master_side==SIDE_BUY)?"BUY":"SELL"),input_lot_master,input_lot_slave,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
         g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpenAudit);
      FileWriteAllAtomic(PathOpenCmd(), lineDR);
-     LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((g_effective_master_side==SIDE_BUY)?"BUY":"SELL"), input_lot_master, input_lot_slave, expire_ms, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
+     LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((input_master_side==SIDE_BUY)?"BUY":"SELL"), input_lot_master, input_lot_slave, expire_ms, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
      g_waiting_slave_open_ack = true; g_pending_open_cmd_id=cmd_id; g_pending_open_created_ms=created_ms; g_rollback_initiated=false;
      g_last_peer_open_ack_ms = 0; // reset grace timer
      // Consolidated grace: prevent immediate reconcile/close
@@ -4862,7 +4388,7 @@ void MasterOpenNow()
    }
 
    // Real trading: place order first, then notify slave
-   ulong tkt=0; double price=0.0; bool ok = PlaceOrder((g_effective_master_side==SIDE_BUY), input_lot_master, tkt, price);
+   ulong tkt=0; double price=0.0; bool ok = PlaceOrder((input_master_side==SIDE_BUY), input_lot_master, tkt, price);
    string ackSelf = StringFormat("1,%s,%I64d,%s,%.5f,%d,%d\n", cmd_id, (long)g_seq, "N/A", price, ok?1:0, ok?0:(int)GetLastError());
    FileWriteAllAtomic(PathOpenAckSelf(), ackSelf);
    LogEvent("OPEN_ACK_MASTER", StringFormat("cmd_id=%s;ok=%d;price=%.5f;err=%d", cmd_id, ok?1:0, price, ok?0:(int)GetLastError()));
@@ -4881,10 +4407,10 @@ void MasterOpenNow()
    // Notify slave with audited open_cmd and start ACK wait
    double diffOpenAudit2 = DiffOpenPoints();
    string line = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d,%.5f,%.5f,%.5f,%.5f,%.1f\n",
-      cmd_id,(long)g_seq,cmd_id,g_symbol,((g_effective_master_side==SIDE_BUY)?"BUY":"SELL"),input_lot_master,input_lot_slave,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
+      cmd_id,(long)g_seq,cmd_id,g_symbol,((input_master_side==SIDE_BUY)?"BUY":"SELL"),input_lot_master,input_lot_slave,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
       g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpenAudit2);
    FileWriteAllAtomic(PathOpenCmd(), line);
-   LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((g_effective_master_side==SIDE_BUY)?"BUY":"SELL"), input_lot_master, input_lot_slave, expire_ms, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
+   LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((input_master_side==SIDE_BUY)?"BUY":"SELL"), input_lot_master, input_lot_slave, expire_ms, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
    g_waiting_slave_open_ack = true; g_pending_open_cmd_id=cmd_id; g_pending_open_created_ms=created_ms; g_rollback_initiated=false;
    g_last_peer_open_ack_ms = 0; // reset grace timer
    // Consolidated grace: prevent immediate reconcile/close
@@ -4897,7 +4423,7 @@ void MasterCloseNow()
 {
    if(!(input_role==ROLE_MASTER)) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(input_auth_enabled && !g_account_authorized) return;
    // Release the debug hold so close can proceed
    if(input_debug_buttons_enabled) g_debug_hold_open = false;
    
@@ -4941,73 +4467,82 @@ void MasterCloseNow()
 void MasterOpenNowWithLots(const double lots)
 {
    if(!(input_role==ROLE_MASTER)) return;
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   // Account authorization check
+   if(input_auth_enabled && !g_account_authorized) return;
+   // Update scheduled close only mode state
    UpdateScheduledCloseOnlyMode();
+   // Close Only mode: prevent new orders
    if(g_close_only_mode) return;
 
-   string cmd_id = NewCmdId();
-   g_last_cmd_id = cmd_id;
+   string cmd_id = NewCmdId(); g_last_cmd_id = cmd_id; 
    LogEvent("OPEN_TRIGGER", StringFormat("source=CUSTOM_LOTS;cmd_id=%s;lots=%.2f", cmd_id, lots));
-
+   
+   // Prepare timing
    ulong created_ms = NowMs();
-   int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0) ? DryOverrideExpireMs() : input_cmd_expire_ms;
-   if(expire_ms <= 0) expire_ms = 60000;
-
+   int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0)? DryOverrideExpireMs(): input_cmd_expire_ms;
+   if(expire_ms <= 0) expire_ms = 60000; // ensure sane expiry
+   
+   // Optional: comment placeholder
    g_pending_order_comment = "MS:OPEN|PAIR:" + cmd_id;
 
-   // Dry-run path mirrors auto flow ordering
+   // Dry-run path: pretend open succeeded, then notify slave with audited cmd
    if(DryEnabled())
    {
-      g_last_open_time = TimeCurrent();
-      double diffOpenAudit = DiffOpenPoints();
-      string lineDR = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d,%.5f,%.5f,%.5f,%.5f,%.1f\n",
-         cmd_id,(long)g_seq,cmd_id,g_symbol,((g_effective_master_side==SIDE_BUY)?"BUY":"SELL"),lots,lots,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
-         g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpenAudit);
-      FileWriteAllAtomic(PathOpenCmd(), lineDR);
-      LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((g_effective_master_side==SIDE_BUY)?"BUY":"SELL"), lots, lots, expire_ms, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
-      g_waiting_slave_open_ack = true; g_pending_open_cmd_id = cmd_id; g_pending_open_created_ms = created_ms; g_rollback_initiated=false; 
-      g_last_peer_open_ack_ms = 0;
-      g_open_grace_until_ms = NowMs() + (ulong)MathMax(input_ack_timeout_ms + 2000, input_close_cooldown_seconds * 1000);
-      g_early_warning_sent = false;
-      if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK)
-      {
-         string ackSelfDR = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0);
-         FileWriteAllAtomic(PathOpenAckSelf(), ackSelfDR);
-         LogEvent("OPEN_ACK_MASTER", StringFormat("cmd_id=%s;ok=1;price=0.0;err=0", cmd_id));
-      }
-      g_pending_order_comment = "";
-      return;
+     // Pretend master open succeeded
+     g_last_open_time = TimeCurrent();
+     // Include audit fields similar to auto flow
+     double diffOpenAudit = DiffOpenPoints();
+     string lineDR = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d,%.5f,%.5f,%.5f,%.5f,%.1f\n",
+        cmd_id,(long)g_seq,cmd_id,g_symbol,((input_master_side==SIDE_BUY)?"BUY":"SELL"),lots,lots,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
+        g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpenAudit);
+     FileWriteAllAtomic(PathOpenCmd(), lineDR);
+     LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((input_master_side==SIDE_BUY)?"BUY":"SELL"), lots, lots, expire_ms, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
+     g_waiting_slave_open_ack = true; g_pending_open_cmd_id=cmd_id; g_pending_open_created_ms=created_ms; g_rollback_initiated=false;
+     g_last_peer_open_ack_ms = 0; // reset grace timer
+     // Consolidated grace: prevent immediate reconcile/close
+     g_open_grace_until_ms = NowMs() + (ulong)MathMax(input_ack_timeout_ms + 2000, input_close_cooldown_seconds * 1000);
+     g_early_warning_sent = false;
+     // Ack self
+     if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK)
+     {
+       string ackSelf = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 1, 0);
+       FileWriteAllAtomic(PathOpenAckSelf(), ackSelf);
+       LogEvent("OPEN_ACK_MASTER", StringFormat("cmd_id=%s;ok=1;price=0.0;err=0", cmd_id));
+     }
+     if(input_debug_buttons_enabled) g_debug_hold_open = false; // allow auto-close logic to run
+     return;
    }
 
-   // Real trading
-   ulong tkt=0; double price=0.0; bool ok = PlaceOrder((g_effective_master_side==SIDE_BUY), lots, tkt, price);
+   // Real trading: place order first, then notify slave
+   ulong tkt=0; double price=0.0; bool ok = PlaceOrder((input_master_side==SIDE_BUY), lots, tkt, price);
    string ackSelf = StringFormat("1,%s,%I64d,%s,%.5f,%d,%d\n", cmd_id, (long)g_seq, "N/A", price, ok?1:0, ok?0:(int)GetLastError());
    FileWriteAllAtomic(PathOpenAckSelf(), ackSelf);
    LogEvent("OPEN_ACK_MASTER", StringFormat("cmd_id=%s;ok=%d;price=%.5f;err=%d", cmd_id, ok?1:0, price, ok?0:(int)GetLastError()));
    if(!ok)
    {
-      g_last_open_time = TimeCurrent();
-      g_pending_order_comment = "";
-      return;
+     g_last_open_time=TimeCurrent();
+     return;
    }
-
+   
    g_last_open_time = TimeCurrent();
    PairMapSelfUpsert(cmd_id, tkt);
    CacheUpsert(cmd_id, tkt);
    WritePositions();
    CompactPairMapSelf();
 
+   // Notify slave with audited open_cmd and start ACK wait
    double diffOpenAudit2 = DiffOpenPoints();
    string line = StringFormat("1,%s,%I64d,%s,%s,%s,%.2f,%.2f,%d,%I64u,%d,%d,%d,%.5f,%.5f,%.5f,%.5f,%.1f\n",
-         cmd_id,(long)g_seq,cmd_id,g_symbol,((g_effective_master_side==SIDE_BUY)?"BUY":"SELL"),lots,lots,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
-         g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpenAudit2);
+      cmd_id,(long)g_seq,cmd_id,g_symbol,((input_master_side==SIDE_BUY)?"BUY":"SELL"),lots,lots,input_slippage_points,created_ms,expire_ms,input_open_threshold_points,input_close_threshold_points,
+      g_self_bid,g_self_ask,g_peer_bid,g_peer_ask,diffOpenAudit2);
    FileWriteAllAtomic(PathOpenCmd(), line);
-   LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((g_effective_master_side==SIDE_BUY)?"BUY":"SELL"), lots, lots, expire_ms, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
-   g_waiting_slave_open_ack = true; g_pending_open_cmd_id = cmd_id; g_pending_open_created_ms = created_ms; g_rollback_initiated=false; 
+   LogEvent("OPEN_CMD", StringFormat("cmd_id=%s;side=%s;lotM=%.2f;lotS=%.2f;expire_ms=%d;mb=%.5f;ma=%.5f;sb=%.5f;sa=%.5f", cmd_id, ((input_master_side==SIDE_BUY)?"BUY":"SELL"), lots, lots, expire_ms, g_self_bid, g_self_ask, g_peer_bid, g_peer_ask));
+   g_waiting_slave_open_ack = true; g_pending_open_cmd_id=cmd_id; g_pending_open_created_ms=created_ms; g_rollback_initiated=false;
+   g_last_peer_open_ack_ms = 0; // reset grace timer
+   // Consolidated grace: prevent immediate reconcile/close
    g_open_grace_until_ms = NowMs() + (ulong)MathMax(input_ack_timeout_ms + 2000, input_close_cooldown_seconds * 1000);
    g_early_warning_sent = false;
-   g_pending_order_comment = "";
-   if(input_debug_buttons_enabled) g_debug_hold_open = false;
+   if(input_debug_buttons_enabled) g_debug_hold_open = false; // allow auto-close logic to run
 }
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
@@ -5053,7 +4588,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          g_successful_opens = 0;
          g_total_ack_time_ms = 0;
          g_avg_ack_time_ms = 0;
-         Print("[DISPLAY] Stats reset by user");
+         LogEvent("STATS_RESET", "success_metrics_cleared");
          ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
       }
    }
@@ -5067,11 +4602,10 @@ int OnInit()
    g_digits = (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS);
    g_point  = SymbolInfoDouble(g_symbol, SYMBOL_POINT);
    g_magic  = input_magic_number_base + (int)StringGetCharacter(input_channel_id, 0);
-   // Initialize effective master side from input
-   g_effective_master_side = input_master_side;
-   // Initialize dynamic thresholds
+   // Initialize dynamic open threshold snapshot
    g_open_threshold_initial = input_open_threshold_points;
    if(g_open_threshold_current == OPEN_TH_UNSET) g_open_threshold_current = g_open_threshold_initial;
+   // Initialize dynamic close threshold snapshot
    g_close_threshold_initial = input_close_threshold_points;
    if(g_close_threshold_current == OPEN_TH_UNSET) g_close_threshold_current = g_close_threshold_initial;
    // Require Auto Trading enabled at terminal and EA levels
@@ -5087,35 +4621,34 @@ int OnInit()
       return(INIT_FAILED);
    }
    FolderEnsure();
-   
-   // Initialize API system
-   if (IsAPIEnabled())
+   // Account Authorization Check (first time)
+   if(input_auth_enabled)
    {
-      // Check authorization (both Master and Slave)
-      if (IsAuthAPIEnabled())
+      if(input_verbose_journal_logs)
+         Print("[AUTH] Checking account authorization...");
+      if(!CheckAccountAuthorization())
       {
-         if (!CheckAccountAuthorization())
-         {
-            Alert("Account authorization failed: ", g_api_auth_error);
+         string error_msg = StringFormat("Account %I64d is not authorized: %s", (long)AccountInfoInteger(ACCOUNT_LOGIN), g_auth_error_message);
+         Print("[AUTH ERROR] ", error_msg);
+         Alert("EA Authorization Failed: " + error_msg);
          return(INIT_FAILED);
-         }
       }
-      
-      // Fetch initial signal (Master only)
-      if (IsSignalAPIEnabled())
+      if(input_verbose_journal_logs)
       {
-         if (!FetchTradingSignal())
-         {
-            Alert("Warning: Failed to fetch initial signal: ", g_api_signal_error);
-            // Continue with default side
-         }
-         else
-         {
-            ApplySignalToMasterSide();
-         }
+         string expire_info = (g_account_expires_at > 0) ? StringFormat(" (expires: %s)", TimeToString(g_account_expires_at)) : " (no expiry)";
+         string max_lots_info = (g_account_max_lots > 0) ? StringFormat(" (max_lots: %.2f)", g_account_max_lots) : "";
+         Print("[AUTH] Account ", (long)AccountInfoInteger(ACCOUNT_LOGIN), " authorized", expire_info, max_lots_info);
+      }
+      if(input_role == ROLE_MASTER && g_account_max_lots > 0 && input_lot > g_account_max_lots)
+      {
+         string error_msg = StringFormat("Account %I64d lot size violation: input_lot=%.2f exceeds max_lots=%.2f", (long)AccountInfoInteger(ACCOUNT_LOGIN), input_lot, g_account_max_lots);
+         Print("[AUTH ERROR] ", error_msg);
+         Alert("EA Lot Size Violation: " + error_msg);
+         LogEvent("AUTH_LOT_LIMIT_VIOLATION", StringFormat("account=%I64d;input_lot=%.2f;max_lots=%.2f", (long)AccountInfoInteger(ACCOUNT_LOGIN), input_lot, g_account_max_lots));
+         return(INIT_FAILED);
       }
    }
-   
+
    if(!AcquireRoleLock()) { g_role_conflict = true; }
    DisplayInit();
    // Use millisecond timer for faster file polling in MQL5
@@ -5271,28 +4804,24 @@ void OnTimer()
    timer_count++;
    
    // === CRITICAL OPERATIONS - ทุกครั้ง ===
-   
-   // API system updates
-   if (IsAPIEnabled())
+   // Account Authorization Check (every 24 hours)
+   if(ShouldRefreshAuthorization())
    {
-      // Check authorization periodically
-      if (IsAuthAPIEnabled())
+      if(input_verbose_journal_logs)
+         Print("[AUTH] Refreshing account authorization (24h check)...");
+      if(!CheckAccountAuthorization())
       {
-         CheckAccountAuthorization();
+         string error_msg = StringFormat("Account %I64d authorization expired or revoked: %s", (long)AccountInfoInteger(ACCOUNT_LOGIN), g_auth_error_message);
+         Print("[AUTH ERROR] ", error_msg);
+         Alert("EA Authorization Lost: " + error_msg);
+         LogEvent("AUTH_REVOKED", StringFormat("account=%I64d;error=%s", (long)AccountInfoInteger(ACCOUNT_LOGIN), g_auth_error_message));
       }
-      
-      // Fetch signal periodically (Master only)
-      if (IsSignalAPIEnabled())
+      else if(input_verbose_journal_logs)
       {
-         if (FetchTradingSignal())
-         {
-            ApplySignalToMasterSide();
-         }
-         
-         CheckPendingSignalChange();
+         string expire_info = (g_account_expires_at > 0) ? StringFormat(" (expires: %s)", TimeToString(g_account_expires_at)) : " (no expiry)";
+         Print("[AUTH] Account ", (long)AccountInfoInteger(ACCOUNT_LOGIN), " authorization refreshed", expire_info);
       }
    }
-   
    WriteHeartbeat();
    UpdatePeerStatus();
    if(!g_role_conflict) WriteRoleLock();
@@ -5324,9 +4853,9 @@ void OnTimer()
    {
       UpdateScheduledCloseOnlyMode();
 
-      // Apply close threshold schedule (Master only)
+      // Apply close threshold schedule
       ApplyCloseThresholdSchedule();
-      
+
       // Forced close by time
       MaybeForceCloseByTime();
 
@@ -5345,18 +4874,6 @@ void OnTick()
    WriteQuotes();
    ReadPeerQuotes();
    UpdatePeerStatus();
-   
-   // API system updates (check pending signal changes)
-   if (IsSignalAPIEnabled())
-   {
-      CheckPendingSignalChange();
-   }
-   
-   // Update TP/SL Active Diff Close state (Master only)
-   if (input_role == ROLE_MASTER)
-   {
-      UpdateDiffCloseBlockState();
-   }
    
    // === ZONE STABILITY CHECK - ทำทุก tick สำหรับ Master ===
    if(input_role==ROLE_MASTER && input_zone_stability_enabled)
