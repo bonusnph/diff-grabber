@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.12"
+#property version   "1.14"
 #property strict
 
 // =============================
@@ -153,7 +153,7 @@ string input_force_close_time             = "04:15";  // Scope: Master — time 
 // ========================================
 
 // Master API Switch
-bool   input_api_enabled = false;                  // Scope: Both — Enable/Disable ALL API features
+input bool   input_api_enabled = false;                  // Scope: Both — Enable/Disable ALL API features
 
 // Authorization API
 bool   input_api_auth_enabled = false;              // Scope: Both — Enable account authorization via API
@@ -868,6 +868,7 @@ bool CheckAccountAuthorization()
    {
       g_api_auth_error = "Account not authorized or expired";
       g_api_auth_valid = false;
+      g_account_authorized = false;
       Print("[API-AUTH] ", g_api_auth_error);
       return false;
    }
@@ -876,6 +877,9 @@ bool CheckAccountAuthorization()
    g_api_auth_expires = expires;
    g_api_auth_max_lots = max_lots;
    g_api_auth_valid = true;
+   g_account_authorized = true;
+   g_account_expires_at = expires;
+   g_account_max_lots = max_lots;
    g_api_auth_error = "";
    
    if (input_verbose_journal_logs)
@@ -1089,11 +1093,11 @@ void CheckPendingSignalChange()
 //| TP/SL Active Diff Close Functions                                |
 //+------------------------------------------------------------------+
 
-// Calculate Master order profit/loss in points
+// Calculate order profit/loss in points (for this EA's orders)
 double CalculateMasterOrderPnLPoints()
 {
    double total_pnl_points = 0.0;
-   int master_orders = 0;
+   int order_count = 0;
    
    for (int i = OrdersTotal() - 1; i >= 0; i--)
    {
@@ -1104,10 +1108,6 @@ double CalculateMasterOrderPnLPoints()
          continue;
       
       if (OrderMagicNumber() != g_magic)
-         continue;
-      
-      string comment = OrderComment();
-      if (StringFind(comment, "MASTER") == -1)
          continue;
       
       double order_pnl_points = 0.0;
@@ -1125,11 +1125,11 @@ double CalculateMasterOrderPnLPoints()
       }
       
       total_pnl_points += order_pnl_points;
-      master_orders++;
+      order_count++;
    }
    
-   if (master_orders > 0)
-      return total_pnl_points / master_orders;
+   if (order_count > 0)
+      return total_pnl_points / order_count;
    
    return 0.0;
 }
@@ -1173,21 +1173,35 @@ bool CheckSLActiveCondition()
 // Check if diff close should be blocked
 bool IsDiffCloseBlocked()
 {
-   bool blocked = false;
+   // If neither is enabled, don't block
+   if (!input_tp_active_diff_close_enabled && !input_sl_active_diff_close_enabled)
+      return false;
    
-   if (input_tp_active_diff_close_enabled)
+   double pnl_points = CalculateMasterOrderPnLPoints();
+   
+   // TP condition: profit must reach threshold to allow diff close
+   bool tp_condition_met = (pnl_points >= input_tp_active_diff_close_points);
+   
+   // SL condition: loss must reach threshold to allow diff close (cut loss)
+   bool sl_condition_met = (pnl_points <= -input_sl_active_diff_close_points);
+   
+   // Update block state flags
+   g_diff_close_blocked_by_tp = input_tp_active_diff_close_enabled && !tp_condition_met;
+   g_diff_close_blocked_by_sl = input_sl_active_diff_close_enabled && !sl_condition_met;
+   
+   // If both enabled: allow diff close if EITHER TP or SL condition is met
+   if (input_tp_active_diff_close_enabled && input_sl_active_diff_close_enabled)
    {
-      if (!CheckTPActiveCondition())
-         blocked = true;
+      return !(tp_condition_met || sl_condition_met);
    }
-   
-   if (input_sl_active_diff_close_enabled)
+   else if (input_tp_active_diff_close_enabled)
    {
-      if (CheckSLActiveCondition())
-         blocked = false;
+      return !tp_condition_met;
    }
-   
-   return blocked;
+   else // Only SL enabled
+   {
+      return !sl_condition_met;
+   }
 }
 
 // Update diff close block state (call this every tick)
@@ -1202,21 +1216,15 @@ void UpdateDiffCloseBlockState()
    
    double pnl_points = CalculateMasterOrderPnLPoints();
    
-   if (input_tp_active_diff_close_enabled)
-   {
-      if (pnl_points >= input_tp_active_diff_close_points)
-         g_diff_close_blocked_by_tp = false;
-      else
-         g_diff_close_blocked_by_tp = true;
-   }
+   // TP condition: profit must reach threshold
+   bool tp_condition_met = (pnl_points >= input_tp_active_diff_close_points);
    
-   if (input_sl_active_diff_close_enabled)
-   {
-      if (pnl_points <= -input_sl_active_diff_close_points)
-         g_diff_close_blocked_by_sl = false;
-      else
-         g_diff_close_blocked_by_sl = true;
-   }
+   // SL condition: loss must reach threshold (negative pnl)
+   bool sl_condition_met = (pnl_points <= -input_sl_active_diff_close_points);
+   
+   // Update block flags
+   g_diff_close_blocked_by_tp = input_tp_active_diff_close_enabled && !tp_condition_met;
+   g_diff_close_blocked_by_sl = input_sl_active_diff_close_enabled && !sl_condition_met;
 }
 
 // -----------------------------

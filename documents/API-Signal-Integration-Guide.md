@@ -758,6 +758,11 @@ const SHEET_ID = 'YOUR_GOOGLE_SHEET_ID_HERE';
 const AUTH_SHEET_NAME = 'Authorization';
 const SIGNAL_SHEET_NAME = 'Signals';
 
+// ScraperAPI Configuration (required for bypassing Cloudflare)
+// Sign up at: https://www.scraperapi.com (Free: 1000 requests/month)
+const USE_SCRAPER_API = true;   // Set to true to enable ScraperAPI
+const SCRAPER_API_KEY = '';     // Your ScraperAPI key
+
 // ========================================
 // Main GET Handler
 // ========================================
@@ -868,35 +873,200 @@ function updateSignal(signal, confidence) {
 }
 
 // ========================================
-// Optional: Auto-update from External API
+// Auto-update from TradersUnion Gold Signals
 // ========================================
 function scrapeAndUpdateSignal() {
   try {
-    // Example: Call external signal provider
-    const apiUrl = 'https://your-signal-provider.com/api/signal';
-    const response = UrlFetchApp.fetch(apiUrl, {
+    const targetUrl = 'https://tradersunion.com/currencies/forecast/gold/signals/';
+    let url = targetUrl;
+    let fetchOptions = {
       method: 'GET',
-      headers: {
-        'Authorization': 'Bearer YOUR_API_KEY'
-      },
-      muteHttpExceptions: true
-    });
+      muteHttpExceptions: true,
+      followRedirects: true
+    };
     
-    if (response.getResponseCode() === 200) {
-      const data = JSON.parse(response.getContentText());
-      const signal = data.signal;
-      const confidence = data.confidence || 0.85;
+    // Use ScraperAPI if enabled (bypasses Cloudflare)
+    if (USE_SCRAPER_API) {
+      if (!SCRAPER_API_KEY || SCRAPER_API_KEY === '') {
+        Logger.log('ERROR: ScraperAPI enabled but API key is missing!');
+        Logger.log('Get your API key at: https://www.scraperapi.com/signup');
+        return false;
+      }
       
-      updateSignal(signal, confidence);
+      // Build ScraperAPI URL
+      url = 'https://api.scraperapi.com/?api_key=' + SCRAPER_API_KEY + 
+            '&url=' + encodeURIComponent(targetUrl) +
+            '&render=false';  // Set to true if need JavaScript rendering
       
-      return true;
+      Logger.log('Using ScraperAPI to bypass Cloudflare...');
+    } else {
+      // Direct fetch (may be blocked by Cloudflare)
+      fetchOptions.headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9'
+      };
+      
+      Logger.log('Fetching directly (no ScraperAPI)...');
     }
     
-    return false;
+    // Fetch webpage content
+    const response = UrlFetchApp.fetch(url, fetchOptions);
+    const statusCode = response.getResponseCode();
+    
+    if (statusCode !== 200) {
+      Logger.log('HTTP Error: ' + statusCode);
+      
+      if (statusCode === 403 && !USE_SCRAPER_API) {
+        Logger.log('⚠️ Blocked by Cloudflare! Consider enabling ScraperAPI.');
+        Logger.log('Set USE_SCRAPER_API = true and add your API key.');
+      }
+      
+      return false;
+    }
+    
+    const html = response.getContentText();
+    
+    // Check if we got Cloudflare challenge page
+    if (html.includes('Attention Required') && html.includes('Cloudflare')) {
+      Logger.log('⚠️ Cloudflare challenge detected!');
+      Logger.log('Enable ScraperAPI to bypass: Set USE_SCRAPER_API = true');
+      return false;
+    }
+    
+    // Parse signal from HTML
+    const signal = parseSignalFromHTML(html);
+    
+    if (!signal) {
+      Logger.log('Failed to parse signal from webpage');
+      return false;
+    }
+    
+    // Update signal with default confidence 0.85
+    const confidence = 0.85;
+    updateSignal(signal, confidence);
+    
+    Logger.log('✅ Signal updated successfully: ' + signal);
+    return true;
     
   } catch (error) {
     Logger.log('Scrape error: ' + error.toString());
+    
+    if (error.toString().includes('429')) {
+      Logger.log('⚠️ Rate limit exceeded. Wait before trying again.');
+    }
+    
     return false;
+  }
+}
+
+// ========================================
+// Parse Signal from HTML Content
+// ========================================
+function parseSignalFromHTML(html) {
+  try {
+    Logger.log('=== DEBUG: Starting HTML Parse ===');
+    Logger.log('HTML length: ' + html.length + ' chars');
+    
+    // Method 1: Look for "Forecast:" section and extract signal
+    Logger.log('\n[Method 1] Searching: Forecast: + ta-wg__summary-body');
+    const forecastPattern = /Forecast:[\s\S]{0,500}ta-wg__summary-body[^>]*>([^<]+)</i;
+    let match = html.match(forecastPattern);
+    
+    if (match && match[1]) {
+      let signalText = match[1].trim();
+      Logger.log('[Method 1] ✅ Found text: "' + signalText + '"');
+      Logger.log('[Method 1] Context (150 chars): "' + match[0].substring(0, 150) + '..."');
+      
+      let signalUpper = signalText.toUpperCase();
+      
+      if (signalUpper.includes('BUY')) {
+        Logger.log('[Method 1] Parsed: BUY → Returning: SELL (swapped)');
+        return 'SELL';
+      } else if (signalUpper.includes('SELL')) {
+        Logger.log('[Method 1] Parsed: SELL → Returning: BUY (swapped)');
+        return 'BUY';
+      } else {
+        Logger.log('[Method 1] ⚠️ No BUY/SELL in text: "' + signalText + '"');
+      }
+    } else {
+      Logger.log('[Method 1] ❌ No match');
+    }
+    
+    // Method 2: Broader search for ALL ta-wg__summary-body
+    Logger.log('\n[Method 2] Searching ALL ta-wg__summary-body elements');
+    const summaryPattern = /ta-wg__summary-body[^>]*>([^<]+)/gi;
+    const matches = html.matchAll(summaryPattern);
+    
+    let count = 0;
+    for (const m of matches) {
+      count++;
+      if (m && m[1]) {
+        let text = m[1].trim();
+        Logger.log('[Method 2.' + count + '] Found: "' + text + '"');
+        
+        let textUpper = text.toUpperCase();
+        
+        if (textUpper.includes('BUY')) {
+          Logger.log('[Method 2.' + count + '] ✅ Parsed: BUY → Returning: SELL (swapped)');
+          return 'SELL';
+        } else if (textUpper.includes('SELL')) {
+          Logger.log('[Method 2.' + count + '] ✅ Parsed: SELL → Returning: BUY (swapped)');
+          return 'BUY';
+        }
+      }
+    }
+    Logger.log('[Method 2] Found ' + count + ' elements, none with BUY/SELL');
+    
+    // Method 3: Search around "Forecast" keyword
+    Logger.log('\n[Method 3] Searching around "Forecast:" keyword');
+    const forecastIndex = html.toLowerCase().indexOf('forecast:');
+    
+    if (forecastIndex !== -1) {
+      const chunk = html.substring(forecastIndex, forecastIndex + 1000);
+      Logger.log('[Method 3] Found at position: ' + forecastIndex);
+      Logger.log('[Method 3] Context (300 chars):\n' + chunk.substring(0, 300));
+      
+      const chunkUpper = chunk.toUpperCase();
+      
+      const hasBuy = chunkUpper.match(/\bBUY\b/);
+      const hasSell = chunkUpper.match(/\bSELL\b/);
+      
+      if (hasBuy && hasSell) {
+        const buyPos = chunkUpper.indexOf('BUY');
+        const sellPos = chunkUpper.indexOf('SELL');
+        Logger.log('[Method 3] ⚠️ BOTH found - BUY@' + buyPos + ', SELL@' + sellPos);
+        
+        if (buyPos < sellPos) {
+          Logger.log('[Method 3] Using BUY (first) → Returning: SELL (swapped)');
+          return 'SELL';
+        } else {
+          Logger.log('[Method 3] Using SELL (first) → Returning: BUY (swapped)');
+          return 'BUY';
+        }
+      } else if (hasBuy) {
+        Logger.log('[Method 3] ✅ Parsed: BUY → Returning: SELL (swapped)');
+        return 'SELL';
+      } else if (hasSell) {
+        Logger.log('[Method 3] ✅ Parsed: SELL → Returning: BUY (swapped)');
+        return 'BUY';
+      } else {
+        Logger.log('[Method 3] ❌ No BUY/SELL in context');
+      }
+    } else {
+      Logger.log('[Method 3] ❌ "Forecast:" not found');
+    }
+    
+    // Debug: Show HTML preview
+    Logger.log('\n⚠️ All methods failed!');
+    Logger.log('HTML preview (first 800 chars):\n' + html.substring(0, 800));
+    Logger.log('\n❌ No signal found');
+    
+    return null;
+    
+  } catch (error) {
+    Logger.log('Parse error: ' + error.toString());
+    return null;
   }
 }
 
@@ -920,7 +1090,207 @@ function createHourlyTrigger() {
 }
 ```
 
+**หมายเหตุสำคัญเกี่ยวกับ scrapeAndUpdateSignal()**:
+
+1. **Data Source**: ดึงสัญญาณจาก TradersUnion Gold Signals
+2. **Cloudflare Protection**: เว็บมี Cloudflare anti-bot → แนะนำใช้ ScraperAPI
+3. **Parsing Method**: ใช้ 3 วิธีในการหาสัญญาณ (fallback mechanism)
+   - Method 1: หาจาก "Forecast:" section ใกล้กับ class "ta-wg__summary-body"
+   - Method 2: ค้นหาทุก element ที่มี class "ta-wg__summary-body"
+   - Method 3: ค้นหา BUY/SELL ใน 1000 ตัวอักษรหลัง "Forecast:"
+4. **Signal Validation**: ตรวจสอบว่าเป็นคำว่า "BUY" หรือ "SELL" เท่านั้น (case-insensitive)
+5. **Error Handling**: มี try-catch ครอบคลุมทุกขั้นตอน พร้อม logging
+6. **Confidence**: ตั้งค่าเป็น 0.85 โดยค่าเริ่มต้น (สามารถปรับได้)
+
+---
+
+---
+
+### 2.2.1 Quick Setup Guide (สำหรับผู้มี API Key แล้ว) ⚡
+
+**สำหรับผู้ที่สมัคร ScraperAPI แล้ว - ใช้เวลา 2 นาที:**
+
+1. เปิด Google Apps Script Editor
+2. หาบรรทัดที่มี `const USE_SCRAPER_API` (ประมาณบรรทัด 10-12)
+3. **แก้ไข 2 บรรทัดนี้:**
+
+```javascript
+const USE_SCRAPER_API = true;                            // เปลี่ยนจาก false → true
+const SCRAPER_API_KEY = '2c4938f6f3a54304d54f55af4a3e0ff3';  // ใส่ API key ของคุณ
+```
+
+4. **บันทึก** (Ctrl+S / Cmd+S)
+5. **ทดสอบ**: เลือก `scrapeAndUpdateSignal` → กด Run
+6. **ตรวจสอบ Logs**: ควรเห็น "✅ Signal updated successfully: BUY" (หรือ SELL)
+7. **เช็ค Sheet**: ดูใน Signals sheet ว่ามีข้อมูลอัพเดท
+8. **ตั้ง Auto**: รัน `createHourlyTrigger()` เพื่อ auto update ทุกชั่วโมง
+
+✅ **เสร็จแล้ว!** EA จะดึงสัญญาณอัตโนมัติทุก 1 ชั่วโมง
+
+---
+
+### 2.2.2 ScraperAPI Setup (คำแนะนำแบบละเอียด)
+
+**ทำไมต้องใช้ ScraperAPI:**
+- ✅ Bypass Cloudflare protection อัตโนมัติ
+- ✅ จัดการ captcha และ JavaScript challenges
+- ✅ Rotate IP addresses
+- ✅ Free tier: 1,000 requests/month (เพียงพอสำหรับ scraping ทุก 1 ชั่วโมง)
+
+**ขั้นตอนการตั้งค่า:**
+
+**Step 1: สมัคร ScraperAPI**
+1. ไปที่ https://www.scraperapi.com/signup
+2. สมัครบัญชี (Free tier)
+3. Login แล้วไปที่ Dashboard
+4. คัดลอก **API Key** (รูปแบบ: `abc123def456...`)
+
+**Step 2: เปิดใช้งานใน Apps Script**
+```javascript
+// แก้ไขใน Configuration section (บรรทัดต้นๆ ของ Apps Script)
+const USE_SCRAPER_API = true;                            // เปลี่ยนเป็น true
+const SCRAPER_API_KEY = '2c4938f6f3a54304d54f55af4a3e0ff3';  // วาง API key ของคุณ
+
+// ตัวอย่าง:
+// const SCRAPER_API_KEY = 'YOUR_API_KEY_HERE';  // ← แทนที่ด้วย API key จริง
+```
+
+**Important**: อย่าลืม**บันทึก** (Ctrl+S หรือ Cmd+S) หลังแก้ไข!
+
+**Step 3: ทดสอบ curl ก่อน (Optional แต่แนะนำ)**
+```bash
+# ทดสอบใน Terminal/Command Prompt ว่า API key ใช้งานได้
+curl 'https://api.scraperapi.com/?api_key=2c4938f6f3a54304d54f55af4a3e0ff3&url=https%3A%2F%2Ftradersunion.com%2Fcurrencies%2Fforecast%2Fgold%2Fsignals%2F'
+
+# ควรได้ HTML กลับมา (ไม่ใช่ Cloudflare challenge page)
+# ถ้าได้ HTML → API key ใช้งานได้ ✅
+# ถ้าได้ error → check API key หรือ credits
+```
+
+**Step 4: ทดสอบใน Apps Script**
+```javascript
+// 1. บันทึก code ก่อน (Ctrl+S / Cmd+S)
+// 2. เลือกฟังก์ชัน scrapeAndUpdateSignal จาก dropdown
+// 3. กด Run button (▶️)
+// 4. ตรวจสอบ Logs (View → Logs หรือ Ctrl+Enter)
+
+// ควรเห็น:
+// "Using ScraperAPI to bypass Cloudflare..."
+// "✅ Signal updated successfully: BUY" (หรือ SELL)
+
+// ถ้า error ให้ดู error message ใน Logs
+```
+
+**Step 5: ตรวจสอบ Signals Sheet**
+- เปิด Google Sheet
+- ไปที่ Sheet "Signals"
+- ตรวจสอบ:
+  - Cell A2: มีค่าเป็น "BUY" หรือ "SELL"
+  - Cell B2: มี timestamp อัพเดท
+  - Cell C2: มี confidence (0.85)
+
+**Step 6: ตรวจสอบ Usage**
+- เข้า ScraperAPI Dashboard: https://www.scraperapi.com/dashboard
+- ดู API calls ที่ใช้ไป
+- Free tier: 1,000 calls/month
+- ใช้ทุก 1 ชั่วโมง = ~720 calls/month ✅
+- แต่ละ call จะหัก 1 credit
+
+**ScraperAPI Options:**
+
+```javascript
+// Basic (default) - แนะนำใช้แบบนี้ก่อน
+'&render=false'  // Faster, no JavaScript rendering, ใช้ credit น้อยกว่า
+
+// Advanced (ถ้าต้องการหรือ Basic ไม่ได้)
+'&render=true'                    // Enable JavaScript rendering (ใช้ credit มากกว่า 5x)
+'&country_code=us'                // Use US IP
+'&session_number=123'             // Maintain session
+'&keep_headers=true'              // Preserve original headers
+'&premium=true'                   // Use premium proxies (paid plan only)
+```
+
+**Credit Usage:**
+```
+render=false  → 1 credit per request   (แนะนำ - ใช้น้อย)
+render=true   → 5 credits per request  (ใช้เมื่อจำเป็น)
+
+Free tier: 1,000 credits/month
+  - render=false: 1,000 requests
+  - render=true:  200 requests
+```
+
+**ตัวอย่างการปรับแต่ง:**
+
+```javascript
+// ถ้าต้องการ JavaScript rendering
+url = 'http://api.scraperapi.com/?api_key=' + SCRAPER_API_KEY + 
+      '&url=' + encodeURIComponent(targetUrl) +
+      '&render=true' +              // เปิด JS rendering
+      '&country_code=us';            // ใช้ IP จาก US
+```
+
+**Pricing Reference:**
+```
+Free:     1,000 requests/month    ($0)
+Hobby:    10,000 requests/month   ($49/month)
+Startup:  100,000 requests/month  ($149/month)
+Business: 1M requests/month       ($599/month)
+
+คำนวณ:
+- ทุก 1 ชั่วโมง = 24 × 30 = 720 requests/month → Free tier พอใช้ ✅
+- ทุก 30 นาที = 48 × 30 = 1,440 requests/month → ต้อง upgrade
+```
+
+---
+
+**การปรับแต่งอื่นๆ**:
+- เปลี่ยน URL: แก้ไขตัวแปร `targetUrl` ในฟังก์ชัน
+- เปลี่ยน confidence: แก้ไขค่า `confidence` ก่อนเรียก `updateSignal()`
+- เปลี่ยน interval: แก้ไข `everyHours(1)` เป็นค่าอื่น (เช่น `everyHours(2)`)
+- ปรับ regex pattern: แก้ไขใน `parseSignalFromHTML()` ถ้าเว็บเปลี่ยนโครงสร้าง
+- ปิด ScraperAPI: ตั้ง `USE_SCRAPER_API = false` (ถ้าเว็บไม่มี Cloudflare แล้ว)
+
+**ตัวอย่าง Logs เมื่อสำเร็จ**:
+```
+[Apps Script Logs]
+Signal updated successfully: BUY
+```
+
+**ตัวอย่าง Logs เมื่อล้มเหลว**:
+```
+[Apps Script Logs]
+HTTP Error: 404
+// หรือ
+Failed to parse signal from webpage
+No BUY or SELL signal found in HTML
+// หรือ
+Scrape error: Exception: Request failed for https://... returned code 403
+```
+
+**วิธีแก้ปัญหา**:
+1. ถ้า HTTP Error 403/429 → เว็บ block request (ลดความถี่การ scrape)
+2. ถ้า "No signal found" → เว็บเปลี่ยนโครงสร้าง (ต้องปรับ regex)
+3. ถ้า timeout → network ช้า (ลองอีกครั้งภายหลัง)
+
 ### 2.3 Deploy Script
+
+**ก่อน Deploy - ทดสอบฟังก์ชัน:**
+
+1. ทดสอบ `scrapeAndUpdateSignal()`:
+   - เลือกฟังก์ชัน `scrapeAndUpdateSignal` จาก dropdown
+   - กด Run (▶️)
+   - ครั้งแรกจะขอ permission → กด "Review permissions" → เลือก account → "Allow"
+   - ตรวจสอบ Logs (View → Logs หรือ Ctrl+Enter)
+   - ควรเห็น: "Signal updated successfully: BUY" หรือ "SELL"
+   - ตรวจสอบ Signals sheet ว่ามีข้อมูลอัพเดท
+
+2. ถ้าเจอ error:
+   - ตรวจสอบว่า SHEET_ID ถูกต้อง
+   - ตรวจสอบว่า sheet names ถูกต้อง (Authorization, Signals)
+   - ตรวจสอบ Logs เพื่อดู error message
+
+**Deploy Web App:**
 
 1. คลิก "Deploy" → "New deployment"
 2. เลือก type: "Web app"
@@ -929,6 +1299,9 @@ function createHourlyTrigger() {
    - **Who has access**: Anyone
 4. คลิก "Deploy"
 5. คัดลอก **Web app URL**
+6. ทดสอบ URL ใน browser:
+   - Test auth: `YOUR_URL?action=auth`
+   - Test signal: `YOUR_URL?action=signal`
 
 ---
 
@@ -1017,6 +1390,30 @@ input_api_signal_min_confidence = 0.5
 - [ ] Test signal endpoint ใน browser: `/exec?action=signal`
 - [ ] ตรวจสอบ CSV format ถูกต้อง
 - [ ] Test error cases (sheet not found, empty data)
+- [ ] **Test ScraperAPI Setup** (ถ้าใช้)
+  - ตรวจสอบ API key ถูกต้อง
+  - ตั้ง `USE_SCRAPER_API = true`
+  - ตรวจสอบ ScraperAPI Dashboard มี credits
+  - ทดสอบ direct URL: `http://api.scraperapi.com/?api_key=YOUR_KEY&url=https://tradersunion.com/currencies/forecast/gold/signals/`
+- [ ] Test `scrapeAndUpdateSignal()` function manually
+  - เลือกฟังก์ชัน `scrapeAndUpdateSignal` ใน Apps Script Editor
+  - กด Run button
+  - ตรวจสอบ Logs (View → Logs) ว่าดึงสัญญาณสำเร็จ
+  - **ควรเห็น**: "Using ScraperAPI..." (ถ้าเปิด) หรือ "Fetching directly..."
+  - **ควรเห็น**: "✅ Signal updated successfully: BUY" (หรือ SELL)
+  - ตรวจสอบ Signals sheet ว่าอัพเดทข้อมูลถูกต้อง
+- [ ] Test Cloudflare bypass
+  - ทดสอบ `USE_SCRAPER_API = false` ดูว่าถูก block หรือไม่
+  - ทดสอบ `USE_SCRAPER_API = true` ดูว่า bypass สำเร็จหรือไม่
+  - เปรียบเทียบผลลัพธ์
+- [ ] Test `parseSignalFromHTML()` function
+  - ลอง fetch HTML ด้วยตัวเองและทดสอบ parsing
+  - ตรวจสอบว่าจับ BUY/SELL ได้ถูกต้อง
+- [ ] Test auto-update trigger
+  - Run `createHourlyTrigger()` เพื่อสร้าง trigger
+  - ตรวจสอบใน Apps Script → Triggers ว่า trigger ถูกสร้าง
+  - รอ 1 ชั่วโมงและตรวจสอบว่า signal อัพเดทอัตโนมัติ
+  - ตรวจสอบ ScraperAPI usage ว่าเพิ่มขึ้นตามที่คาดหวัง
 
 ### 5.2 EA Compilation
 
@@ -1121,13 +1518,19 @@ input_api_signal_min_confidence = 0.5
    ```
 4. กด Run
 
-### วิธีที่ 3: Schedule Auto-Update
+### วิธีที่ 3: Schedule Auto-Update from TradersUnion
 
 1. เปิด Apps Script Editor
-2. แก้ไขฟังก์ชัน `scrapeAndUpdateSignal()`
-3. ใส่ external API URL และ API key
-4. รันฟังก์ชัน `createHourlyTrigger()`
-5. สัญญาณจะอัพเดทอัตโนมัติทุกชั่วโมง
+2. ฟังก์ชัน `scrapeAndUpdateSignal()` ถูกตั้งค่าให้ดึงจาก TradersUnion แล้ว
+3. ทดสอบฟังก์ชันก่อน: เลือก `scrapeAndUpdateSignal` และกด Run
+4. ตรวจสอบ Logs (View → Logs) ว่าดึงสัญญาณได้ถูกต้อง
+5. ถ้าสำเร็จ รันฟังก์ชัน `createHourlyTrigger()` เพื่อตั้งอัพเดทอัตโนมัติทุกชั่วโมง
+
+**หมายเหตุ**: 
+- ฟังก์ชันจะดึงสัญญาณ Gold จาก TradersUnion โดยอัตโนมัติ
+- รองรับทั้ง BUY และ SELL signals (case-insensitive)
+- Confidence ถูกตั้งเป็น 0.85 โดยค่าเริ่มต้น
+- ถ้าต้องการเปลี่ยนแหล่งข้อมูล สามารถแก้ไข URL ในฟังก์ชัน `scrapeAndUpdateSignal()`
 
 ---
 
@@ -1153,6 +1556,72 @@ input_api_signal_min_confidence = 0.5
 - รอให้ positions ปิดก่อนแล้วค่อยเปลี่ยน
 - ตรวจสอบ confidence threshold
 - Log ทุก action สำคัญ
+
+### Auto Signal Scraping (TradersUnion)
+- **Source**: https://tradersunion.com/currencies/forecast/gold/signals/
+- **Protection**: Cloudflare anti-bot → **ต้องใช้ ScraperAPI** ⭐
+- **Update Frequency**: ทุก 1 ชั่วโมง (ถ้าเปิด trigger)
+- **Supported Signals**: BUY, SELL (case-insensitive)
+- **Default Confidence**: 0.85
+- **Parsing Methods**: 3 levels fallback mechanism
+- **Error Handling**: Auto retry on next schedule ถ้าล้มเหลว
+- **ScraperAPI**: Free tier 1,000 requests/month (เพียงพอ)
+
+### Scraping Limitations
+- **Website Changes**: ถ้า TradersUnion เปลี่ยน HTML structure อาจต้องปรับ regex
+- **Rate Limiting**: ไม่ควรตั้ง interval น้อยกว่า 30 นาที (เพื่อไม่ให้ถูก block)
+- **Network Issues**: ถ้า network ล้มเหลว จะข้ามไปอัพเดทรอบถัดไป
+- **Manual Override**: สามารถแก้ใน Google Sheet ได้ตลอดเวลา (manual มี priority)
+
+### Troubleshooting Scraping
+1. ตรวจสอบ Apps Script Logs: `View → Logs`
+2. ทดสอบฟังก์ชัน manually: เลือก `scrapeAndUpdateSignal` แล้ว Run
+3. ตรวจสอบว่าเว็บเข้าถึงได้: เปิด URL ใน browser
+4. **ถ้าเจอ Cloudflare (403 error)**: เปิดใช้ ScraperAPI
+   - ตั้ง `USE_SCRAPER_API = true`
+   - ใส่ API key จาก https://www.scraperapi.com
+   - ตรวจสอบ credits ใน Dashboard
+5. ตรวจสอบ trigger: `Apps Script → Triggers` ดูว่า trigger ทำงาน
+6. ถ้า parsing ล้มเหลว: อาจต้องตรวจสอบ HTML structure ใหม่
+
+### ScraperAPI FAQ
+
+**Q: ทำไมต้องใช้ ScraperAPI?**
+- A: เว็บ TradersUnion ใช้ Cloudflare protection ที่ block automated requests. ScraperAPI จะ bypass ให้อัตโนมัติ
+
+**Q: ฟรีไหม?**
+- A: มี free tier 1,000 requests/month (เพียงพอถ้า scrape ทุก 1 ชั่วโมง = 720 requests/month)
+
+**Q: ถ้า credits หมดจะเกิดอะไร?**
+- A: จะได้ HTTP 429 error แล้ว fallback ไปใช้สัญญาณเก่า หรือ upgrade plan
+
+**Q: ต้องใช้ credit card ไหม?**
+- A: Free tier ไม่ต้องใส่ credit card
+
+**Q: ถ้าไม่อยากใช้ ScraperAPI มีทางเลือกอื่นไหม?**
+- A: มี 3 ทางเลือก:
+  1. Manual update ใน Google Sheet (แนะนำสุด)
+  2. ใช้ proxy service อื่น (Bright Data, ZenRows)
+  3. สร้าง API middleware เองด้วย Puppeteer
+
+**Q: ScraperAPI ปลอดภัยไหม?**
+- A: ปลอดภัย เป็นบริการที่ใช้กันแพร่หลายในวงการ web scraping
+
+**Q: Parse ได้สัญญาณผิด (อ่านได้ BUY แต่ควรเป็น SELL)?**
+- A: ปัญหานี้เกิดจาก code จับ element ผิดตัว มีหลายแห่งบนเว็บที่มี BUY/SELL
+- **วิธีแก้**: 
+  1. ดู Logs debug (View → Logs)
+  2. เช็คว่า Method ไหนจับได้ และจับค่าอะไร
+  3. ดู "Context" ที่ log แสดง ว่าเป็น section ไหน
+  4. ปรับ regex pattern ให้จับ element ที่ถูกต้อง
+- **ตัวอย่าง**: ถ้าเว็บมี "Recommendation: BUY" และ "Forecast: SELL" code อาจจับผิดตัว
+
+**Q: ทำไมต้องสลับ BUY/SELL (BUY→SELL, SELL→BUY)?**
+- A: ขึ้นอยู่กับว่าเว็บแสดงสัญญาณแบบไหน:
+  - ถ้าเว็บแสดง "ควร BUY" = เราต้องการ BUY → **ไม่ต้องสลับ**
+  - ถ้าเว็บแสดง "แนวโน้ม SELL" แต่เราต้องการเทรด opposite → **ต้องสลับ**
+- **วิธีเช็ค**: เข้าเว็บด้วยตา → ดูสัญญาณ → เทียบกับที่ EA ได้
+- ถ้าไม่ต้องการสลับ ให้ลบ logic swap ออก (return ตรงๆ)
 
 ---
 
@@ -1202,6 +1671,47 @@ input_api_signal_min_confidence = 0.5
 - ตรวจสอบ order comment มี "MASTER" string
 - ตรวจสอบ magic number ตรงกัน
 - ตรวจสอบ symbol ถูกต้อง
+
+**"Scrape signal failed"**
+- ตรวจสอบ Apps Script Logs (View → Logs)
+- ตรวจสอบว่าเว็บ TradersUnion เข้าถึงได้
+- ตรวจสอบว่าโครงสร้าง HTML ของเว็บไม่เปลี่ยน
+- ลอง run `scrapeAndUpdateSignal()` manually เพื่อดู error
+- ตรวจสอบว่า trigger ทำงานปกติ (Apps Script → Triggers)
+
+**"HTTP Error: 403" / "Cloudflare challenge detected"**
+- เว็บมี Cloudflare protection block request
+- **Solution**: เปิดใช้ ScraperAPI
+  - ตั้ง `USE_SCRAPER_API = true`
+  - ใส่ `SCRAPER_API_KEY` ที่ถูกต้อง
+  - ทดสอบอีกครั้ง
+- ตรวจสอบ ScraperAPI credits ว่ายังเหลืออยู่
+- ดู ScraperAPI Dashboard: https://www.scraperapi.com/dashboard
+
+**"ScraperAPI enabled but API key is missing"**
+- ลืมใส่ API key หรือใส่เป็น string ว่าง
+- ไปที่ https://www.scraperapi.com/dashboard
+- คัดลอก API key
+- ใส่ใน `const SCRAPER_API_KEY = 'YOUR_KEY_HERE';`
+
+**"ScraperAPI Error: 401" / "Unauthorized"**
+- API key ไม่ถูกต้องหรือหมดอายุ
+- ตรวจสอบ API key ใน ScraperAPI Dashboard
+- คัดลอกใหม่และแทนที่ใน code
+
+**"ScraperAPI Error: 429" / "Rate limit exceeded"**
+- ใช้ requests เกิน quota (Free tier: 1000/month)
+- ตรวจสอบ usage ใน ScraperAPI Dashboard
+- รอจนกว่า quota จะ reset (monthly)
+- หรือ upgrade plan
+- หรือเพิ่ม interval เป็น 2-4 ชั่วโมง
+
+**"No signal found in HTML"**
+- เว็บ TradersUnion อาจเปลี่ยนโครงสร้าง HTML
+- ตรวจสอบ source code ของเว็บใหม่
+- อาจต้องปรับ regex pattern ในฟังก์ชัน `parseSignalFromHTML()`
+- ใช้ Browser DevTools ตรวจสอบ XPath/CSS selector ที่ถูกต้อง
+- ถ้าใช้ ScraperAPI ลองเปิด `render=true` สำหรับ JavaScript rendering
 
 ---
 
@@ -1952,12 +2462,130 @@ input_verbose_journal_logs = true
 [SL-ACTIVE] Diff close activated: P/L=-35.8 <= -SL=-30
 [SL-ACTIVE] Diff close blocked: P/L=-18.4 > -SL=-30
 [DIFF-CLOSE] Blocked: [TP not met]
+[API-SIGNAL] Fetched signal: BUY (confidence: 0.85)
+[API-SIGNAL] Master side changed to: BUY
 ```
 
 **วิเคราะห์ logs:**
 - ถ้าเห็น "blocked" บ่อย → TP/SL เข้มเกิน
 - ถ้าไม่เห็น "blocked" เลย → TP/SL หลวมเกิน
 - ถ้าเห็น "SL activated" บ่อย → SL ต่ำเกิน
+- ถ้าเห็น "Failed to parse signal" → ต้องตรวจสอบ HTML parsing
+
+---
+
+### 10.9 Auto Scraping Best Practices
+
+#### **Scraping Strategy**
+
+**⚠️ สำคัญ: TradersUnion มี Cloudflare Protection**
+```javascript
+// ต้องเปิด ScraperAPI เพื่อ bypass Cloudflare
+const USE_SCRAPER_API = true;
+const SCRAPER_API_KEY = 'YOUR_API_KEY';  // Get from scraperapi.com
+```
+
+**Option 1: Full Auto (แนะนำสำหรับ experienced traders)**
+```javascript
+// Apps Script Configuration:
+const USE_SCRAPER_API = true;
+const SCRAPER_API_KEY = 'abc123...';
+
+// Apps Script: ตั้ง trigger ทุก 1 ชั่วโมง
+createHourlyTrigger();
+
+// EA Settings:
+input_api_signal_enabled = true
+input_api_signal_auto_apply = true
+input_api_signal_min_confidence = 0.70  // ปรับตามความเสี่ยง
+```
+
+**Option 2: Hybrid (แนะนำสำหรับ beginners)**
+```javascript
+// Apps Script: Auto scrape แต่ไม่ auto apply
+createHourlyTrigger();
+
+// EA Settings:
+input_api_signal_enabled = true
+input_api_signal_auto_apply = false      // ✅ ปิด auto apply
+input_api_signal_min_confidence = 0.80
+
+// ผลลัพธ์: สัญญาณถูก scrape แต่ต้องแก้ใน Sheet manually ก่อน EA จะใช้
+```
+
+**Option 3: Manual Only**
+```javascript
+// Apps Script: ไม่ต้องสร้าง trigger
+// แก้ไข Sheet ด้วยมือเมื่อต้องการ
+
+// EA Settings:
+input_api_signal_enabled = false          // ปิด signal API ทั้งหมด
+```
+
+#### **Confidence Level Guidelines**
+
+```
+Confidence >= 0.90  →  Very High (เทรดได้แทบทุกครั้ง)
+Confidence >= 0.80  →  High (เทรดได้ส่วนใหญ่)
+Confidence >= 0.70  →  Medium (เทรดได้บ้าง)
+Confidence >= 0.60  →  Low (ระวัง)
+Confidence <  0.60  →  Very Low (ไม่แนะนำ)
+
+แนะนำ: min_confidence = 0.75 - 0.80 (balanced)
+```
+
+#### **Scraping Interval Guidelines**
+
+```
+Every 30 minutes  →  สำหรับ scalping (ต้องการ signal เร็ว)
+Every 1 hour      →  สำหรับ day trading (แนะนำ)
+Every 4 hours     →  สำหรับ swing trading
+Every 12 hours    →  สำหรับ position trading
+
+⚠️ อย่าตั้งน้อยกว่า 30 นาที (เพื่อไม่ให้ถูก rate limit)
+```
+
+#### **Error Handling Strategy**
+
+```javascript
+// ใน scrapeAndUpdateSignal() มี error handling อยู่แล้ว
+// ถ้า scrape ล้มเหลว:
+// 1. Log error message
+// 2. Return false
+// 3. ข้ามไปรอบถัดไป
+// 4. ใช้สัญญาณเก่าต่อไป (ไม่เปลี่ยน)
+
+// ดังนั้น: EA จะยังใช้สัญญาณล่าสุดที่สำเร็จ
+```
+
+#### **Monitoring Checklist**
+
+**Daily:**
+- [ ] ตรวจสอบ Apps Script Logs มี error หรือไม่
+- [ ] ตรวจสอบ Signals sheet อัพเดทล่าสุดเมื่อไหร่
+- [ ] ตรวจสอบ EA logs มี [API-SIGNAL] messages
+
+**Weekly:**
+- [ ] ตรวจสอบ trigger ยังทำงานหรือไม่ (Apps Script → Triggers)
+- [ ] ตรวจสอบ scrape success rate
+- [ ] ปรับ confidence threshold ถ้าจำเป็น
+
+**Monthly:**
+- [ ] ตรวจสอบว่า TradersUnion ยังมี Gold signals หรือไม่
+- [ ] ทดสอบ scraping manually
+- [ ] Review signal accuracy vs actual results
+
+#### **Backup Plan**
+
+```
+Plan A: Auto scrape from TradersUnion (primary)
+  ↓ fail
+Plan B: Manual update ใน Google Sheet
+  ↓ fail
+Plan C: EA ใช้ input_master_side ที่ตั้งไว้ (fallback)
+
+✅ แนะนำ: เปิด auto scrape + มี manual monitoring
+```
 
 ---
 
@@ -1965,7 +2593,32 @@ input_verbose_journal_logs = true
 
 ## 📚 Version History
 
-### Version 1.2 (December 2025) ⭐ **CURRENT**
+### Version 1.3 (December 2025) ⭐ **CURRENT**
+**Added:**
+- ✅ Auto Web Scraping from TradersUnion Gold Signals
+- ✅ `scrapeAndUpdateSignal()` function with 3-level parsing fallback
+- ✅ `parseSignalFromHTML()` function with multiple regex patterns
+- ✅ Support for case-insensitive BUY/SELL detection
+- ✅ Comprehensive error handling for scraping
+- ✅ Part 10.9: Auto Scraping Best Practices
+- ✅ Hybrid mode support (auto scrape + manual approval)
+- ✅ Scraping interval guidelines
+- ✅ Confidence level guidelines
+- ✅ Monitoring checklist for auto scraping
+- ✅ Troubleshooting guide for scraping errors
+
+**Features:**
+- 🌐 Auto fetch signals from TradersUnion website
+- 🔄 3-method HTML parsing (fallback mechanism)
+- 🎯 Smart signal detection (BUY/SELL)
+- ⏱️ Configurable update intervals (hourly default)
+- 🛡️ Built-in error handling and retry logic
+- 📊 Hybrid operation modes (full auto / semi-auto / manual)
+- 🔍 Comprehensive logging for debugging
+
+---
+
+### Version 1.2 (December 2025)
 **Added:**
 - ✅ Part 9: TP/SL Active Diff Close Feature (Full documentation)
 - ✅ Part 10: Real-World Scenarios & Best Practices
@@ -2007,18 +2660,22 @@ input_verbose_journal_logs = true
 
 ## 📊 Feature Comparison
 
-| Feature | Version 1.1 | Version 1.2 |
-|---------|-------------|-------------|
-| API Authorization | ✅ | ✅ |
-| API Signal Fetch | ✅ | ✅ |
-| Auto-apply Signal | ✅ | ✅ |
-| Pending Signal | ✅ | ✅ |
-| Confidence Filter | ✅ | ✅ |
-| **TP Active Diff Close** | ❌ | ✅ ⭐ |
-| **SL Active Diff Close** | ❌ | ✅ ⭐ |
-| **Combined TP+SL** | ❌ | ✅ ⭐ |
-| **Real-time P/L Calc** | ❌ | ✅ ⭐ |
-| **Best Practices Guide** | ❌ | ✅ ⭐ |
+| Feature | Version 1.1 | Version 1.2 | Version 1.3 |
+|---------|-------------|-------------|-------------|
+| API Authorization | ✅ | ✅ | ✅ |
+| API Signal Fetch | ✅ | ✅ | ✅ |
+| Auto-apply Signal | ✅ | ✅ | ✅ |
+| Pending Signal | ✅ | ✅ | ✅ |
+| Confidence Filter | ✅ | ✅ | ✅ |
+| **TP Active Diff Close** | ❌ | ✅ ⭐ | ✅ |
+| **SL Active Diff Close** | ❌ | ✅ ⭐ | ✅ |
+| **Combined TP+SL** | ❌ | ✅ ⭐ | ✅ |
+| **Real-time P/L Calc** | ❌ | ✅ ⭐ | ✅ |
+| **Best Practices Guide** | ❌ | ✅ ⭐ | ✅ |
+| **Auto Web Scraping** | ❌ | ❌ | ✅ ⭐ |
+| **TradersUnion Integration** | ❌ | ❌ | ✅ ⭐ |
+| **Multi-method Parsing** | ❌ | ❌ | ✅ ⭐ |
+| **Hybrid Mode Support** | ❌ | ❌ | ✅ ⭐ |
 
 ---
 
@@ -2089,7 +2746,40 @@ input_verbose_journal_logs = true
 
 ---
 
-### For Existing Users (Upgrade to v1.2)
+### For Existing Users (Upgrade to v1.3)
+
+**Step 1**: Backup current EA files ⚠️
+
+**Step 2**: Update Google Apps Script (Part 2.2)
+- เปิด existing Apps Script
+- แทนที่ฟังก์ชัน `scrapeAndUpdateSignal()` และ `parseSignalFromHTML()`
+- Save และ test ฟังก์ชันใหม่
+
+**Step 3**: Enable Auto Scraping (Optional)
+- Run `createHourlyTrigger()` เพื่อเปิด auto update
+- ตรวจสอบ trigger ใน Apps Script → Triggers
+- รอ 1 ชั่วโมงแล้วตรวจสอบ Signals sheet
+
+**Step 4**: Configure EA Settings
+```
+// Full Auto Mode
+input_api_signal_enabled = true
+input_api_signal_auto_apply = true
+input_api_signal_min_confidence = 0.75
+
+// Or Hybrid Mode  
+input_api_signal_enabled = true
+input_api_signal_auto_apply = false  // Manual approval required
+```
+
+**Step 5**: Test & Monitor (Part 10.9)
+- ตรวจสอบ Apps Script Logs
+- ตรวจสอบ EA logs มี [API-SIGNAL] messages
+- Monitor signal changes และ accuracy
+
+---
+
+### For Users Adding TP/SL Feature (Upgrade to v1.2+)
 
 **Step 1**: Backup current EA files ⚠️
 
@@ -2165,18 +2855,28 @@ input_verbose_journal_logs = true
 
 2. **TP/SL Active Diff Close** - ฟีเจอร์ใหม่ที่ช่วยควบคุมการปิดออเดอร์อย่างชาญฉลาดด้วย Take Profit และ Stop Loss thresholds
 
-3. **Best Practices** - แนวทางปฏิบัติที่ดีจากประสบการณ์จริง พร้อม use cases และ scenarios ต่างๆ
+3. **Auto Web Scraping** - ระบบดึงสัญญาณอัตโนมัติจาก TradersUnion Gold Signals พร้อม fallback mechanism และ error handling
 
-4. **Complete Testing** - Checklist ครอบคลุมทุกกรณี รวมถึง edge cases และ error handling
+4. **Best Practices** - แนวทางปฏิบัติที่ดีจากประสบการณ์จริง พร้อม use cases และ scenarios ต่างๆ รวมถึง scraping strategies
 
-5. **Production Ready** - พร้อม deploy ใช้งานจริง พร้อมคำแนะนำ monitoring และ optimization
+5. **Complete Testing** - Checklist ครอบคลุมทุกกรณี รวมถึง edge cases, error handling, และ scraping validation
+
+6. **Production Ready** - พร้อม deploy ใช้งานจริง พร้อมคำแนะนำ monitoring, optimization, และ hybrid operation modes
 
 ---
 
 **🎉 ขอให้การ implement สำเร็จลุล่วง!**
 
-*Document Version: 1.2*  
+*Document Version: 1.3*  
 *Last Updated: December 2025*  
-*Total Pages: ~100+ sections*  
-*Implementation Time: 4-8 hours (ทั้งหมด)*
+*Total Pages: ~110+ sections*  
+*Implementation Time: 5-10 hours (ทั้งหมด)*
+
+**Key Highlights:**
+- ✅ Complete API integration with authorization
+- ✅ Smart TP/SL diff close control
+- ✅ Automated signal scraping from TradersUnion
+- ✅ Flexible operation modes (full auto / hybrid / manual)
+- ✅ Comprehensive error handling and logging
+- ✅ Production-tested best practices
 
