@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.14"
+#property version   "1.16"
 
 // =============================
 // EA Heading Master–Slave (MT5)
@@ -54,7 +54,7 @@ input bool   input_trading_positive_swap        = false;    // Scope: Master —
 int    input_pswap_close_th_points        = 10000;     // Scope: Master — close threshold to enforce during positive swap window (03:00-05:30 local, non-Saturday)
 
 // Positive Swap Thursday auto-open (Master only)
-string input_swap_thursday_open_time    = "04:30";   // Scope: Master — Thursday auto-open time (HH:mm, local)
+string input_swap_thursday_open_time    = "03:30";   // Scope: Master — Thursday auto-open time (HH:mm, local)
 input double input_swap_trading_lots    = 0.01;       // Scope: Master — lots for Thursday auto-open
 
 #define input_lot_master input_lot
@@ -127,30 +127,30 @@ input double input_initial_capital_usd       = 0.00;          // Scope: Master �
 
 // Scheduled Close Only Mode (Master only)
 bool   input_scheduled_close_only_enabled = true;     // Scope: Master — enable scheduled close only mode
-string input_close_only_start_time        = "02:00";   // Scope: Master — start time for close only mode (HH:mm format)
-string input_close_only_end_time          = "07:00";   // Scope: Master — end time for close only mode (HH:mm format)
+string input_close_only_start_time        = "01:00";   // Scope: Master — start time for close only mode (HH:mm format)
+string input_close_only_end_time          = "06:00";   // Scope: Master — end time for close only mode (HH:mm format)
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
 bool   input_sat_close_only_enabled       = true;           // Scope: Master — enable weekend close-only (Sat start -> Mon end)
-string input_sat_close_only_start_time    = "02:00";   // Scope: Master — Saturday start time (HH:mm)
-string input_mon_close_only_end_time      = "07:00";   // Scope: Master — Monday end time (HH:mm)
+string input_sat_close_only_start_time    = "01:00";   // Scope: Master — Saturday start time (HH:mm)
+string input_mon_close_only_end_time      = "06:00";   // Scope: Master — Monday end time (HH:mm)
 
 // Close Threshold Scheduler (Master only)
 bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes
-string input_close_th_time1               = "02:00";  // HH:mm — schedule slot 1
+string input_close_th_time1               = "01:00";  // HH:mm — schedule slot 1
 input int    input_close_th_value1              = 10;       // points — threshold at time1
-string input_close_th_time2               = "03:00";  // HH:mm — schedule slot 2
+string input_close_th_time2               = "02:00";  // HH:mm — schedule slot 2
 input int    input_close_th_value2              = 5;       // points — threshold at time2
-string input_close_th_time3               = "04:00";  // HH:mm — schedule slot 3
+string input_close_th_time3               = "03:00";  // HH:mm — schedule slot 3
 input int    input_close_th_value3              = 0;        // points — threshold at time3
-string input_close_th_time4               = "04:15";  // HH:mm — schedule (prevent close time)
+string input_close_th_time4               = "03:15";  // HH:mm — schedule (prevent close time)
 int    input_close_th_value4              = 10000;    // points — threshold at time4
-string input_close_th_time5               = "06:30";  // HH:mm — schedule reset to initial close threshold
-string input_close_th_time6               = "07:00";  // HH:mm — schedule freeze close threshold all day
+string input_close_th_time5               = "05:30";  // HH:mm — schedule reset to initial close threshold
+string input_close_th_time6               = "06:00";  // HH:mm — schedule freeze close threshold all day
 
 // Force Close at Time (Master only)
 bool   input_force_close_time_enabled     = false;    // Scope: Master — enable daily forced close at a specific time
-string input_force_close_time             = "04:15";  // Scope: Master — time to force close all (HH:mm)
+string input_force_close_time             = "03:15";  // Scope: Master — time to force close all (HH:mm)
 
 // ========================================
 // API System Configuration
@@ -161,12 +161,12 @@ input bool   input_api_enabled = false;                  // Scope: Both — Enab
 
 // Authorization API
 bool   input_api_auth_enabled = false;              // Scope: Both — Enable account authorization via API
-string input_api_auth_url = "https://script.google.com/macros/s/AKfycbwqNLNJ_BrQU_D80XZCjRYEMO9DP2xiKPpcXKvSH1XogTl7BkCboREjAUWLLpw7RoAaKA/exec?action=auth";                    // Scope: Both — Authorization API endpoint URL
-int    input_api_auth_interval_hours = 24;         // Scope: Both — Authorization check interval (hours)
+string input_api_auth_url = "https://script.google.com/macros/s/AKfycbyjPI4LFH9gwHvQwOaTCe6a5cK4zVvmxhGe0yxzokRuby-vCk-biBCqdZmm3AvxxG0U/exec?action=auth";                    // Scope: Both — Authorization API endpoint URL
+int    input_api_auth_interval_hours = 12;         // Scope: Both — Authorization check interval (hours)
 
 // Signal API (Master only)
 input bool   input_api_signal_enabled = false;           // Scope: Master — Enable signal fetching via API
-string input_api_signal_url = "https://script.google.com/macros/s/AKfycbwqNLNJ_BrQU_D80XZCjRYEMO9DP2xiKPpcXKvSH1XogTl7BkCboREjAUWLLpw7RoAaKA/exec?action=signal";                  // Scope: Master — Signal API endpoint URL
+string input_api_signal_url = "https://script.google.com/macros/s/AKfycbyjPI4LFH9gwHvQwOaTCe6a5cK4zVvmxhGe0yxzokRuby-vCk-biBCqdZmm3AvxxG0U/exec?action=signal";                  // Scope: Master — Signal API endpoint URL
 int    input_api_signal_interval_hours = 1;        // Scope: Master — Signal fetch interval (hours)
 bool   input_api_signal_auto_apply = true;         // Scope: Master — Auto-apply signal to master_side
 double input_api_signal_min_confidence = 0.0;      // Scope: Master — Minimum confidence to apply signal (0.0-1.0)
@@ -2545,8 +2545,10 @@ bool ParseAuthorizationData(const string csv_data, const long account_number, da
       string fields[]; int field_count = StringSplit(line, ',', fields);
       if(field_count >= 2)
       {
-         long csv_account = StringToInteger(TrimAll(fields[0]));
-         if(csv_account == account_number)
+         string csv_account_str = TrimAll(fields[0]);
+         long csv_account = StringToInteger(csv_account_str);
+         // Verify exact match: convert back to string to ensure no non-numeric characters
+         if(csv_account == account_number && IntegerToString(csv_account) == csv_account_str)
          {
             if(field_count >= 2)
             {
@@ -2653,6 +2655,17 @@ bool CheckAccountAuthorization()
    if (!ParseAuthorizationData(response, account_num, expires, max_lots))
    {
       g_api_auth_error = "Account not authorized or expired";
+      g_api_auth_valid = false;
+      g_account_authorized = false;
+      Print("[API-AUTH] ", g_api_auth_error);
+      return false;
+   }
+   
+   // Check expiry date
+   datetime now = TimeCurrent();
+   if (expires > 0 && now > expires)
+   {
+      g_api_auth_error = StringFormat("Account %d expired on %s", account_num, TimeToString(expires));
       g_api_auth_valid = false;
       g_account_authorized = false;
       Print("[API-AUTH] ", g_api_auth_error);
@@ -3165,6 +3178,25 @@ void MaybeOpenPair()
    if(!(input_role==ROLE_MASTER)) return;
    // Account authorization check
    if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   // Check expiry date
+   if(IsAuthAPIEnabled() && g_account_expires_at > 0 && TimeCurrent() > g_account_expires_at)
+   {
+      g_account_authorized = false;
+      g_api_auth_valid = false;
+      long account_num = AccountInfoInteger(ACCOUNT_LOGIN);
+      g_api_auth_error = StringFormat("Account %d expired on %s", account_num, TimeToString(g_account_expires_at));
+      Print("[API-AUTH] ", g_api_auth_error);
+      return;
+   }
+   // Check lot limit
+   if(IsAuthAPIEnabled() && g_account_max_lots > 0 && input_lot > g_account_max_lots)
+   {
+      long account_num = AccountInfoInteger(ACCOUNT_LOGIN);
+      string error_msg = StringFormat("Account %d lot size violation: input_lot=%.2f exceeds max_lots=%.2f", account_num, input_lot, g_account_max_lots);
+      Print("[API-AUTH] ", error_msg);
+      LogEvent("AUTH_LOT_LIMIT_VIOLATION", StringFormat("account=%d;input_lot=%.2f;max_lots=%.2f", account_num, input_lot, g_account_max_lots));
+      return;
+   }
    // Update scheduled close only mode state
    UpdateScheduledCloseOnlyMode();
    // Close Only mode: prevent new orders
@@ -5096,8 +5128,18 @@ int OnInit()
          if (!CheckAccountAuthorization())
          {
             Alert("Account authorization failed: ", g_api_auth_error);
-         return(INIT_FAILED);
-      }
+            return(INIT_FAILED);
+         }
+         // Check lot limit in OnInit (Master only)
+         if (input_role == ROLE_MASTER && g_account_max_lots > 0 && input_lot > g_account_max_lots)
+         {
+            long account_num = AccountInfoInteger(ACCOUNT_LOGIN);
+            string error_msg = StringFormat("Account %d lot size violation: input_lot=%.2f exceeds max_lots=%.2f", account_num, input_lot, g_account_max_lots);
+            Print("[API-AUTH] ", error_msg);
+            Alert("EA Lot Size Violation: " + error_msg);
+            LogEvent("AUTH_LOT_LIMIT_VIOLATION", StringFormat("account=%d;input_lot=%.2f;max_lots=%.2f", account_num, input_lot, g_account_max_lots));
+            return(INIT_FAILED);
+         }
       }
       
       // Fetch initial signal (Master only)
@@ -5276,7 +5318,41 @@ void OnTimer()
       // Check authorization periodically
       if (IsAuthAPIEnabled())
       {
-         CheckAccountAuthorization();
+         bool auth_ok = CheckAccountAuthorization();
+         if (!auth_ok)
+         {
+            long account_num = AccountInfoInteger(ACCOUNT_LOGIN);
+            string error_msg = StringFormat("Account %d authorization failed: %s", account_num, g_api_auth_error);
+            Print("[API-AUTH] ", error_msg);
+            Alert("EA Authorization Failed: " + error_msg);
+            LogEvent("AUTH_REVOKED", StringFormat("account=%d;error=%s", account_num, g_api_auth_error));
+            ExpertRemove();
+            return;
+         }
+         
+         // Check expiry date
+         if (g_account_expires_at > 0 && TimeCurrent() > g_account_expires_at)
+         {
+            long account_num = AccountInfoInteger(ACCOUNT_LOGIN);
+            string error_msg = StringFormat("Account %d expired on %s", account_num, TimeToString(g_account_expires_at));
+            Print("[API-AUTH] ", error_msg);
+            Alert("EA Authorization Expired: " + error_msg);
+            LogEvent("AUTH_EXPIRED", StringFormat("account=%d;expires=%s", account_num, TimeToString(g_account_expires_at)));
+            ExpertRemove();
+            return;
+         }
+         
+         // Check lot limit (Master only)
+         if (input_role == ROLE_MASTER && g_account_max_lots > 0 && input_lot > g_account_max_lots)
+         {
+            long account_num = AccountInfoInteger(ACCOUNT_LOGIN);
+            string error_msg = StringFormat("Account %d lot size violation: input_lot=%.2f exceeds max_lots=%.2f", account_num, input_lot, g_account_max_lots);
+            Print("[API-AUTH] ", error_msg);
+            Alert("EA Lot Size Violation: " + error_msg);
+            LogEvent("AUTH_LOT_LIMIT_VIOLATION", StringFormat("account=%d;input_lot=%.2f;max_lots=%.2f", account_num, input_lot, g_account_max_lots));
+            ExpertRemove();
+            return;
+         }
       }
       
       // Fetch signal periodically (Master only)

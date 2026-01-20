@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
-//|                                             FXH-Diff-Grabber.mq5 |
+//|                                                     FXH-Noah.mq5 |
 //|                                  Copyright 2025, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.16"
+#property version   "1.14"
 
 // =============================
 // EA Heading Master–Slave (MT5)
@@ -29,8 +29,8 @@ enum DryRunHandshakeMode { DRY_NONE = 0, DRY_WRITE_CMD_ONLY = 1, DRY_WRITE_CMD_A
 enum Role { ROLE_MASTER = 0, ROLE_SLAVE = 1 };
 // Master fixed side direction
 enum MasterSide { SIDE_BUY = 0, SIDE_SELL = 1 };
-input Role   input_role                     = ROLE_MASTER;   // Scope: Both — select EA role (ROLE_MASTER or ROLE_SLAVE)
-input string input_channel_id               = "A01";         // Scope: Both — channel identifier (must match across peers)
+input  Role   input_role                     = ROLE_MASTER;   // Scope: Both — select EA role (ROLE_MASTER or ROLE_SLAVE)
+string input_channel_id               = "A01";         // Scope: Both — channel identifier (must match across peers)
 string input_shared_dir               = "";            // Scope: Both — legacy (unused); Common Files is used by default
 string input_symbol                   = "";            // Scope: Both — empty uses current chart symbol
 bool   input_verbose_journal_logs     = true;          // Scope: Both — emit concise Journal logs for key events
@@ -44,23 +44,23 @@ int    input_display_width_pixels      = 520;           // Scope: Both — width
 
 // Master decision parameters
 int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
-input MasterSide input_master_side          = SIDE_SELL;     // Scope: Master — master direction (Slave auto-opposite)
+MasterSide input_master_side          = SIDE_SELL;     // Scope: Master — master direction (Slave auto-opposite)
 input double input_lot                      = 0.01;          // Scope: Master — lot size for orders (applies to Master and Slave)
 
 // Centralized mode control (Master only)
-input bool   input_trading_positive_swap        = false;    // Scope: Master — Positive Swap mode: true=optimize for positive swap (disable scheduled/threshold/force-close; weekend only), false=enable scheduled/threshold/force-close
+bool   input_trading_positive_swap        = false;    // Scope: Master — Positive Swap mode: true=optimize for positive swap (disable scheduled/threshold/force-close; weekend only), false=enable scheduled/threshold/force-close
 
 // Positive Swap override (Master only)
 int    input_pswap_close_th_points        = 10000;     // Scope: Master — close threshold to enforce during positive swap window (03:00-05:30 local, non-Saturday)
 
 // Positive Swap Thursday auto-open (Master only)
-input string input_swap_thursday_open_time    = "03:30";  // Scope: Master — Thursday auto-open time (HH:mm, local)
-input double input_swap_trading_lots    = 0.01;      // Scope: Master — lots for Thursday auto-open
+string input_swap_thursday_open_time    = "04:30";  // Scope: Master — Thursday auto-open time (HH:mm, local)
+double input_swap_trading_lots    = 0.01;      // Scope: Master — lots for Thursday auto-open
 
 #define input_lot_master input_lot
 #define input_lot_slave  input_lot
-input int    input_open_threshold_points    = 30;            // Scope: Master — open threshold (points)
-input int    input_close_threshold_points   = 30;            // Scope: Master — close threshold (points)
+int    input_open_threshold_points    = 30;            // Scope: Master — open threshold (points)
+int    input_close_threshold_points   = 30;            // Scope: Master — close threshold (points)
 int    input_open_cooldown_seconds    = 7200;           // Scope: Master — open cooldown after an open
 int    input_close_cooldown_seconds   = 300;            // Scope: Master — close cooldown after both sides opened
 int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
@@ -72,7 +72,7 @@ int    input_raw_stability_timeout_ms = 500;          // Scope: Master — max w
 int    input_raw_hysteresis_offset   = 10;           // Scope: Master — hysteresis offset below threshold for reset (points)
 
 // Averaged diff gating (Master-only)
-input bool   input_avg_filter_enabled       = false;         // Scope: Master — enable EMA-based averaged diff gating
+bool   input_avg_filter_enabled       = false;         // Scope: Master — enable EMA-based averaged diff gating
 int    input_avg_period               = 9;             // Scope: Master — EMA period (ticks)
 bool   input_use_prefilter_median     = true;          // Scope: Master — apply median pre-filter before EMA
 int    input_prefilter_window         = 3;             // Scope: Master — median window (odd 3/5)
@@ -84,16 +84,16 @@ int    input_epsilon_diff_points      = 1;             // Scope: Master — smal
 int    input_avg_signal_cooldown_ms   = 400;           // Scope: Master — signal-level cooldown after order (ms)
 
 // Zone Stability Filter (works with all modes - Master only)
-input  bool   input_zone_stability_enabled    = true;     // Scope: Master — enable zone stability check for all modes
+bool   input_zone_stability_enabled    = true;     // Scope: Master — enable zone stability check for all modes
 int    input_zone_stability_ticks      = 7;        // Scope: Master — consecutive ticks required in positive zone
 int    input_zone_negative_threshold   = -1;        // Scope: Master — threshold for negative zone detection (points)
 
 // Quality guards
-input  int    input_max_spread_points_self   = 50;            // Scope: Master — block if own spread exceeds (points)
-input  int    input_max_spread_points_peer   = 50;            // Scope: Master — check peer spread before opening (points)
+int    input_max_spread_points_self   = 50;            // Scope: Master — block if own spread exceeds (points)
+int    input_max_spread_points_peer   = 50;            // Scope: Master — check peer spread before opening (points)
 int    input_quotes_fresh_ms          = 400;           // Scope: Master — maximum acceptable quote age (ms)
 int    input_file_poll_ms             = 5;             // Scope: Master — background file polling cadence (ms)
-input  int    input_magic_number_base = 0;             // Scope: Master — magic base per channel/symbol
+int    input_magic_number_base = 0;             // Scope: Master — magic base per channel/symbol
 bool   input_retry_on_requote         = true;          // Scope: Master — retry on requote/off quotes
 int    input_max_retries              = 20;            // Scope: Master — max retry attempts
 
@@ -121,36 +121,36 @@ bool   input_debug_buttons_enabled     = true;         // Scope: Master — show
 bool   input_reset_stats_button_enabled = false;       // Scope: Master — show Reset Stats button next to Close Only
 
 // Extended controls (Master-only; synced to Slave via config)
-input double input_min_balance_master_usd    = 0.00;          // Scope: Master — minimum balance required on Master to allow new open
-input double input_min_balance_slave_usd     = 0.00;          // Scope: Master — minimum balance required on Slave to allow new open
+double input_min_balance_master_usd    = 0.00;          // Scope: Master — minimum balance required on Master to allow new open
+double input_min_balance_slave_usd     = 0.00;          // Scope: Master — minimum balance required on Slave to allow new open
 double input_initial_capital_usd       = 0.00;          // Scope: Master — initial capital for profit calculation
 
 // Scheduled Close Only Mode (Master only)
 bool   input_scheduled_close_only_enabled = true;     // Scope: Master — enable scheduled close only mode
-string input_close_only_start_time        = "01:00";   // Scope: Master — start time for close only mode (HH:mm format)
-string input_close_only_end_time          = "06:00";   // Scope: Master — end time for close only mode (HH:mm format)
+string input_close_only_start_time        = "02:00";   // Scope: Master — start time for close only mode (HH:mm format)
+string input_close_only_end_time          = "07:00";   // Scope: Master — end time for close only mode (HH:mm format)
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
 bool   input_sat_close_only_enabled       = true;           // Scope: Master — enable weekend close-only (Sat start -> Mon end)
-string input_sat_close_only_start_time    = "01:00";   // Scope: Master — Saturday start time (HH:mm)
-string input_mon_close_only_end_time      = "06:00";   // Scope: Master — Monday end time (HH:mm)
+string input_sat_close_only_start_time    = "02:00";   // Scope: Master — Saturday start time (HH:mm)
+string input_mon_close_only_end_time      = "07:00";   // Scope: Master — Monday end time (HH:mm)
 
 // Close Threshold Scheduler (Master only)
 bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes
-string input_close_th_time1               = "01:00";  // HH:mm — schedule slot 1
+string input_close_th_time1               = "02:00";  // HH:mm — schedule slot 1
 int    input_close_th_value1              = 10;       // points — threshold at time1
-string input_close_th_time2               = "02:00";  // HH:mm — schedule slot 2
+string input_close_th_time2               = "03:00";  // HH:mm — schedule slot 2
 int    input_close_th_value2              = 5;       // points — threshold at time2
-string input_close_th_time3               = "03:00";  // HH:mm — schedule slot 3
+string input_close_th_time3               = "04:00";  // HH:mm — schedule slot 3
 int    input_close_th_value3              = 0;        // points — threshold at time3
-string input_close_th_time4               = "03:15";  // HH:mm — schedule (prevent close time)
+string input_close_th_time4               = "04:15";  // HH:mm — schedule (prevent close time)
 int    input_close_th_value4              = 10000;    // points — threshold at time4
-string input_close_th_time5               = "05:30";  // HH:mm — schedule reset to initial close threshold
-string input_close_th_time6               = "06:00";  // HH:mm — schedule freeze close threshold all day
+string input_close_th_time5               = "06:30";  // HH:mm — schedule reset to initial close threshold
+string input_close_th_time6               = "07:00";  // HH:mm — schedule freeze close threshold all day
 
 // Force Close at Time (Master only)
 bool   input_force_close_time_enabled     = false;    // Scope: Master — enable daily forced close at a specific time
-string input_force_close_time             = "03:15";  // Scope: Master — time to force close all (HH:mm)
+string input_force_close_time             = "04:15";  // Scope: Master — time to force close all (HH:mm)
 
 // ========================================
 // API System Configuration
@@ -165,7 +165,7 @@ string input_api_auth_url = "https://script.google.com/macros/s/AKfycbzC_H3jaxzh
 int    input_api_auth_interval_hours = 24;         // Scope: Both — Authorization check interval (hours)
 
 // Signal API (Master only)
-input bool   input_api_signal_enabled = true;           // Scope: Master — Enable signal fetching via API
+bool   input_api_signal_enabled = true;           // Scope: Master — Enable signal fetching via API
 string input_api_signal_url = "https://script.google.com/macros/s/AKfycbzC_H3jaxzhxkhIGcj37PJtYAbRwc6049ShzdYGtmZeb7pABPeBnWKlvVsqq5XCBMYWuA/exec?action=signal";                  // Scope: Master — Signal API endpoint URL
 int    input_api_signal_interval_hours = 1;        // Scope: Master — Signal fetch interval (hours)
 bool   input_api_signal_auto_apply = true;         // Scope: Master — Auto-apply signal to master_side
@@ -174,9 +174,9 @@ double input_api_signal_min_confidence = 0.0;      // Scope: Master — Minimum 
 // ========================================
 // TP/SL Active Diff Close (Master only)
 // ========================================
-input bool   input_tp_active_diff_close_enabled = false; // Scope: Master — Enable TP for active diff close
+bool   input_tp_active_diff_close_enabled = false; // Scope: Master — Enable TP for active diff close
 input int    input_tp_active_diff_close_points = 50;     // Scope: Master — TP points threshold to activate diff close
-input bool   input_sl_active_diff_close_enabled = false; // Scope: Master — Enable SL for active diff close
+bool   input_sl_active_diff_close_enabled = false; // Scope: Master — Enable SL for active diff close
 input int    input_sl_active_diff_close_points = 30;     // Scope: Master — SL points threshold to activate diff close
 
 // -----------------------------
@@ -965,7 +965,7 @@ bool CheckAccountAuthorization()
             ", max_lots: ", DoubleToString(max_lots, 2), ")");
    
    return true;
-   }
+}
    
 // Check if we need to refresh authorization (legacy compatibility)
 bool ShouldRefreshAuthorization()
@@ -4065,91 +4065,6 @@ void DisplayInit()
       ObjectSetInteger(0, b2, OBJPROP_YSIZE, BTN_H);
       ObjectSetString(0, b2, OBJPROP_TEXT, "Close Now");
       ObjectSetInteger(0, b2, OBJPROP_FONTSIZE, 8);
-      
-      // Profit Display (below debug buttons)
-      string eq_bg = OBJ_PREFIX + "EQUITY_BG";
-      ObjectCreate(0, eq_bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, eq_bg, OBJPROP_CORNER, 0);
-      ObjectSetInteger(0, eq_bg, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
-      ObjectSetInteger(0, eq_bg, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 30);
-      ObjectSetInteger(0, eq_bg, OBJPROP_XSIZE, EQUITY_W);
-      ObjectSetInteger(0, eq_bg, OBJPROP_YSIZE, EQUITY_H);
-      ObjectSetInteger(0, eq_bg, OBJPROP_COLOR, clrLightGray);
-      ObjectSetInteger(0, eq_bg, OBJPROP_BACK, false);
-      
-      string eq_label = OBJ_PREFIX + "EQUITY_LABEL";
-      ObjectCreate(0, eq_label, OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, eq_label, OBJPROP_CORNER, 0);
-      ObjectSetInteger(0, eq_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
-      ObjectSetInteger(0, eq_label, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 30 + 5);
-      ObjectSetString(0, eq_label, OBJPROP_TEXT, "Profit");
-      ObjectSetString(0, eq_label, OBJPROP_FONT, "Arial Bold");
-      ObjectSetInteger(0, eq_label, OBJPROP_FONTSIZE, 9);
-      ObjectSetInteger(0, eq_label, OBJPROP_COLOR, clrBlack);
-      
-      string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
-      ObjectCreate(0, eq_value, OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, eq_value, OBJPROP_CORNER, 0);
-      ObjectSetInteger(0, eq_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
-      ObjectSetInteger(0, eq_value, OBJPROP_YDISTANCE, CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 30 + 22);
-      ObjectSetString(0, eq_value, OBJPROP_TEXT, "$0.00");
-      ObjectSetString(0, eq_value, OBJPROP_FONT, "Arial Bold");
-      ObjectSetInteger(0, eq_value, OBJPROP_FONTSIZE, 12);
-      ObjectSetInteger(0, eq_value, OBJPROP_COLOR, clrDarkGreen);
-
-      // Realtime diffOpen/diffClose labels and values (below Profit)
-      int diff_base_y = CLOSE_ONLY_BTN_Y + CLOSE_ONLY_BTN_H + 8 + BTN_H + 30 + EQUITY_H + 8;
-
-      // Background for diff section (white)
-      string diff_bg = OBJ_PREFIX + "DIFF_BG";
-      ObjectCreate(0, diff_bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, diff_bg, OBJPROP_CORNER, 0);
-      ObjectSetInteger(0, diff_bg, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X);
-      ObjectSetInteger(0, diff_bg, OBJPROP_YDISTANCE, diff_base_y - 6);
-      ObjectSetInteger(0, diff_bg, OBJPROP_XSIZE, EQUITY_W);
-      ObjectSetInteger(0, diff_bg, OBJPROP_YSIZE, 44);
-      ObjectSetInteger(0, diff_bg, OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, diff_bg, OBJPROP_BACK, false);
-
-      string dopen_label = OBJ_PREFIX + "DIFF_OPEN_LABEL";
-      ObjectCreate(0, dopen_label, OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, dopen_label, OBJPROP_CORNER, 0);
-      ObjectSetInteger(0, dopen_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
-      ObjectSetInteger(0, dopen_label, OBJPROP_YDISTANCE, diff_base_y);
-      ObjectSetString(0, dopen_label, OBJPROP_TEXT, "diffOpen");
-      ObjectSetString(0, dopen_label, OBJPROP_FONT, "Arial Bold");
-      ObjectSetInteger(0, dopen_label, OBJPROP_FONTSIZE, 9);
-      ObjectSetInteger(0, dopen_label, OBJPROP_COLOR, clrBlack);
-
-      string dopen_value = OBJ_PREFIX + "DIFF_OPEN_VALUE";
-      ObjectCreate(0, dopen_value, OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, dopen_value, OBJPROP_CORNER, 0);
-      ObjectSetInteger(0, dopen_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 110);
-      ObjectSetInteger(0, dopen_value, OBJPROP_YDISTANCE, diff_base_y);
-      ObjectSetString(0, dopen_value, OBJPROP_TEXT, "0.0");
-      ObjectSetString(0, dopen_value, OBJPROP_FONT, "Arial Bold");
-      ObjectSetInteger(0, dopen_value, OBJPROP_FONTSIZE, 12);
-      ObjectSetInteger(0, dopen_value, OBJPROP_COLOR, clrBlack);
-
-      string dclose_label = OBJ_PREFIX + "DIFF_CLOSE_LABEL";
-      ObjectCreate(0, dclose_label, OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, dclose_label, OBJPROP_CORNER, 0);
-      ObjectSetInteger(0, dclose_label, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 10);
-      ObjectSetInteger(0, dclose_label, OBJPROP_YDISTANCE, diff_base_y + 20);
-      ObjectSetString(0, dclose_label, OBJPROP_TEXT, "diffClose");
-      ObjectSetString(0, dclose_label, OBJPROP_FONT, "Arial Bold");
-      ObjectSetInteger(0, dclose_label, OBJPROP_FONTSIZE, 9);
-      ObjectSetInteger(0, dclose_label, OBJPROP_COLOR, clrBlack);
-
-      string dclose_value = OBJ_PREFIX + "DIFF_CLOSE_VALUE";
-      ObjectCreate(0, dclose_value, OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, dclose_value, OBJPROP_CORNER, 0);
-      ObjectSetInteger(0, dclose_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 110);
-      ObjectSetInteger(0, dclose_value, OBJPROP_YDISTANCE, diff_base_y + 20);
-      ObjectSetString(0, dclose_value, OBJPROP_TEXT, "0.0");
-      ObjectSetString(0, dclose_value, OBJPROP_FONT, "Arial Bold");
-      ObjectSetInteger(0, dclose_value, OBJPROP_FONTSIZE, 12);
-      ObjectSetInteger(0, dclose_value, OBJPROP_COLOR, clrBlack);
    }
 
    // Close Only button (Master only)
@@ -4441,336 +4356,33 @@ double GetSumEquity()
 void DisplayUpdate()
 {
    string role = (input_role==ROLE_MASTER)?"MASTER":"SLAVE";
-   int spread = SpreadPointsSelf();
-   double dOpen = DiffOpenPoints();
-   double dClose = DiffClosePoints();
-   double aOpen = input_avg_filter_enabled ? SmoothedOpenDiff(dOpen) : dOpen;
-   double aClose = input_avg_filter_enabled ? SmoothedCloseDiff(dClose) : dClose;
    
    int line = 0;
-   DisplaySetLine(line++, StringFormat("role=%s  channel=%s  symbol=%s", role, input_channel_id, g_symbol));
-   
-   // Account authorization status
-   if(input_api_auth_enabled)
-   {
-      string auth_status = g_account_authorized ? "AUTHORIZED" : "DENIED";
-      string expire_info = "";
-      if(g_account_authorized && g_account_expires_at > 0)
-      {
-         datetime now = TimeCurrent();
-         int days_left = (int)((g_account_expires_at - now) / 86400);
-         expire_info = StringFormat(" (expires in %d days)", days_left);
-      }
-      else if(!g_account_authorized && StringLen(g_auth_error_message) > 0)
-      {
-         expire_info = StringFormat(" (%s)", g_auth_error_message);
-      }
-      DisplaySetLine(line++, StringFormat("auth=%s%s", auth_status, expire_info));
-   }
+   DisplaySetLine(line++, StringFormat("role=%s", role));
    
    // เรียกใช้ stability check ก่อน
    UpdateDisplayPeerStatus();
    
    // ใช้ค่าที่ stable แทน
    string syncTxt = g_display_peer_alive ? "OK" : "WAITING";
-   string activeTxt = g_display_peer_alive ? "YES" : "NO";
-   ulong now_display = NowMs();
-   int hb_age = (int)((now_display >= g_peer_hb_ms) ? (now_display - g_peer_hb_ms) : 0);
    
-   // เพิ่มข้อมูล debug
-   string debug_info = StringFormat(" (raw=%s,fails=%d)", 
-                                   g_peer_alive?"T":"F", 
-                                   g_heartbeat_consecutive_fails);
-   
-   DisplaySetLine(line++, StringFormat("sync=%s  peer_hb_age=%dms  active=%s%s", 
-                                      syncTxt, hb_age, activeTxt, debug_info));
-   line = DisplaySetWrappedLines(line, StringFormat("sync_path=%s", PathChannelRootAbs()));
+   DisplaySetLine(line++, StringFormat("sync=%s", syncTxt));
    if(input_role==ROLE_MASTER)
    {
-      DisplaySetLine(line++, StringFormat("lot(m/s)=%.2f/%.2f  side(M)=%s", input_lot_master, input_lot_slave, ((g_effective_master_side==SIDE_BUY)?"BUY":"SELL")));
-      DisplaySetLine(line++, StringFormat("open_th(init)=%d  open_th(cur)=%d  close_th(init)=%d  close_th(cur)=%d  spread=%d", input_open_threshold_points, GetOpenThresholdPoints(), input_close_threshold_points, GetCloseThresholdPoints(), spread));
-      int cd = CooldownRemainSeconds(); string cdLeft = (cd>=0)? IntegerToString(cd):"-";
-      int closeLeft = -1; if(g_last_pair_both_open_time>0){ int el=(int)(TimeCurrent()-g_last_pair_both_open_time); int rem=input_close_cooldown_seconds-el; if(rem<0) rem=0; closeLeft=rem; }
-      // Split into two lines to avoid clipping on narrow charts
-      /* DisplaySetLine(line++, StringFormat("open_cooldown=%ds left=%s  close_cooldown=%ds left=%s",
-         input_open_cooldown_seconds, cdLeft, input_close_cooldown_seconds, (closeLeft>=0?IntegerToString(closeLeft):"0")));
-      DisplaySetLine(line++, StringFormat("max_pairs=%d  open_now=%d", input_max_open_pairs, CountOpenPairs())); */
-      
-      // Performance Metrics
-      /*   double success_rate = (g_total_opens>0) ? ((double)g_successful_opens / g_total_opens * 100.0) : 0.0;
-         ulong avg_ack = (g_total_opens>0) ? g_avg_ack_time_ms : 0;
-         DisplaySetLine(line++, StringFormat("Success Rate: %.1f%% (%I64u/%I64u) AvgAck: %I64ums", 
-                        success_rate, g_successful_opens, g_total_opens, avg_ack));
-         DisplaySetLine(line++, StringFormat("Rollbacks: %I64u", g_rollback_count));
-      */
+      DisplaySetLine(line++, StringFormat("side(M)=%s", ((g_effective_master_side==SIDE_BUY)?"BUY":"SELL")));
+      DisplaySetLine(line++, StringFormat("lot(M/S)=%.2f/%.2f", input_lot_master, input_lot_slave));
    }
    else
    {
-      if(!g_have_master_cmd) ReadMasterConfigForSlave();
+      string sideS = "N/A";
+      if(g_have_master_cmd && g_last_cmd_side != "")
+      {
+         sideS = (g_last_cmd_side=="BUY")?"SELL":"BUY";
+      }
+      DisplaySetLine(line++, StringFormat("side(S)=%s", sideS));
       if(g_have_master_cmd)
       {
-         string sideS = (g_last_cmd_side=="BUY")?"SELL":"BUY";
-         DisplaySetLine(line++, StringFormat("lot(M/S)=%.2f/%.2f  side(S)=%s", g_last_cmd_lot_master, g_last_cmd_lot_slave, sideS));
-         if(g_have_master_th)
-            DisplaySetLine(line++, StringFormat("th(M): open=%d close=%d", g_last_cmd_open_th, g_last_cmd_close_th));
-      }
-      DisplaySetLine(line++, StringFormat("spread=%d", spread));
-      int closeLeftS=-1; if(g_last_pair_both_open_time>0){ int el=(int)(TimeCurrent()-g_last_pair_both_open_time); int rem=g_master_close_cooldown_seconds-el; if(rem<0) rem=0; closeLeftS=rem; }
-      // DisplaySetLine(line++, StringFormat("close_cooldown=%ds left=%s", g_master_close_cooldown_seconds, (closeLeftS>=0?IntegerToString(closeLeftS):"-")));
-   }
-   if(input_role==ROLE_MASTER)
-   {
-      string modeStr = "";
-      if(input_avg_filter_enabled)
-         modeStr = StringFormat("AVG ON | EMA-%d%s | H=%d E=%d CF=%d CD=%dms",
-                               input_avg_period, (input_use_prefilter_median?StringFormat(" + Med-%d", input_prefilter_window):""),
-                               input_diff_hysteresis_points, input_epsilon_diff_points, input_confirm_ticks, input_avg_signal_cooldown_ms);
-      else if(input_raw_stability_enabled)
-         modeStr = StringFormat("RAW STABILITY | Ticks=%d Offset=%d Timeout=%dms", 
-                               input_raw_stability_ticks, input_raw_hysteresis_offset, input_raw_stability_timeout_ms);
-      else
-         modeStr = "SIMPLE | RealOnly";
-
-      // Add Zone Stability status to mode string
-      if(input_zone_stability_enabled)
-      {
-         double pos_th_open = GetOpenThresholdPoints() * 0.5;
-         double pos_th_close = GetCloseThresholdPoints() * 0.5;
-         modeStr += StringFormat(" + ZONE(T=%d P=%.1f/%.1f N=%d)", input_zone_stability_ticks, pos_th_open, pos_th_close, input_zone_negative_threshold);
-      }
-
-      DisplaySetLine(line++, modeStr);
-      
-      // Display Zone Stability status
-      if(input_zone_stability_enabled)
-      {
-         string zoneOpenStatus = g_open_zone_stable ? "STABLE" : 
-            StringFormat("BUILDING(+%d/-%d)", g_open_positive_count, g_open_negative_count);
-         string zoneCloseStatus = g_close_zone_stable ? "STABLE" : 
-            StringFormat("BUILDING(+%d/-%d)", g_close_positive_count, g_close_negative_count);
-         
-         DisplaySetLine(line++, StringFormat("Zone: Open=%s Close=%s", zoneOpenStatus, zoneCloseStatus));
-      }
-      
-      // Enhanced status display with detailed info
-      if(input_avg_filter_enabled)
-      {
-         double thrOpenEff = (double)(GetOpenThresholdPoints() + input_diff_hysteresis_points);
-         double thrCloseEff = (double)(GetCloseThresholdPoints() + input_diff_hysteresis_points);
-         
-         // Open status with detailed info
-         string stOpen = "READY";
-         string openDetail = "";
-         if(g_open_pending)
-         {
-            ulong timeLeft = (g_open_deadline_ms > NowMs()) ? (g_open_deadline_ms - NowMs()) : 0;
-            double needReal = input_real_confirm_enabled ? 
-               (MathMax(g_open_snapshot_avg, thrOpenEff) + (double)input_epsilon_diff_points) : thrOpenEff;
-            stOpen = StringFormat("PENDING %d/%d (%.0fms)", g_open_ok_count, input_confirm_ticks, timeLeft);
-            openDetail = StringFormat(" Need: Avg>=%.1f Real>=%.1f", thrOpenEff, needReal);
-         }
-         else if(aOpen >= thrOpenEff)
-         {
-            stOpen = "AVG_TRIGGERED";
-            openDetail = StringFormat(" AvgOK: %.1f>=%.1f", aOpen, thrOpenEff);
-         }
-         
-         // Close status with detailed info  
-         string stClose = "READY";
-         string closeDetail = "";
-         if(g_close_pending)
-         {
-            ulong timeLeft = (g_close_deadline_ms > NowMs()) ? (g_close_deadline_ms - NowMs()) : 0;
-            double needReal = input_real_confirm_enabled ? 
-               (MathMax(g_close_snapshot_avg, thrCloseEff) + (double)input_epsilon_diff_points) : thrCloseEff;
-            stClose = StringFormat("PENDING %d/%d (%.0fms)", g_close_ok_count, input_confirm_ticks, timeLeft);
-            closeDetail = StringFormat(" Need: Avg>=%.1f Real>=%.1f", thrCloseEff, needReal);
-         }
-         else if(aClose >= thrCloseEff)
-         {
-            stClose = "AVG_TRIGGERED";
-            closeDetail = StringFormat(" AvgOK: %.1f>=%.1f", aClose, thrCloseEff);
-         }
-         
-         DisplaySetLine(line++, StringFormat("Open: Real=%.1f Avg=%.1f Thr(init=%d)+H=%d => %.0f | %s", 
-            dOpen, aOpen, input_open_threshold_points, input_diff_hysteresis_points, thrOpenEff, stOpen));
-         if(openDetail != "") DisplaySetLine(line++, "  " + openDetail);
-         
-         DisplaySetLine(line++, StringFormat("Close: Real=%.1f Avg=%.1f Thr(init=%d)+H=%d => %.0f | %s", 
-            dClose, aClose, input_close_threshold_points, input_diff_hysteresis_points, thrCloseEff, stClose));
-         if(closeDetail != "") DisplaySetLine(line++, "  " + closeDetail);
-         
-         // Signal cooldown status
-         if(input_avg_signal_cooldown_ms > 0)
-         {
-            ulong openCooldown = (NowMs() > g_last_avg_open_signal_ms) ? 
-               (NowMs() - g_last_avg_open_signal_ms) : 0;
-            ulong closeCooldown = (NowMs() > g_last_avg_close_signal_ms) ? 
-               (NowMs() - g_last_avg_close_signal_ms) : 0;
-            string cooldownStatus = "";
-            if(openCooldown < input_avg_signal_cooldown_ms)
-               cooldownStatus += StringFormat("OpenCD:%dms ", (int)(input_avg_signal_cooldown_ms - openCooldown));
-            if(closeCooldown < input_avg_signal_cooldown_ms)
-               cooldownStatus += StringFormat("CloseCD:%dms", (int)(input_avg_signal_cooldown_ms - closeCooldown));
-            if(cooldownStatus != "") DisplaySetLine(line++, "Signal Cooldown: " + cooldownStatus);
-         }
-      }
-      else if(input_raw_stability_enabled)
-      {
-         // Raw stability status display with realtime count
-         string stOpen = "READY";
-         string stClose = "READY";
-         
-         if(g_raw_open_pending)
-         {
-            int timeLeft = (int)((g_raw_open_start_ms + (ulong)input_raw_stability_timeout_ms > NowMs()) ? 
-                                (g_raw_open_start_ms + (ulong)input_raw_stability_timeout_ms - NowMs()) : 0);
-            stOpen = StringFormat("COUNT %d/%d (%.0fms)", g_raw_open_stable_count, input_raw_stability_ticks, timeLeft);
-         }
-         else if(dOpen >= GetOpenThresholdPoints())
-         {
-            stOpen = "TRIGGERED";
-         }
-         
-         if(g_raw_close_pending)
-         {
-            int timeLeft = (int)((g_raw_close_start_ms + (ulong)input_raw_stability_timeout_ms > NowMs()) ? 
-                                (g_raw_close_start_ms + (ulong)input_raw_stability_timeout_ms - NowMs()) : 0);
-            stClose = StringFormat("COUNT %d/%d (%.0fms)", g_raw_close_stable_count, input_raw_stability_ticks, timeLeft);
-         }
-         else if(dClose >= GetCloseThresholdPoints())
-         {
-            stClose = "TRIGGERED";
-         }
-         
-         // Show realtime diff and count status prominently
-         DisplaySetLine(line++, StringFormat("Open: %.1f (Thr=%d Reset=%d) | %s", 
-            dOpen, GetOpenThresholdPoints(), (GetOpenThresholdPoints() - input_raw_hysteresis_offset), stOpen));
-         DisplaySetLine(line++, StringFormat("Close: %.1f (Thr=%d Reset=%d) | %s", 
-            dClose, GetCloseThresholdPoints(), (GetCloseThresholdPoints() - input_raw_hysteresis_offset), stClose));
-      }
-      else
-      {
-         // Simple display for non-averaging mode
-         string stOpen = "READY";
-         string stClose = "READY";
-         DisplaySetLine(line++, StringFormat("Open: %.1f (Thr=%d) | %s", dOpen, input_open_threshold_points, stOpen));
-         DisplaySetLine(line++, StringFormat("Close: %.1f (Thr=%d) | %s", dClose, input_close_threshold_points, stClose));
-      }
-   }
-         else
-      {
-         // Simple display for Slave or non-averaging Master
-         string freshStatus = QuotesFresh() ? "OK" : "STALE";
-         DisplaySetLine(line++, StringFormat("diffOpen=%.1f  diffClose=%.1f  fresh=%s", dOpen, dClose, freshStatus));
-      }
-   if(g_role_conflict) DisplaySetLine(line++, "role_conflict=YES (single-instance per channel)" );
-   int effMode = DryMode();
-   string dryMode = (effMode==DRY_NONE?"NONE":(effMode==DRY_WRITE_CMD_ONLY?"WRITE_CMD_ONLY":"WRITE_CMD_AND_FAKE_ACK"));
-   // DisplaySetLine(line++, StringFormat("dry_run=%s mode=%s", (DryEnabled()?"ON":"OFF"), dryMode));
-   if(input_role==ROLE_MASTER)
-   {
-      // Update scheduled close only mode state
-      UpdateScheduledCloseOnlyMode();
-      
-      // Compute effective scheduled close-only flag consistently with centralized control
-      bool eff_scheduled_close_only_enabled = input_scheduled_close_only_enabled;
-      if(input_trading_positive_swap)
-      {
-         eff_scheduled_close_only_enabled = false;
-      }
-      else
-      {
-         eff_scheduled_close_only_enabled = true;
-      }
-      
-      string closeOnlyStatus = "";
-      if(eff_scheduled_close_only_enabled)
-      {
-         string scheduleInfo = StringFormat("%s-%s", input_close_only_start_time, input_close_only_end_time);
-         if(g_scheduled_close_only_active)
-         {
-            closeOnlyStatus = StringFormat("ON (SCHEDULED %s)", scheduleInfo);
-         }
-         else
-         {
-            // Outside scheduled period - show manual state
-            string manualState = g_close_only_mode ? "ON" : "OFF";
-            closeOnlyStatus = StringFormat("%s (MANUAL | SCHEDULE %s)", manualState, scheduleInfo);
-         }
-      }
-      else
-      {
-         closeOnlyStatus = g_close_only_mode ? "ON (MANUAL)" : "OFF";
-      }
-      
-      DisplaySetLine(line++, StringFormat("close_only_mode=%s", closeOnlyStatus));
-      
-      // Update cached slave balance and auto-detect initial capital if needed
-      UpdateCachedSlaveBalance();
-      AutoDetectInitialCapital();
-      
-      // Capital and profit display (Master only)
-      /* double master_balance = AccountInfoDouble(ACCOUNT_BALANCE);
-      double slave_balance = GetCachedSlaveBalance();
-      
-      double sum_balance = master_balance + slave_balance;
-      double effective_initial_capital = GetEffectiveInitialCapital();
-      double net_profit = sum_balance - effective_initial_capital;
-      
-      string capital_source = (input_initial_capital_usd > 0.0) ? "Manual" : (g_auto_capital_detected ? "Auto" : "Pending");
-      string slave_status = g_has_slave_balance ? "" : " [WAITING]";
-      DisplaySetLine(line++, StringFormat("Initial Capital: $%.2f [%s]", effective_initial_capital, capital_source));
-      DisplaySetLine(line++, StringFormat("Sum Balance: $%.2f (M:$%.2f + S:$%.2f%s)", 
-         sum_balance, master_balance, slave_balance, slave_status));
-      DisplaySetLine(line++, StringFormat("Net Profit: $%.2f", net_profit)); */
-   }
-
-   // Update Profit and Diff Displays (Master only, when debug buttons enabled)
-   if(input_debug_buttons_enabled && input_role==ROLE_MASTER)
-   {
-      string eq_value = OBJ_PREFIX + "EQUITY_VALUE";
-      if(ObjectFind(0, eq_value) != -1)
-      {
-         // Keep caches fresh opportunistically
-         UpdateCachedSlaveEquity();
-         UpdateCachedSlaveBalance();
-
-         // Realtime sums
-         double master_equity = AccountInfoDouble(ACCOUNT_EQUITY);
-         double master_balance = AccountInfoDouble(ACCOUNT_BALANCE);
-         double slave_equity = 0.0; ulong slave_eq_ts = 0; bool eq_ok = ReadPeerEquityFresh(slave_equity, slave_eq_ts);
-         double slave_balance = 0.0; ulong slave_bal_ts = 0; bool bal_ok = ReadPeerBalanceFresh(slave_balance, slave_bal_ts);
-         if(!eq_ok && g_has_slave_equity) slave_equity = g_cached_slave_equity;
-         if(!bal_ok && g_has_slave_balance) slave_balance = g_cached_slave_balance;
-
-         double sum_equity = master_equity + slave_equity;
-         double sum_balance = master_balance + slave_balance;
-         double profit_value = sum_equity - sum_balance;
-
-         // Color by PnL
-         color profit_color = (profit_value>0.0? clrDarkGreen : (profit_value<0.0? clrDarkRed : clrBlack));
-         string profit_text = StringFormat("$%.2f", profit_value);
-         ObjectSetString(0, eq_value, OBJPROP_TEXT, profit_text);
-         ObjectSetInteger(0, eq_value, OBJPROP_COLOR, profit_color);
-
-         // Update realtime diffOpen/diffClose values with color coding
-         double dOpen = DiffOpenPoints();
-         double dClose = DiffClosePoints();
-         string dopen_value = OBJ_PREFIX + "DIFF_OPEN_VALUE";
-         string dclose_value = OBJ_PREFIX + "DIFF_CLOSE_VALUE";
-         color dOpenColor = (dOpen>0.0? clrDarkGreen : (dOpen<0.0? clrRed : clrBlack));
-         color dCloseColor = (dClose>0.0? clrDarkGreen : (dClose<0.0? clrRed : clrBlack));
-         if(ObjectFind(0, dopen_value) != -1)
-         {
-            ObjectSetString(0, dopen_value, OBJPROP_TEXT, StringFormat("%.1f", dOpen));
-            ObjectSetInteger(0, dopen_value, OBJPROP_COLOR, dOpenColor);
-         }
-         if(ObjectFind(0, dclose_value) != -1)
-         {
-            ObjectSetString(0, dclose_value, OBJPROP_TEXT, StringFormat("%.1f", dClose));
-            ObjectSetInteger(0, dclose_value, OBJPROP_COLOR, dCloseColor);
-         }
+         DisplaySetLine(line++, StringFormat("lot(M/S)=%.2f/%.2f", g_last_cmd_lot_master, g_last_cmd_lot_slave));
       }
    }
 
@@ -5418,9 +5030,6 @@ void OnTimer()
       MaybeOpenSwapThursday();
    }
    
-   // Update Sum Profit Display every second (backup path when no ticks)
-   UpdateProfitDisplay();
-   
    DisplayUpdate();
 }
 
@@ -5466,10 +5075,6 @@ void OnTick()
       SlaveProcessOpenCmd(); 
       SlaveProcessCloseCmd(); 
    }
-   
-   // Update both Sum Profit and Diff Values Display every tick (primary path)
-   UpdateProfitDisplay();
-   UpdateDiffDisplay();
    
    DisplayUpdate();
 }

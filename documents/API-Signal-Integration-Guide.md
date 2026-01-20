@@ -1081,12 +1081,14 @@ function createHourlyTrigger() {
     }
   }
   
+  // Run every hour at minute 0 (e.g., 10:00, 11:00, 12:00, ...)
   ScriptApp.newTrigger('scrapeAndUpdateSignal')
     .timeBased()
     .everyHours(1)
+    .nearMinute(0)
     .create();
     
-  Logger.log('Hourly trigger created');
+  Logger.log('Hourly trigger created (runs at minute 0 of each hour)');
 }
 ```
 
@@ -1125,7 +1127,7 @@ const SCRAPER_API_KEY = '2c4938f6f3a54304d54f55af4a3e0ff3';  // ใส่ API ke
 7. **เช็ค Sheet**: ดูใน Signals sheet ว่ามีข้อมูลอัพเดท
 8. **ตั้ง Auto**: รัน `createHourlyTrigger()` เพื่อ auto update ทุกชั่วโมง
 
-✅ **เสร็จแล้ว!** EA จะดึงสัญญาณอัตโนมัติทุก 1 ชั่วโมง
+✅ **เสร็จแล้ว!** EA จะดึงสัญญาณอัตโนมัติทุกชั่วโมงที่นาทีที่ 0 (เช่น 10:00, 11:00, 12:00, ...)
 
 ---
 
@@ -1524,9 +1526,10 @@ input_api_signal_min_confidence = 0.5
 2. ฟังก์ชัน `scrapeAndUpdateSignal()` ถูกตั้งค่าให้ดึงจาก TradersUnion แล้ว
 3. ทดสอบฟังก์ชันก่อน: เลือก `scrapeAndUpdateSignal` และกด Run
 4. ตรวจสอบ Logs (View → Logs) ว่าดึงสัญญาณได้ถูกต้อง
-5. ถ้าสำเร็จ รันฟังก์ชัน `createHourlyTrigger()` เพื่อตั้งอัพเดทอัตโนมัติทุกชั่วโมง
+5. ถ้าสำเร็จ รันฟังก์ชัน `createHourlyTrigger()` เพื่อตั้งอัพเดทอัตโนมัติ
 
 **หมายเหตุ**: 
+- Trigger จะทำงานทุกชั่วโมงที่นาทีที่ 0 (เช่น 10:00, 11:00, 12:00, ...)
 - ฟังก์ชันจะดึงสัญญาณ Gold จาก TradersUnion โดยอัตโนมัติ
 - รองรับทั้ง BUY และ SELL signals (case-insensitive)
 - Confidence ถูกตั้งเป็น 0.85 โดยค่าเริ่มต้น
