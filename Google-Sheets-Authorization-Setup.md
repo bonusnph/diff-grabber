@@ -18,7 +18,7 @@
 
 #### ขั้นตอนการสร้าง Sheet
 
-**Sheet 1: Authorization** (สำหรับตรวจสอบสิทธิ์บัญชี)
+**Sheet 1: Authorization** (สำหรับตรวจสอบสิทธิ์บัญชี + Config รายบัญชี)
 1. คลิกขวาที่แท็บ "Sheet1" ด้านล่าง
 2. เลือก "เปลี่ยนชื่อ"
 3. ตั้งชื่อเป็น **`Authorization`** (ต้องตรงตัวอักษรใหญ่-เล็ก)
@@ -37,18 +37,18 @@
 
 ### 1.3 ตั้งค่าโครงสร้างข้อมูล
 
-#### Sheet 1: Authorization
+#### Sheet 1: Authorization (รวม Config รายบัญชี)
 
-| A | B | C |
-|---|---|---|
-| account | expires_at | max_lots |
-| 12345678 | 2025.12.31 | 2.0 |
-| 87654321 | 2025.06.30 | 1.5 |
-| 11223344 | 2025.03.15 | |
+| A | B | C | D | E | F |
+|---|---|---|---|---|---|
+| account | expires_at | max_lots | open_cooldown | close_cooldown | min_version |
+| 12345678 | 2025.12.31 | 2.0 | 7200 | 300 | 1.16 |
+| 87654321 | 2025.06.30 | 1.5 | 3600 | 600 | |
+| 11223344 | 2025.03.15 | | | | 1.20 |
 
 **วิธีกรอกข้อมูล:**
-1. แถว 1: กรอก header → `account`, `expires_at`, `max_lots`
-2. แถว 2 เป็นต้นไป: กรอกข้อมูลบัญชีที่อนุญาต
+1. แถว 1: กรอก header → `account`, `expires_at`, `max_lots`, `open_cooldown`, `close_cooldown`, `min_version`
+2. แถว 2 เป็นต้นไป: กรอกข้อมูลบัญชีที่อนุญาตพร้อม config รายบัญชี
 
 **คำอธิบายคอลัมน์:**
 | คอลัมน์ | ชื่อ | คำอธิบาย | ตัวอย่าง |
@@ -56,6 +56,9 @@
 | A | account | หมายเลขบัญชี MT4/MT5 | 12345678 |
 | B | expires_at | วันหมดอายุ (YYYY.MM.DD) | 2025.12.31 |
 | C | max_lots | ขนาด lot สูงสุด (ไม่บังคับ) | 2.0 |
+| D | open_cooldown | cooldown หลังเปิดออเดอร์ (วินาที, ไม่บังคับ) | 7200 |
+| E | close_cooldown | cooldown หลังเปิดทั้งสองฝั่ง (วินาที, ไม่บังคับ) | 300 |
+| F | min_version | เวอร์ชันขั้นต่ำที่ต้องใช้ (ล๊อค EA หากต่ำกว่า, ไม่บังคับ) | 1.16 |
 
 #### Sheet 2: Signals
 
@@ -79,15 +82,20 @@
 > - ถ้าใช้ Auto Scraping: ฟังก์ชัน `scrapeAndUpdateSignal()` จะอัพเดทแถวที่ 2 อัตโนมัติ
 > - ถ้าใช้ Manual: แก้ไขแถวที่ 2 โดยตรง
 
+> **หมายเหตุ Config รายบัญชี**: 
+> - ถ้าเว้นว่างคอลัมน์ cooldown จะใช้ค่า default ใน EA (`input_open_cooldown_seconds`, `input_close_cooldown_seconds`)
+> - ถ้าเว้นว่างคอลัมน์ `min_version` จะไม่ล๊อค version
+> - ค่า Config จะถูกดึงมาพร้อมกับ Authorization API โดยอัตโนมัติ (ไม่ต้องใช้ Config API แยกต่างหาก)
+
 ### 1.4 ตัวอย่างข้อมูลแบบ CSV
 
-**Authorization Sheet:**
+**Authorization Sheet (รวม Config รายบัญชี):**
 ```
-account,expires_at,max_lots
-12345678,2025.12.31,2.0
-87654321,2025.06.30,1.5
-11223344,2025.03.15,
-55667788,2026.01.01,5.0
+account,expires_at,max_lots,open_cooldown,close_cooldown,min_version
+12345678,2025.12.31,2.0,7200,300,1.16
+87654321,2025.06.30,1.5,3600,600,
+11223344,2025.03.15,,,
+55667788,2026.01.01,5.0,1800,120,1.20
 ```
 
 **Signals Sheet:**
@@ -98,10 +106,13 @@ BUY,2025-12-01T10:30:00Z,0.85
 
 ### 1.5 หมายเหตุสำคัญ
 
-**Authorization Sheet:**
+**Authorization Sheet (รวม Config รายบัญชี):**
 - ถ้าไม่กำหนดค่า `max_lots` (เว้นว่าง) จะไม่มีข้อจำกัดด้านขนาด lot
 - `max_lots` ตรวจสอบเฉพาะกับ EA ที่ตั้งเป็น `ROLE_MASTER` เท่านั้น
 - ถ้า `input_lot` เกินกว่า `max_lots` EA จะแสดง error และไม่สามารถเริ่มทำงานได้
+- ค่า `open_cooldown` และ `close_cooldown` ใช้แทนค่า default ใน EA ถ้ากำหนดค่า (> 0)
+- ค่า `min_version` ถ้ากำหนดและ EA มีเวอร์ชันต่ำกว่า EA จะหยุดทำงาน
+- ข้อมูล Config ของแต่ละบัญชีจะถูกดึงมาพร้อมกับการตรวจสอบสิทธิ์ (ไม่ต้องเรียก API แยก)
 
 **Signals Sheet:**
 - ค่า `signal` ต้องเป็น `BUY` หรือ `SELL` เท่านั้น (case-insensitive)
@@ -250,6 +261,17 @@ function updateSignal(signal, confidence) {
 // ========================================
 function scrapeAndUpdateSignal() {
   try {
+    // Check if current time is in blocked period (20:00 - 01:00 UTC)
+    if (isInBlockedPeriod()) {
+      Logger.log('Currently in blocked period (20:00-01:00 UTC)');
+      Logger.log('Forcing signal to SELL...');
+      const success = updateSignal('SELL', 1.0);
+      if (success) {
+        Logger.log('Signal forced to SELL successfully');
+      }
+      return success;
+    }
+    
     const targetUrl = 'https://tradersunion.com/currencies/forecast/gold/signals/';
     let url = targetUrl;
     let fetchOptions = {
@@ -454,14 +476,97 @@ function createHourlyTrigger() {
     }
   }
   
-  // Run every hour at minute 0 (e.g., 10:00, 11:00, 12:00, ...)
+  // Run every 30 minutes (e.g., 10:00, 10:30, 11:00, 11:30, ...)
   ScriptApp.newTrigger('scrapeAndUpdateSignal')
     .timeBased()
-    .everyHours(1)
-    .nearMinute(0)
+    .everyMinutes(30)
     .create();
     
-  Logger.log('Hourly trigger created (runs at minute 0 of each hour)');
+  Logger.log('Trigger created (runs every 30 minutes)');
+}
+
+// ========================================
+// Scheduled Signal Control (Market Close)
+// ========================================
+
+// Check if current time is in blocked period (20:00 - 01:00 UTC)
+function isInBlockedPeriod() {
+  const now = new Date();
+  const utcHour = now.getUTCHours();
+  
+  // Blocked period: 20:00 UTC to 01:00 UTC (next day)
+  // Hours: 20, 21, 22, 23, 0
+  if (utcHour >= 20 || utcHour < 1) {
+    return true;
+  }
+  
+  return false;
+}
+
+// Force signal to SELL (used during market close hours)
+function forceSellSignal() {
+  try {
+    Logger.log('=== Force SELL Signal (Scheduled) ===');
+    Logger.log('Time: ' + new Date().toISOString());
+    
+    const success = updateSignal('SELL', 1.0);
+    
+    if (success) {
+      Logger.log('Signal forced to SELL successfully');
+    } else {
+      Logger.log('Failed to force SELL signal');
+    }
+    
+    return success;
+    
+  } catch (error) {
+    Logger.log('Force SELL error: ' + error.toString());
+    return false;
+  }
+}
+
+// Create trigger for scheduled signal control
+// - Every 30 minutes: Scrape API (01:00-20:00 UTC) or Force SELL (20:00-01:00 UTC)
+function createScheduledSignalTriggers() {
+  // Delete existing triggers
+  const triggers = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < triggers.length; i++) {
+    const handler = triggers[i].getHandlerFunction();
+    if (handler === 'forceSellSignal' || handler === 'scrapeAndUpdateSignal') {
+      ScriptApp.deleteTrigger(triggers[i]);
+      Logger.log('Deleted existing trigger: ' + handler);
+    }
+  }
+  
+  // Create trigger every 30 minutes
+  // - During 01:00-20:00 UTC: Scrape from API
+  // - During 20:00-01:00 UTC: Force SELL
+  ScriptApp.newTrigger('scrapeAndUpdateSignal')
+    .timeBased()
+    .everyMinutes(30)
+    .create();
+  
+  Logger.log('Created trigger (every 30 minutes)');
+  
+  Logger.log('=== Scheduled Triggers Summary ===');
+  Logger.log('01:00-20:00 UTC: Scrape from API every 30 min');
+  Logger.log('20:00-01:00 UTC: Force SELL every 30 min');
+}
+
+// Delete all scheduled signal triggers
+function deleteScheduledSignalTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let deletedCount = 0;
+  
+  for (let i = 0; i < triggers.length; i++) {
+    const handler = triggers[i].getHandlerFunction();
+    if (handler === 'forceSellSignal' || handler === 'scrapeAndUpdateSignal') {
+      ScriptApp.deleteTrigger(triggers[i]);
+      deletedCount++;
+    }
+  }
+  
+  Logger.log('Deleted ' + deletedCount + ' triggers');
 }
 ```
 
@@ -508,7 +613,7 @@ BUY,2025-12-01T10:30:00Z,0.85
 ```
 
 **ทดสอบ API Endpoints:**
-- Authorization: `YOUR_URL?action=auth`
+- Authorization: `YOUR_URL?action=auth` (รวม Config รายบัญชี)
 - Signal: `YOUR_URL?action=signal`
 
 ## ขั้นตอนที่ 3: วิธีการแบบเดิม (CSV Export) - ไม่แนะนำ
@@ -632,7 +737,9 @@ input_auth_sheet_url = "https://docs.google.com/spreadsheets/d/1e9VNVA5oPjIggPQ2
   BUY,2025-12-01T10:30:00Z,0.85
   ```
 
-> **หมายเหตุ**: ถ้าไม่ใส่ `?action=` จะใช้ค่าเริ่มต้นเป็น `auth`
+> **หมายเหตุ**: 
+> - ถ้าไม่ใส่ `?action=` จะใช้ค่าเริ่มต้นเป็น `auth`
+> - Authorization API ตอนนี้รวม Config รายบัญชี (cooldown, min_version) เข้าในคอลัมน์ D-F แล้ว
 
 ### 5.2 ทดสอบ Auto Scraping (ไม่บังคับ)
 
@@ -929,6 +1036,6 @@ account,expires_at,max_lots
 
 ---
 
-*Document Version: 1.3*  
+*Document Version: 1.4*  
 *Last Updated: January 2026*  
-*Synced with: API-Signal-Integration-Guide.md v1.3*
+*Synced with: API-Signal-Integration-Guide.md v1.4*

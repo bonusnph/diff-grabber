@@ -142,11 +142,15 @@ bool   input_auth_enabled = true;
 // API System Globals
 // ========================================
 
-// Authorization state
+// Authorization state (includes per-account config)
 datetime g_api_auth_last_check_time = 0;
 bool g_api_auth_valid = false;
 datetime g_api_auth_expires = 0;
 double g_api_auth_max_lots = 0.0;
+int g_api_auth_open_cooldown = 0;     // Per-account cooldown (0 = use input default)
+int g_api_auth_close_cooldown = 0;    // Per-account cooldown (0 = use input default)
+string g_api_auth_min_version = "";   // Per-account min version (empty = no lock)
+bool g_api_version_blocked = false;   // true if EA version is below minimum
 string g_api_auth_error = "";
 
 // Signal state
@@ -225,7 +229,7 @@ bool NeedAuthorizationCheck()
    return (hours_since_last >= input_api_auth_interval_hours) || !g_api_auth_valid;
 }
 
-// Perform authorization check via API
+// Perform authorization check via API (includes per-account config)
 bool CheckAccountAuthorization()
 {
    if (!IsAuthAPIEnabled())
@@ -252,8 +256,11 @@ bool CheckAccountAuthorization()
    
    datetime expires;
    double max_lots;
+   int open_cooldown, close_cooldown;
+   string min_version;
    
-   if (!ParseAuthorizationData(response, AccountNumber(), expires, max_lots))
+   if (!ParseAuthorizationData(response, AccountNumber(), expires, max_lots, 
+                               open_cooldown, close_cooldown, min_version))
    {
       g_api_auth_error = "Account not authorized or expired";
       g_api_auth_valid = false;
@@ -261,21 +268,40 @@ bool CheckAccountAuthorization()
       return false;
    }
    
+   // Store all auth data including per-account config
    g_api_auth_last_check_time = TimeCurrent();
    g_api_auth_expires = expires;
    g_api_auth_max_lots = max_lots;
+   g_api_auth_open_cooldown = open_cooldown;
+   g_api_auth_close_cooldown = close_cooldown;
+   g_api_auth_min_version = min_version;
    g_api_auth_valid = true;
    g_api_auth_error = "";
    
+   // Check version requirement
+   if (!CheckMinVersion())
+   {
+      g_api_auth_error = StringFormat("EA version %s blocked (min: %s)", EA_VERSION, min_version);
+      Print("[API-AUTH] ", g_api_auth_error);
+   }
+   
    if (input_verbose_journal_logs)
+   {
       Print("[API-AUTH] Account authorized (expires: ", TimeToString(expires, TIME_DATE), 
-            ", max_lots: ", DoubleToString(max_lots, 2), ")");
+            ", max_lots: ", DoubleToString(max_lots, 2),
+            ", open_cooldown: ", open_cooldown,
+            ", close_cooldown: ", close_cooldown,
+            ", min_version: ", min_version, ")");
+   }
    
    return true;
 }
 ```
 
-**หมายเหตุ**: ฟังก์ชัน `HttpGetRequest()` และ `ParseAuthorizationData()` ที่มีอยู่แล้วสามารถใช้ต่อได้
+**หมายเหตุ**: 
+- ฟังก์ชัน `HttpGetRequest()` ที่มีอยู่แล้วสามารถใช้ต่อได้
+- ฟังก์ชัน `ParseAuthorizationData()` ต้องอัพเดทให้รับ parameters เพิ่ม: `open_cooldown`, `close_cooldown`, `min_version`
+- CSV format: `account,expires_at,max_lots,open_cooldown,close_cooldown,min_version`
 
 #### **1.3.3 Signal Functions (สร้างใหม่)**
 
@@ -877,6 +903,17 @@ function updateSignal(signal, confidence) {
 // ========================================
 function scrapeAndUpdateSignal() {
   try {
+    // Check if current time is in blocked period (20:00 - 01:00 UTC)
+    if (isInBlockedPeriod()) {
+      Logger.log('Currently in blocked period (20:00-01:00 UTC)');
+      Logger.log('Forcing signal to SELL...');
+      const success = updateSignal('SELL', 1.0);
+      if (success) {
+        Logger.log('Signal forced to SELL successfully');
+      }
+      return success;
+    }
+    
     const targetUrl = 'https://tradersunion.com/currencies/forecast/gold/signals/';
     let url = targetUrl;
     let fetchOptions = {
@@ -1081,14 +1118,97 @@ function createHourlyTrigger() {
     }
   }
   
-  // Run every hour at minute 0 (e.g., 10:00, 11:00, 12:00, ...)
+  // Run every 30 minutes (e.g., 10:00, 10:30, 11:00, 11:30, ...)
   ScriptApp.newTrigger('scrapeAndUpdateSignal')
     .timeBased()
-    .everyHours(1)
-    .nearMinute(0)
+    .everyMinutes(30)
     .create();
     
-  Logger.log('Hourly trigger created (runs at minute 0 of each hour)');
+  Logger.log('Trigger created (runs every 30 minutes)');
+}
+
+// ========================================
+// Scheduled Signal Control (Market Close)
+// ========================================
+
+// Check if current time is in blocked period (20:00 - 01:00 UTC)
+function isInBlockedPeriod() {
+  const now = new Date();
+  const utcHour = now.getUTCHours();
+  
+  // Blocked period: 20:00 UTC to 01:00 UTC (next day)
+  // Hours: 20, 21, 22, 23, 0
+  if (utcHour >= 20 || utcHour < 1) {
+    return true;
+  }
+  
+  return false;
+}
+
+// Force signal to SELL (used during market close hours)
+function forceSellSignal() {
+  try {
+    Logger.log('=== Force SELL Signal (Scheduled) ===');
+    Logger.log('Time: ' + new Date().toISOString());
+    
+    const success = updateSignal('SELL', 1.0);
+    
+    if (success) {
+      Logger.log('Signal forced to SELL successfully');
+    } else {
+      Logger.log('Failed to force SELL signal');
+    }
+    
+    return success;
+    
+  } catch (error) {
+    Logger.log('Force SELL error: ' + error.toString());
+    return false;
+  }
+}
+
+// Create trigger for scheduled signal control
+// - Every 30 minutes: Scrape API (01:00-20:00 UTC) or Force SELL (20:00-01:00 UTC)
+function createScheduledSignalTriggers() {
+  // Delete existing triggers
+  const triggers = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < triggers.length; i++) {
+    const handler = triggers[i].getHandlerFunction();
+    if (handler === 'forceSellSignal' || handler === 'scrapeAndUpdateSignal') {
+      ScriptApp.deleteTrigger(triggers[i]);
+      Logger.log('Deleted existing trigger: ' + handler);
+    }
+  }
+  
+  // Create trigger every 30 minutes
+  // - During 01:00-20:00 UTC: Scrape from API
+  // - During 20:00-01:00 UTC: Force SELL
+  ScriptApp.newTrigger('scrapeAndUpdateSignal')
+    .timeBased()
+    .everyMinutes(30)
+    .create();
+  
+  Logger.log('Created trigger (every 30 minutes)');
+  
+  Logger.log('=== Scheduled Triggers Summary ===');
+  Logger.log('01:00-20:00 UTC: Scrape from API every 30 min');
+  Logger.log('20:00-01:00 UTC: Force SELL every 30 min');
+}
+
+// Delete all scheduled signal triggers
+function deleteScheduledSignalTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let deletedCount = 0;
+  
+  for (let i = 0; i < triggers.length; i++) {
+    const handler = triggers[i].getHandlerFunction();
+    if (handler === 'forceSellSignal' || handler === 'scrapeAndUpdateSignal') {
+      ScriptApp.deleteTrigger(triggers[i]);
+      deletedCount++;
+    }
+  }
+  
+  Logger.log('Deleted ' + deletedCount + ' triggers');
 }
 ```
 
@@ -2870,8 +2990,8 @@ input_api_signal_auto_apply = false  // Manual approval required
 
 **🎉 ขอให้การ implement สำเร็จลุล่วง!**
 
-*Document Version: 1.3*  
-*Last Updated: December 2025*  
+*Document Version: 1.4*  
+*Last Updated: January 2026*  
 *Total Pages: ~110+ sections*  
 *Implementation Time: 5-10 hours (ทั้งหมด)*
 
@@ -2882,4 +3002,5 @@ input_api_signal_auto_apply = false  // Manual approval required
 - ✅ Flexible operation modes (full auto / hybrid / manual)
 - ✅ Comprehensive error handling and logging
 - ✅ Production-tested best practices
+- ✅ Per-account config (cooldowns, version lock) via Authorization API
 

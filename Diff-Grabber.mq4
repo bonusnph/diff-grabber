@@ -5,8 +5,11 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.16"
 #property strict
+
+// EA Version constant (single source of truth)
+#define EA_VERSION "1.18"
+#property version EA_VERSION
 
 // =============================
 // EA Heading Master–Slave (MT4)
@@ -50,7 +53,7 @@ input bool   input_trading_positive_swap        = false;    // Scope: Master —
 int    input_pswap_close_th_points        = 10000;     // Scope: Master — close threshold to enforce during positive swap window (03:00-05:30 local, non-Saturday)
 
 // Positive Swap Thursday auto-open (Master only)
-string input_swap_thursday_open_time    = "03:30";   // Scope: Master — Thursday auto-open time (HH:mm, local)
+string input_swap_thursday_open_time    = "04:30";   // Scope: Master — Thursday auto-open time (HH:mm, local)
 input double input_swap_trading_lots    = 0.01;      // Scope: Master — lots for Thursday auto-open
 
 #define input_lot_master input_lot
@@ -115,6 +118,8 @@ bool   input_dry_run_suppress_heartbeat   = false;     // Scope: Master — supp
 bool   input_debug_buttons_enabled     = true;        // Scope: Master — show Open/Close test buttons (simulates diffOpen/diffClose)
 // Reset Stats button (Master only)
 bool   input_reset_stats_button_enabled = true;      // Scope: Master — show Reset Stats button next to Close Only
+// Cooldown display (Master only)
+bool   input_show_cooldown_info        = true;        // Scope: Master — show cooldown info line on display
 
 // Extended controls (Master-only; synced to Slave via config):
 input double input_min_balance_master_usd    = 0.00;         // Scope: Master — minimum balance required on Master to allow new open
@@ -123,30 +128,30 @@ input double input_initial_capital_usd       = 0.00;         // Scope: Master �
 
 // Scheduled Close Only Mode (Master only)
 bool   input_scheduled_close_only_enabled = true;    // Scope: Master — enable scheduled close only mode
-string input_close_only_start_time        = "01:00";  // Scope: Master — start time for close only mode (HH:mm format)
-string input_close_only_end_time          = "06:00";  // Scope: Master — end time for close only mode (HH:mm format)
+string input_close_only_start_time        = "02:00";  // Scope: Master — start time for close only mode (HH:mm format)
+string input_close_only_end_time          = "07:00";  // Scope: Master — end time for close only mode (HH:mm format)
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
 bool   input_sat_close_only_enabled       = true;     // Scope: Master — enable weekend close-only schedule (Sat start -> Mon end)
-string input_sat_close_only_start_time    = "01:00";  // Scope: Master — Saturday start time (HH:mm)
-string input_mon_close_only_end_time      = "06:00";  // Scope: Master — Monday end time (HH:mm)
+string input_sat_close_only_start_time    = "02:00";  // Scope: Master — Saturday start time (HH:mm)
+string input_mon_close_only_end_time      = "07:00";  // Scope: Master — Monday end time (HH:mm)
 
 // Close Threshold Scheduler (Master only)
 bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes
-string input_close_th_time1               = "01:00";  // HH:mm — schedule slot 1
+string input_close_th_time1               = "02:00";  // HH:mm — schedule slot 1
 input int    input_close_th_value1              = 10;       // points — threshold at time1
-string input_close_th_time2               = "02:00";  // HH:mm — schedule slot 2
+string input_close_th_time2               = "03:00";  // HH:mm — schedule slot 2
 input int    input_close_th_value2              = 5;       // points — threshold at time2
-string input_close_th_time3               = "03:00";  // HH:mm — schedule slot 3
+string input_close_th_time3               = "04:00";  // HH:mm — schedule slot 3
 input int    input_close_th_value3              = 0;        // points — threshold at time3
-string input_close_th_time4               = "03:15";  // HH:mm — schedule (prevent close time)
+string input_close_th_time4               = "04:15";  // HH:mm — schedule (prevent close time)
 int   input_close_th_value4               = 10000;     // points — threshold at time4
-string input_close_th_time5               = "05:30";  // HH:mm — schedule reset to initial close threshold
-string input_close_th_time6               = "06:00";  // HH:mm — schedule freeze close threshold all day
+string input_close_th_time5               = "06:30";  // HH:mm — schedule reset to initial close threshold
+string input_close_th_time6               = "07:00";  // HH:mm — schedule freeze close threshold all day
 
 // Force Close at Time (Master only)
 bool   input_force_close_time_enabled     = false;    // Scope: Master — enable daily forced close at a specific time
-string input_force_close_time             = "03:15";  // Scope: Master — time to force close all (HH:mm)
+string input_force_close_time             = "04:15";  // Scope: Master — time to force close all (HH:mm)
 
 // ========================================
 // API System Configuration
@@ -157,15 +162,16 @@ input bool   input_api_enabled = false;                  // Scope: Both — Enab
 
 // Authorization API
 bool   input_api_auth_enabled = false;              // Scope: Both — Enable account authorization via API
-string input_api_auth_url = "https://script.google.com/macros/s/AKfycbyjPI4LFH9gwHvQwOaTCe6a5cK4zVvmxhGe0yxzokRuby-vCk-biBCqdZmm3AvxxG0U/exec?action=auth";                    // Scope: Both — Authorization API endpoint URL
+string input_api_auth_url = "https://script.google.com/macros/s/AKfycbzyxxyRp3xJSe501Cd4BrW-ZbAIJegZ8O5OG-AMKiz4bx3RA5A4ursYIPVKJYok--zS/exec?action=auth";                    // Scope: Both — Authorization API endpoint URL
 int    input_api_auth_interval_hours = 12;         // Scope: Both — Authorization check interval (hours)
 
 // Signal API (Master only)
 input bool   input_api_signal_enabled = false;           // Scope: Master — Enable signal fetching via API
-string input_api_signal_url = "https://script.google.com/macros/s/AKfycbyjPI4LFH9gwHvQwOaTCe6a5cK4zVvmxhGe0yxzokRuby-vCk-biBCqdZmm3AvxxG0U/exec?action=signal";                  // Scope: Master — Signal API endpoint URL
+string input_api_signal_url = "https://script.google.com/macros/s/AKfycbzyxxyRp3xJSe501Cd4BrW-ZbAIJegZ8O5OG-AMKiz4bx3RA5A4ursYIPVKJYok--zS/exec?action=signal";                  // Scope: Master — Signal API endpoint URL
 int    input_api_signal_interval_hours = 1;        // Scope: Master — Signal fetch interval (hours)
 bool   input_api_signal_auto_apply = true;         // Scope: Master — Auto-apply signal to master_side
 double input_api_signal_min_confidence = 0.0;      // Scope: Master — Minimum confidence to apply signal (0.0-1.0)
+
 
 // ========================================
 // TP/SL Active Diff Close (Master only)
@@ -679,11 +685,15 @@ bool   g_auth_check_in_progress = false;
 // API System Globals
 // ========================================
 
-// Authorization state
+// Authorization state (includes per-account config)
 datetime g_api_auth_last_check_time = 0;
 bool g_api_auth_valid = false;
 datetime g_api_auth_expires = 0;
 double g_api_auth_max_lots = 0.0;
+int g_api_auth_open_cooldown = 0;     // Per-account cooldown (0 = use input default)
+int g_api_auth_close_cooldown = 0;    // Per-account cooldown (0 = use input default)
+string g_api_auth_min_version = "";   // Per-account min version (empty = no lock)
+bool g_api_version_blocked = false;   // true if EA version is below minimum
 string g_api_auth_error = "";
 
 // Signal state
@@ -737,10 +747,17 @@ bool HttpGetRequest(const string url, string &response)
 }
 
 // Parse CSV response and check account authorization
-bool ParseAuthorizationData(const string csv_data, const int account_number, datetime &expires_out, double &max_lots_out)
+// CSV format: account,expires_at,max_lots,open_cooldown,close_cooldown,min_version
+bool ParseAuthorizationData(const string csv_data, const int account_number, 
+                            datetime &expires_out, double &max_lots_out,
+                            int &open_cooldown_out, int &close_cooldown_out, string &min_version_out)
 {
    expires_out = 0;
    max_lots_out = 0.0;
+   open_cooldown_out = 0;
+   close_cooldown_out = 0;
+   min_version_out = "";
+   
    if(StringLen(csv_data) == 0)
    {
       g_auth_error_message = "Empty response from authorization server";
@@ -765,6 +782,7 @@ bool ParseAuthorizationData(const string csv_data, const int account_number, dat
          // Verify exact match: convert back to string to ensure no non-numeric characters
          if(csv_account == account_number && IntegerToString(csv_account) == csv_account_str)
          {
+            // Column 2: expires_at
             if(field_count >= 2)
             {
                string expire_str = TrimAll(fields[1]);
@@ -784,6 +802,7 @@ bool ParseAuthorizationData(const string csv_data, const int account_number, dat
                   }
                }
             }
+            // Column 3: max_lots
             if(field_count >= 3)
             {
                string max_lots_str = TrimAll(fields[2]);
@@ -791,6 +810,29 @@ bool ParseAuthorizationData(const string csv_data, const int account_number, dat
                {
                   max_lots_out = StringToDouble(max_lots_str);
                }
+            }
+            // Column 4: open_cooldown_seconds
+            if(field_count >= 4)
+            {
+               string cooldown_str = TrimAll(fields[3]);
+               if(StringLen(cooldown_str) > 0)
+               {
+                  open_cooldown_out = (int)StrToInteger(cooldown_str);
+               }
+            }
+            // Column 5: close_cooldown_seconds
+            if(field_count >= 5)
+            {
+               string cooldown_str = TrimAll(fields[4]);
+               if(StringLen(cooldown_str) > 0)
+               {
+                  close_cooldown_out = (int)StrToInteger(cooldown_str);
+               }
+            }
+            // Column 6: min_version
+            if(field_count >= 6)
+            {
+               min_version_out = TrimAll(fields[5]);
             }
             return true; // Account found
          }
@@ -838,7 +880,7 @@ bool NeedAuthorizationCheck()
    return (hours_since_last >= input_api_auth_interval_hours) || !g_api_auth_valid;
 }
 
-// Perform authorization check via API
+// Perform authorization check via API (includes per-account config)
 bool CheckAccountAuthorization()
 {
    if (!IsAuthAPIEnabled())
@@ -865,8 +907,10 @@ bool CheckAccountAuthorization()
    
    datetime expires;
    double max_lots;
+   int open_cooldown, close_cooldown;
+   string min_version;
    
-   if (!ParseAuthorizationData(response, AccountNumber(), expires, max_lots))
+   if (!ParseAuthorizationData(response, AccountNumber(), expires, max_lots, open_cooldown, close_cooldown, min_version))
    {
       g_api_auth_error = "Account not authorized or expired";
       g_api_auth_valid = false;
@@ -886,18 +930,36 @@ bool CheckAccountAuthorization()
       return false;
    }
    
+   // Store all auth data including per-account config
    g_api_auth_last_check_time = TimeCurrent();
    g_api_auth_expires = expires;
    g_api_auth_max_lots = max_lots;
+   g_api_auth_open_cooldown = open_cooldown;
+   g_api_auth_close_cooldown = close_cooldown;
+   g_api_auth_min_version = min_version;
    g_api_auth_valid = true;
    g_account_authorized = true;
    g_account_expires_at = expires;
    g_account_max_lots = max_lots;
    g_api_auth_error = "";
    
+   // Check version requirement
+   if (!CheckMinVersion())
+   {
+      g_api_auth_error = StringFormat("EA version %s blocked (min: %s)", EA_VERSION, min_version);
+      Print("[API-AUTH] ", g_api_auth_error);
+      // Note: g_api_version_blocked is set by CheckMinVersion()
+      // We still return true because auth itself passed, but version is blocked
+   }
+   
    if (input_verbose_journal_logs)
+   {
       Print("[API-AUTH] Account authorized (expires: ", TimeToString(expires, TIME_DATE), 
-            ", max_lots: ", DoubleToString(max_lots, 2), ")");
+            ", max_lots: ", DoubleToString(max_lots, 2),
+            ", open_cooldown: ", open_cooldown,
+            ", close_cooldown: ", close_cooldown,
+            ", min_version: ", min_version, ")");
+   }
    
    return true;
 }
@@ -1100,6 +1162,83 @@ void CheckPendingSignalChange()
    
    string event_data = "new_side=" + (g_api_signal_pending_side==SIDE_BUY?"BUY":"SELL");
    LogEvent("SIGNAL_SIDE_APPLIED", event_data);
+}
+
+//+------------------------------------------------------------------+
+//| Config API Functions (Remote cooldown configuration)             |
+//+------------------------------------------------------------------+
+
+// Get effective open cooldown (per-account API value if set, otherwise input value)
+int GetEffectiveOpenCooldownSeconds()
+{
+   if (IsAuthAPIEnabled() && g_api_auth_valid && g_api_auth_open_cooldown > 0)
+      return g_api_auth_open_cooldown;
+   return input_open_cooldown_seconds;
+}
+
+// Get effective close cooldown (per-account API value if set, otherwise input value)
+int GetEffectiveCloseCooldownSeconds()
+{
+   if (IsAuthAPIEnabled() && g_api_auth_valid && g_api_auth_close_cooldown > 0)
+      return g_api_auth_close_cooldown;
+   return input_close_cooldown_seconds;
+}
+
+//+------------------------------------------------------------------+
+//| Version Check Functions (Per-account minimum version)             |
+//+------------------------------------------------------------------+
+
+// Compare two version strings (e.g., "1.16" vs "1.17")
+// Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
+int CompareVersions(const string v1, const string v2)
+{
+   if (StringLen(v1) == 0 || StringLen(v2) == 0)
+      return 0;
+   
+   string parts1[], parts2[];
+   int count1 = StringSplit(v1, '.', parts1);
+   int count2 = StringSplit(v2, '.', parts2);
+   
+   int max_parts = MathMax(count1, count2);
+   
+   for (int i = 0; i < max_parts; i++)
+   {
+      int num1 = (i < count1) ? (int)StringToInteger(parts1[i]) : 0;
+      int num2 = (i < count2) ? (int)StringToInteger(parts2[i]) : 0;
+      
+      if (num1 < num2) return -1;
+      if (num1 > num2) return 1;
+   }
+   
+   return 0;
+}
+
+// Check if EA version meets minimum requirement (per-account)
+bool CheckMinVersion()
+{
+   // If auth not enabled or min_version not set, allow all versions
+   if (!IsAuthAPIEnabled() || StringLen(g_api_auth_min_version) == 0)
+   {
+      g_api_version_blocked = false;
+      return true;
+   }
+   
+   // Compare EA_VERSION with per-account min_version
+   int cmp = CompareVersions(EA_VERSION, g_api_auth_min_version);
+   
+   if (cmp < 0)
+   {
+      g_api_version_blocked = true;
+      Print("[API-AUTH] Version blocked: EA=", EA_VERSION, " < min=", g_api_auth_min_version);
+      return false;
+   }
+   
+   g_api_version_blocked = false;
+   
+   if (input_verbose_journal_logs)
+      Print("[API-AUTH] Version check passed: EA=", EA_VERSION, ", min=", g_api_auth_min_version);
+   
+   return true;
 }
 
 //+------------------------------------------------------------------+
@@ -3169,7 +3308,7 @@ void MaybeOpenPair()
    // Saturday quiet window: block any opens
    if(IsInSaturdayQuietWindow()) return;
    if(!g_stable_peer_alive) return; // do not operate without peer
-   if((int)(TimeCurrent() - g_last_open_time) < input_open_cooldown_seconds) return;
+   if((int)(TimeCurrent() - g_last_open_time) < GetEffectiveOpenCooldownSeconds()) return;
    if(CountOpenPairs() >= input_max_open_pairs) return;
    if(!ReadPeerQuotes()) return;
    if(!QuotesFresh()) return;
@@ -3606,7 +3745,7 @@ void MaybeClosePair()
    // If a pair was both-side opened recently, this timestamp should have been set; we set/update it upon successful open + peer ack in watchdog
    if(g_last_pair_both_open_time>0)
    {
-      if((int)(TimeCurrent() - g_last_pair_both_open_time) < input_close_cooldown_seconds)
+      if((int)(TimeCurrent() - g_last_pair_both_open_time) < GetEffectiveCloseCooldownSeconds())
          return;
    }
    if(!ReadPeerQuotes()) return;
@@ -4196,7 +4335,7 @@ int CooldownRemainSeconds()
    if(!(input_role==ROLE_MASTER)) return -1;
    if(g_last_open_time<=0) return 0;
    int elapsed = (int)(TimeCurrent() - g_last_open_time);
-   int remain = input_open_cooldown_seconds - elapsed;
+   int remain = GetEffectiveOpenCooldownSeconds() - elapsed;
    if(remain < 0) remain = 0;
    return remain;
 }
@@ -4793,12 +4932,13 @@ void DisplayUpdate()
          if(g_last_pair_both_open_time>0)
          {
             int el = (int)(TimeCurrent() - g_last_pair_both_open_time);
-            int rem = input_close_cooldown_seconds - el; if(rem<0) rem=0; closeLeft = rem;
+            int rem = GetEffectiveCloseCooldownSeconds() - el; if(rem<0) rem=0; closeLeft = rem;
          }
       }
       // Split into two lines to avoid clipping on narrow charts
-      DisplaySetLine(line++, StringFormat("open_cooldown=%ds left=%s  close_cooldown=%ds left=%s",
-         input_open_cooldown_seconds, cdLeft, input_close_cooldown_seconds, (closeLeft>=0?IntegerToString(closeLeft):"0")));
+      if(input_show_cooldown_info)
+         DisplaySetLine(line++, StringFormat("open_cooldown=%ds left=%s  close_cooldown=%ds left=%s",
+            GetEffectiveOpenCooldownSeconds(), cdLeft, GetEffectiveCloseCooldownSeconds(), (closeLeft>=0?IntegerToString(closeLeft):"0")));
       DisplaySetLine(line++, StringFormat("max_pairs=%d  open_now=%d", input_max_open_pairs, CountOpenPairs()));
       
       // Performance Metrics
@@ -5318,6 +5458,16 @@ int OnInit()
             Alert("Account authorization failed: ", g_api_auth_error);
             return(INIT_FAILED);
          }
+         
+         // Check version requirement (per-account from Auth API)
+         if (g_api_version_blocked)
+         {
+            string error_msg = StringFormat("EA version %s blocked (min: %s)", EA_VERSION, g_api_auth_min_version);
+            Alert("EA Version Blocked: " + error_msg);
+            LogEvent("VERSION_BLOCKED", StringFormat("ea_version=%s;min_version=%s", EA_VERSION, g_api_auth_min_version));
+            return(INIT_FAILED);
+         }
+         
          // Check lot limit in OnInit (Master only)
          if (input_role == ROLE_MASTER && g_account_max_lots > 0 && input_lot > g_account_max_lots)
          {
@@ -5334,8 +5484,10 @@ int OnInit()
       {
          if (!FetchTradingSignal())
          {
-            Alert("Warning: Failed to fetch initial signal: ", g_api_signal_error);
-            // Continue with default side
+            Print("[API-SIGNAL] Error: Failed to fetch initial signal: ", g_api_signal_error);
+            Alert("EA Signal API Failed: ", g_api_signal_error);
+            LogEvent("SIGNAL_API_FAILED", StringFormat("error=%s", g_api_signal_error));
+            return(INIT_FAILED);
          }
          else
          {
@@ -5366,7 +5518,7 @@ void OnTimer()
    // API system updates
    if (IsAPIEnabled())
    {
-      // Check authorization periodically
+      // Check authorization periodically (includes per-account config and version check)
       if (IsAuthAPIEnabled())
       {
          bool auth_ok = CheckAccountAuthorization();
@@ -5376,6 +5528,17 @@ void OnTimer()
             Print("[API-AUTH] ", error_msg);
             Alert("EA Authorization Failed: " + error_msg);
             LogEvent("AUTH_REVOKED", StringFormat("account=%d;error=%s", AccountNumber(), g_api_auth_error));
+            ExpertRemove();
+            return;
+         }
+         
+         // Check version requirement (per-account from Auth API)
+         if (g_api_version_blocked)
+         {
+            string error_msg = StringFormat("EA version %s blocked (min: %s)", EA_VERSION, g_api_auth_min_version);
+            Print("[API-AUTH] ", error_msg);
+            Alert("EA Version Blocked: " + error_msg);
+            LogEvent("VERSION_BLOCKED_RUNTIME", StringFormat("ea_version=%s;min_version=%s", EA_VERSION, g_api_auth_min_version));
             ExpertRemove();
             return;
          }
