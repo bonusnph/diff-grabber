@@ -3573,6 +3573,12 @@ void MaybeClosePair()
    // Check if diff close is blocked by TP/SL conditions
    if (IsDiffCloseBlocked())
    {
+      // Reset confirmation state to prevent accumulation across blocked ticks
+      g_close_pending = false;
+      g_close_ok_count = 0;
+      g_raw_close_pending = false;
+      g_raw_close_stable_count = 0;
+      
       if (input_verbose_journal_logs && (g_diff_close_blocked_by_tp || g_diff_close_blocked_by_sl))
       {
          string reason = "";
