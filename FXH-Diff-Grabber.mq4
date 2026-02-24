@@ -8,7 +8,7 @@
 #property strict
 
 // EA Version constant (single source of truth)
-#define EA_VERSION "1.18"
+#define EA_VERSION "1.19"
 #property version EA_VERSION
 
 // =============================
@@ -5441,6 +5441,13 @@ int OnInit()
             ApplySignalToMasterSide();
          }
       }
+   }
+   // When API auth is enabled, start both cooldowns immediately from init
+   // (also resets on EA input change since OnInit is re-invoked)
+   if (IsAuthAPIEnabled())
+   {
+      g_last_open_time = TimeCurrent();
+      g_last_pair_both_open_time = TimeCurrent();
    }
    
    if(!AcquireRoleLock()) { g_role_conflict = true; }

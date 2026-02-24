@@ -8,7 +8,7 @@
 #property strict
 
 // EA Version constant (single source of truth)
-#define EA_VERSION "1.18"
+#define EA_VERSION "1.19"
 #property version EA_VERSION
 
 // =============================
@@ -128,30 +128,30 @@ input double input_initial_capital_usd       = 0.00;         // Scope: Master �
 
 // Scheduled Close Only Mode (Master only)
 bool   input_scheduled_close_only_enabled = true;    // Scope: Master — enable scheduled close only mode
-string input_close_only_start_time        = "02:00";  // Scope: Master — start time for close only mode (HH:mm format)
+string input_close_only_start_time        = "03:00";  // Scope: Master — start time for close only mode (HH:mm format)
 string input_close_only_end_time          = "07:00";  // Scope: Master — end time for close only mode (HH:mm format)
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
 bool   input_sat_close_only_enabled       = true;     // Scope: Master — enable weekend close-only schedule (Sat start -> Mon end)
-string input_sat_close_only_start_time    = "02:00";  // Scope: Master — Saturday start time (HH:mm)
+string input_sat_close_only_start_time    = "03:00";  // Scope: Master — Saturday start time (HH:mm)
 string input_mon_close_only_end_time      = "07:00";  // Scope: Master — Monday end time (HH:mm)
 
 // Close Threshold Scheduler (Master only)
 bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes
-string input_close_th_time1               = "02:00";  // HH:mm — schedule slot 1
-input int    input_close_th_value1              = 10;       // points — threshold at time1
-string input_close_th_time2               = "03:00";  // HH:mm — schedule slot 2
-input int    input_close_th_value2              = 5;       // points — threshold at time2
-string input_close_th_time3               = "04:00";  // HH:mm — schedule slot 3
-input int    input_close_th_value3              = 0;        // points — threshold at time3
-string input_close_th_time4               = "04:15";  // HH:mm — schedule (prevent close time)
+string input_close_th_time1               = "03:00";  // HH:mm — schedule slot 1
+int    input_close_th_value1              = 10;       // points — threshold at time1
+string input_close_th_time2               = "03:20";  // HH:mm — schedule slot 2
+int    input_close_th_value2              = 5;       // points — threshold at time2
+string input_close_th_time3               = "03:40";  // HH:mm — schedule slot 3
+int    input_close_th_value3              = 0;        // points — threshold at time3
+string input_close_th_time4               = "04:00";  // HH:mm — schedule (prevent close time)
 int   input_close_th_value4               = 10000;     // points — threshold at time4
 string input_close_th_time5               = "06:30";  // HH:mm — schedule reset to initial close threshold
 string input_close_th_time6               = "07:00";  // HH:mm — schedule freeze close threshold all day
 
 // Force Close at Time (Master only)
 bool   input_force_close_time_enabled     = false;    // Scope: Master — enable daily forced close at a specific time
-string input_force_close_time             = "04:15";  // Scope: Master — time to force close all (HH:mm)
+string input_force_close_time             = "03:45";  // Scope: Master — time to force close all (HH:mm)
 
 // ========================================
 // API System Configuration
@@ -176,10 +176,10 @@ double input_api_signal_min_confidence = 0.0;      // Scope: Master — Minimum 
 // ========================================
 // TP/SL Active Diff Close (Master only)
 // ========================================
-input bool   input_tp_active_diff_close_enabled = false; // Scope: Master — Enable TP for active diff close
-input int    input_tp_active_diff_close_points = 50;     // Scope: Master — TP points threshold to activate diff close
-input bool   input_sl_active_diff_close_enabled = false; // Scope: Master — Enable SL for active diff close
-input int    input_sl_active_diff_close_points = 30;     // Scope: Master — SL points threshold to activate diff close
+bool   input_tp_active_diff_close_enabled = false; // Scope: Master — Enable TP for active diff close
+int    input_tp_active_diff_close_points = 50;     // Scope: Master — TP points threshold to activate diff close
+bool   input_sl_active_diff_close_enabled = false; // Scope: Master — Enable SL for active diff close
+int    input_sl_active_diff_close_points = 30;     // Scope: Master — SL points threshold to activate diff close
 
 // -----------------------------
 // Globals
@@ -5494,6 +5494,13 @@ int OnInit()
             ApplySignalToMasterSide();
          }
       }
+   }
+   // When API auth is enabled, start both cooldowns immediately from init
+   // (also resets on EA input change since OnInit is re-invoked)
+   if (IsAuthAPIEnabled())
+   {
+      g_last_open_time = TimeCurrent();
+      g_last_pair_both_open_time = TimeCurrent();
    }
    if(!AcquireRoleLock()) { g_role_conflict = true; }
    DisplayInit();
