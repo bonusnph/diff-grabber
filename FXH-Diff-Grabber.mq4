@@ -8,7 +8,7 @@
 #property strict
 
 // EA Version constant (single source of truth)
-#define EA_VERSION "1.23"
+#define EA_VERSION "1.24"
 #property version EA_VERSION
 
 // =============================
@@ -171,6 +171,7 @@ string input_api_signal_url = "https://script.google.com/macros/s/AKfycbzC_H3jax
 int    input_api_signal_interval_hours = 1;        // Scope: Master — Signal fetch interval (hours)
 bool   input_api_signal_auto_apply = true;         // Scope: Master — Auto-apply signal to master_side
 double input_api_signal_min_confidence = 0.0;      // Scope: Master — Minimum confidence to apply signal (0.0-1.0)
+bool   input_api_signal_auto_detect_side = true;   // Scope: Master — Auto-detect master side from existing orders on init
 
 // Fast Polling (Signal only — auth stays at original interval)
 input bool   input_api_fast_polling = false;              // Scope: Master — Enable fast signal polling
@@ -5509,6 +5510,30 @@ int OnInit()
    g_magic  = input_magic_number_base + (int)StringGetCharacter(input_channel_id, 0);
    // Initialize effective master side from input
    g_effective_master_side = input_master_side;
+
+   if (input_role == ROLE_MASTER && input_api_signal_auto_detect_side)
+   {
+      int buy_count = 0, sell_count = 0;
+      for (int i = OrdersTotal() - 1; i >= 0; --i)
+      {
+         if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+         if (OrderSymbol() != g_symbol || OrderMagicNumber() != g_magic) continue;
+         if (OrderType() == OP_BUY) buy_count++;
+         else if (OrderType() == OP_SELL) sell_count++;
+      }
+      if (buy_count > 0 && sell_count == 0)
+      {
+         g_effective_master_side = SIDE_BUY;
+         if (input_verbose_journal_logs)
+            Print("[INIT] Auto-detected master side: BUY (", buy_count, " orders)");
+      }
+      else if (sell_count > 0 && buy_count == 0)
+      {
+         g_effective_master_side = SIDE_SELL;
+         if (input_verbose_journal_logs)
+            Print("[INIT] Auto-detected master side: SELL (", sell_count, " orders)");
+      }
+   }
 
    // Initialize dynamic thresholds
    g_open_threshold_initial = input_open_threshold_points;
