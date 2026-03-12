@@ -783,6 +783,7 @@ void MaybeClosePair()
 const SHEET_ID = 'YOUR_GOOGLE_SHEET_ID_HERE';
 const AUTH_SHEET_NAME = 'Authorization';
 const SIGNAL_SHEET_NAME = 'Signals';
+const EXTERNAL_SIGNAL_SHEET_NAME = 'Signals';
 
 // ScraperAPI Configuration (required for bypassing Cloudflare)
 // Sign up at: https://www.scraperapi.com (Free: 1000 requests/month)
@@ -852,8 +853,11 @@ function handleSignalRequest(e) {
       return createErrorResponse('No signal data available');
     }
     
-    let csvContent = data[0].join(',') + '\n';
-    csvContent += data[1].join(',') + '\n';
+    // Return only columns A-D (signal, timestamp, confidence, source)
+    // Exclude config columns E-F (ext_override, ext_sheet_id)
+    const maxCols = Math.min(data[0].length, 4);
+    let csvContent = data[0].slice(0, maxCols).join(',') + '\n';
+    csvContent += data[1].slice(0, maxCols).join(',') + '\n';
     
     return ContentService
       .createTextOutput(csvContent)
@@ -874,9 +878,118 @@ function createErrorResponse(message) {
 }
 
 // ========================================
+// Extract Sheet ID from URL or raw ID
+// ========================================
+function extractSheetIdFromUrl(input) {
+  if (!input || input.toString().trim() === '') {
+    return null;
+  }
+  
+  const str = input.toString().trim();
+  
+  const match = str.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  
+  if (!str.includes('/')) {
+    return str;
+  }
+  
+  return null;
+}
+
+// ========================================
+// Read External Override Config from Main Sheet
+// ========================================
+function getExternalOverrideConfig() {
+  try {
+    const sheet = SpreadsheetApp.openById(SHEET_ID).getSheetByName(SIGNAL_SHEET_NAME);
+    if (!sheet) return { enabled: false };
+    
+    const extOverride = sheet.getRange(2, 5).getValue();
+    const extSheetRaw = sheet.getRange(2, 6).getValue();
+    
+    return {
+      enabled: (extOverride === true || extOverride.toString().toUpperCase() === 'TRUE'),
+      sheetId: extractSheetIdFromUrl(extSheetRaw)
+    };
+  } catch (error) {
+    Logger.log('[EXT] Failed to read config: ' + error.toString());
+    return { enabled: false };
+  }
+}
+
+// ========================================
+// Fetch Signal from External Google Sheet
+// ========================================
+function fetchExternalSignal() {
+  try {
+    const config = getExternalOverrideConfig();
+    
+    if (!config.enabled) {
+      Logger.log('[EXT] External override is disabled');
+      return null;
+    }
+    
+    if (!config.sheetId) {
+      Logger.log('[EXT] External sheet ID is empty or invalid');
+      return null;
+    }
+    
+    Logger.log('[EXT] Fetching from external sheet: ' + config.sheetId);
+    
+    const extSpreadsheet = SpreadsheetApp.openById(config.sheetId);
+    const extSheet = extSpreadsheet.getSheetByName(EXTERNAL_SIGNAL_SHEET_NAME);
+    
+    if (!extSheet) {
+      Logger.log('[EXT] Sheet "' + EXTERNAL_SIGNAL_SHEET_NAME + '" not found');
+      return null;
+    }
+    
+    const data = extSheet.getDataRange().getValues();
+    
+    if (data.length < 2) {
+      Logger.log('[EXT] No data rows in external sheet');
+      return null;
+    }
+    
+    const row = data[1];
+    const signal = row[0] ? row[0].toString().trim().toUpperCase() : '';
+    const timestamp = row[1] ? row[1].toString().trim() : new Date().toISOString();
+    const confidence = row[2] ? parseFloat(row[2]) : 1.0;
+    const active = row[3];
+    
+    const isActive = (active === true || (active && active.toString().toUpperCase() === 'TRUE'));
+    
+    if (!isActive) {
+      Logger.log('[EXT] Expert is offline (active = FALSE)');
+      return null;
+    }
+    
+    if (signal !== 'BUY' && signal !== 'SELL') {
+      Logger.log('[EXT] Invalid signal: "' + signal + '"');
+      return null;
+    }
+    
+    Logger.log('[EXT] Signal: ' + signal + ' (confidence: ' + confidence + ')');
+    
+    return {
+      signal: signal,
+      timestamp: timestamp,
+      confidence: isNaN(confidence) ? 1.0 : confidence
+    };
+    
+  } catch (error) {
+    Logger.log('[EXT] Error: ' + error.toString());
+    return null;
+  }
+}
+
+// ========================================
 // Update Signal (Manual/Programmatic)
 // ========================================
-function updateSignal(signal, confidence) {
+function updateSignal(signal, confidence, source) {
   try {
     if (signal !== 'BUY' && signal !== 'SELL') {
       throw new Error('Invalid signal: ' + signal);
@@ -888,8 +1001,9 @@ function updateSignal(signal, confidence) {
     sheet.getRange(2, 1).setValue(signal);
     sheet.getRange(2, 2).setValue(timestamp);
     sheet.getRange(2, 3).setValue(confidence || 1.0);
+    sheet.getRange(2, 4).setValue(source || 'AUTO');
     
-    Logger.log('Signal updated: ' + signal);
+    Logger.log('Signal updated: ' + signal + ' (source: ' + (source || 'AUTO') + ')');
     return true;
     
   } catch (error) {
@@ -899,21 +1013,34 @@ function updateSignal(signal, confidence) {
 }
 
 // ========================================
-// Auto-update from TradersUnion Gold Signals
+// Auto-update with External Signal Proxy
 // ========================================
 function scrapeAndUpdateSignal() {
   try {
-    // Check if current time is in blocked period (20:00 - 01:00 UTC)
+    // Step 1: Check external override
+    const extSignal = fetchExternalSignal();
+    
+    if (extSignal) {
+      const success = updateSignal(extSignal.signal, extSignal.confidence, 'EXTERNAL');
+      if (success) {
+        Logger.log('[EXT] Signal overridden: ' + extSignal.signal);
+      }
+      return success;
+    }
+    
+    Logger.log('[AUTO] Fallback to auto-scrape');
+    
+    // Step 2: Blocked period check
     if (isInBlockedPeriod()) {
       Logger.log('Currently in blocked period (20:00-01:00 UTC)');
-      Logger.log('Forcing signal to SELL...');
-      const success = updateSignal('SELL', 1.0);
+      const success = updateSignal('SELL', 1.0, 'AUTO');
       if (success) {
         Logger.log('Signal forced to SELL successfully');
       }
       return success;
     }
     
+    // Step 3: Scrape from TradersUnion
     const targetUrl = 'https://tradersunion.com/currencies/forecast/gold/signals/';
     let url = targetUrl;
     let fetchOptions = {
@@ -922,22 +1049,18 @@ function scrapeAndUpdateSignal() {
       followRedirects: true
     };
     
-    // Use ScraperAPI if enabled (bypasses Cloudflare)
     if (USE_SCRAPER_API) {
       if (!SCRAPER_API_KEY || SCRAPER_API_KEY === '') {
         Logger.log('ERROR: ScraperAPI enabled but API key is missing!');
-        Logger.log('Get your API key at: https://www.scraperapi.com/signup');
         return false;
       }
       
-      // Build ScraperAPI URL
       url = 'https://api.scraperapi.com/?api_key=' + SCRAPER_API_KEY + 
             '&url=' + encodeURIComponent(targetUrl) +
-            '&render=false';  // Set to true if need JavaScript rendering
+            '&render=false';
       
       Logger.log('Using ScraperAPI to bypass Cloudflare...');
     } else {
-      // Direct fetch (may be blocked by Cloudflare)
       fetchOptions.headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -947,7 +1070,6 @@ function scrapeAndUpdateSignal() {
       Logger.log('Fetching directly (no ScraperAPI)...');
     }
     
-    // Fetch webpage content
     const response = UrlFetchApp.fetch(url, fetchOptions);
     const statusCode = response.getResponseCode();
     
@@ -955,8 +1077,7 @@ function scrapeAndUpdateSignal() {
       Logger.log('HTTP Error: ' + statusCode);
       
       if (statusCode === 403 && !USE_SCRAPER_API) {
-        Logger.log('⚠️ Blocked by Cloudflare! Consider enabling ScraperAPI.');
-        Logger.log('Set USE_SCRAPER_API = true and add your API key.');
+        Logger.log('Blocked by Cloudflare! Consider enabling ScraperAPI.');
       }
       
       return false;
@@ -964,14 +1085,11 @@ function scrapeAndUpdateSignal() {
     
     const html = response.getContentText();
     
-    // Check if we got Cloudflare challenge page
     if (html.includes('Attention Required') && html.includes('Cloudflare')) {
-      Logger.log('⚠️ Cloudflare challenge detected!');
-      Logger.log('Enable ScraperAPI to bypass: Set USE_SCRAPER_API = true');
+      Logger.log('Cloudflare challenge detected!');
       return false;
     }
     
-    // Parse signal from HTML
     const signal = parseSignalFromHTML(html);
     
     if (!signal) {
@@ -979,18 +1097,17 @@ function scrapeAndUpdateSignal() {
       return false;
     }
     
-    // Update signal with default confidence 0.85
     const confidence = 0.85;
-    updateSignal(signal, confidence);
+    updateSignal(signal, confidence, 'AUTO');
     
-    Logger.log('✅ Signal updated successfully: ' + signal);
+    Logger.log('Signal updated successfully: ' + signal);
     return true;
     
   } catch (error) {
     Logger.log('Scrape error: ' + error.toString());
     
     if (error.toString().includes('429')) {
-      Logger.log('⚠️ Rate limit exceeded. Wait before trying again.');
+      Logger.log('Rate limit exceeded. Wait before trying again.');
     }
     
     return false;
@@ -1012,22 +1129,22 @@ function parseSignalFromHTML(html) {
     
     if (match && match[1]) {
       let signalText = match[1].trim();
-      Logger.log('[Method 1] ✅ Found text: "' + signalText + '"');
+      Logger.log('[Method 1] Found text: "' + signalText + '"');
       Logger.log('[Method 1] Context (150 chars): "' + match[0].substring(0, 150) + '..."');
       
       let signalUpper = signalText.toUpperCase();
       
       if (signalUpper.includes('BUY')) {
-        Logger.log('[Method 1] Parsed: BUY → Returning: SELL (swapped)');
+        Logger.log('[Method 1] Parsed: BUY -> Returning: SELL (swapped)');
         return 'SELL';
       } else if (signalUpper.includes('SELL')) {
-        Logger.log('[Method 1] Parsed: SELL → Returning: BUY (swapped)');
+        Logger.log('[Method 1] Parsed: SELL -> Returning: BUY (swapped)');
         return 'BUY';
       } else {
-        Logger.log('[Method 1] ⚠️ No BUY/SELL in text: "' + signalText + '"');
+        Logger.log('[Method 1] No BUY/SELL in text: "' + signalText + '"');
       }
     } else {
-      Logger.log('[Method 1] ❌ No match');
+      Logger.log('[Method 1] No match');
     }
     
     // Method 2: Broader search for ALL ta-wg__summary-body
@@ -1045,10 +1162,10 @@ function parseSignalFromHTML(html) {
         let textUpper = text.toUpperCase();
         
         if (textUpper.includes('BUY')) {
-          Logger.log('[Method 2.' + count + '] ✅ Parsed: BUY → Returning: SELL (swapped)');
+          Logger.log('[Method 2.' + count + '] Parsed: BUY -> Returning: SELL (swapped)');
           return 'SELL';
         } else if (textUpper.includes('SELL')) {
-          Logger.log('[Method 2.' + count + '] ✅ Parsed: SELL → Returning: BUY (swapped)');
+          Logger.log('[Method 2.' + count + '] Parsed: SELL -> Returning: BUY (swapped)');
           return 'BUY';
         }
       }
@@ -1072,32 +1189,31 @@ function parseSignalFromHTML(html) {
       if (hasBuy && hasSell) {
         const buyPos = chunkUpper.indexOf('BUY');
         const sellPos = chunkUpper.indexOf('SELL');
-        Logger.log('[Method 3] ⚠️ BOTH found - BUY@' + buyPos + ', SELL@' + sellPos);
+        Logger.log('[Method 3] BOTH found - BUY@' + buyPos + ', SELL@' + sellPos);
         
         if (buyPos < sellPos) {
-          Logger.log('[Method 3] Using BUY (first) → Returning: SELL (swapped)');
+          Logger.log('[Method 3] Using BUY (first) -> Returning: SELL (swapped)');
           return 'SELL';
         } else {
-          Logger.log('[Method 3] Using SELL (first) → Returning: BUY (swapped)');
+          Logger.log('[Method 3] Using SELL (first) -> Returning: BUY (swapped)');
           return 'BUY';
         }
       } else if (hasBuy) {
-        Logger.log('[Method 3] ✅ Parsed: BUY → Returning: SELL (swapped)');
+        Logger.log('[Method 3] Parsed: BUY -> Returning: SELL (swapped)');
         return 'SELL';
       } else if (hasSell) {
-        Logger.log('[Method 3] ✅ Parsed: SELL → Returning: BUY (swapped)');
+        Logger.log('[Method 3] Parsed: SELL -> Returning: BUY (swapped)');
         return 'BUY';
       } else {
-        Logger.log('[Method 3] ❌ No BUY/SELL in context');
+        Logger.log('[Method 3] No BUY/SELL in context');
       }
     } else {
-      Logger.log('[Method 3] ❌ "Forecast:" not found');
+      Logger.log('[Method 3] "Forecast:" not found');
     }
     
-    // Debug: Show HTML preview
-    Logger.log('\n⚠️ All methods failed!');
+    Logger.log('\nAll methods failed!');
     Logger.log('HTML preview (first 800 chars):\n' + html.substring(0, 800));
-    Logger.log('\n❌ No signal found');
+    Logger.log('\nNo signal found');
     
     return null;
     
@@ -1118,7 +1234,6 @@ function createHourlyTrigger() {
     }
   }
   
-  // Run every 30 minutes (e.g., 10:00, 10:30, 11:00, 11:30, ...)
   ScriptApp.newTrigger('scrapeAndUpdateSignal')
     .timeBased()
     .everyMinutes(30)
@@ -1131,13 +1246,10 @@ function createHourlyTrigger() {
 // Scheduled Signal Control (Market Close)
 // ========================================
 
-// Check if current time is in blocked period (20:00 - 01:00 UTC)
 function isInBlockedPeriod() {
   const now = new Date();
   const utcHour = now.getUTCHours();
   
-  // Blocked period: 20:00 UTC to 01:00 UTC (next day)
-  // Hours: 20, 21, 22, 23, 0
   if (utcHour >= 20 || utcHour < 1) {
     return true;
   }
@@ -1145,13 +1257,12 @@ function isInBlockedPeriod() {
   return false;
 }
 
-// Force signal to SELL (used during market close hours)
 function forceSellSignal() {
   try {
     Logger.log('=== Force SELL Signal (Scheduled) ===');
     Logger.log('Time: ' + new Date().toISOString());
     
-    const success = updateSignal('SELL', 1.0);
+    const success = updateSignal('SELL', 1.0, 'AUTO');
     
     if (success) {
       Logger.log('Signal forced to SELL successfully');
@@ -1167,10 +1278,7 @@ function forceSellSignal() {
   }
 }
 
-// Create trigger for scheduled signal control
-// - Every 30 minutes: Scrape API (01:00-20:00 UTC) or Force SELL (20:00-01:00 UTC)
 function createScheduledSignalTriggers() {
-  // Delete existing triggers
   const triggers = ScriptApp.getProjectTriggers();
   for (let i = 0; i < triggers.length; i++) {
     const handler = triggers[i].getHandlerFunction();
@@ -1180,22 +1288,17 @@ function createScheduledSignalTriggers() {
     }
   }
   
-  // Create trigger every 30 minutes
-  // - During 01:00-20:00 UTC: Scrape from API
-  // - During 20:00-01:00 UTC: Force SELL
   ScriptApp.newTrigger('scrapeAndUpdateSignal')
     .timeBased()
     .everyMinutes(30)
     .create();
   
   Logger.log('Created trigger (every 30 minutes)');
-  
   Logger.log('=== Scheduled Triggers Summary ===');
-  Logger.log('01:00-20:00 UTC: Scrape from API every 30 min');
+  Logger.log('01:00-20:00 UTC: Scrape/External every 30 min');
   Logger.log('20:00-01:00 UTC: Force SELL every 30 min');
 }
 
-// Delete all scheduled signal triggers
 function deleteScheduledSignalTriggers() {
   const triggers = ScriptApp.getProjectTriggers();
   let deletedCount = 0;
@@ -1449,14 +1552,26 @@ Scrape error: Exception: Request failed for https://... returned code 403
 
 **ชื่อ Sheet**: `Signals`
 
-| A | B | C |
-|---|---|---|
-| signal | timestamp | confidence |
-| BUY | 2025-12-01T10:30:00Z | 0.85 |
+| A | B | C | D | E | F |
+|---|---|---|---|---|---|
+| signal | timestamp | confidence | source | ext_override | ext_sheet_id |
+| BUY | 2025-12-01T10:30:00Z | 0.85 | AUTO | FALSE | |
+
+**คำอธิบายคอลัมน์:**
+| คอลัมน์ | ชื่อ | คำอธิบาย | ค่าที่รองรับ |
+|---------|------|----------|-------------|
+| A | signal | สัญญาณเทรด | `BUY` หรือ `SELL` |
+| B | timestamp | เวลาอัพเดท | ISO 8601 format |
+| C | confidence | ค่าความมั่นใจ | 0.0 - 1.0 |
+| D | source | แหล่งที่มา (ระบบเติมอัตโนมัติ) | `AUTO` หรือ `EXTERNAL` |
+| E | ext_override | เปิด/ปิดรับ signal จากชีทภายนอก | `TRUE` หรือ `FALSE` |
+| F | ext_sheet_id | Sheet ID หรือ URL ของชีทภายนอก | Google Sheet ID/URL |
 
 **หมายเหตุ**: 
 - มีแค่ 2 แถว (header + data)
 - แก้ไขแถวที่ 2 เพื่ออัพเดทสัญญาณ
+- คอลัมน์ D: ระบบเติมอัตโนมัติ บอกว่า signal มาจาก AUTO (scrape) หรือ EXTERNAL (ชีทนอก)
+- คอลัมน์ E-F: ตั้งค่า External Signal Proxy
 
 ### 3.4 Get Sheet ID
 

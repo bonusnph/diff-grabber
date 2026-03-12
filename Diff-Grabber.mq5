@@ -7,7 +7,7 @@
 #property link      "https://www.mql5.com"
 
 // EA Version constant (single source of truth)
-#define EA_VERSION "1.19"
+#define EA_VERSION "1.23"
 #property version EA_VERSION
 
 // =============================
@@ -57,7 +57,7 @@ input bool   input_trading_positive_swap        = false;    // Scope: Master —
 int    input_pswap_close_th_points        = 10000;     // Scope: Master — close threshold to enforce during positive swap window (03:00-05:30 local, non-Saturday)
 
 // Positive Swap Thursday auto-open (Master only)
-string input_swap_thursday_open_time    = "04:30";   // Scope: Master — Thursday auto-open time (HH:mm, local)
+input string input_swap_thursday_open_time    = "03:30";   // Scope: Master — Thursday auto-open time (HH:mm, local)
 input double input_swap_trading_lots    = 0.01;       // Scope: Master — lots for Thursday auto-open
 
 #define input_lot_master input_lot
@@ -132,37 +132,37 @@ input double input_initial_capital_usd       = 0.00;          // Scope: Master �
 
 // Scheduled Close Only Mode (Master only)
 bool   input_scheduled_close_only_enabled = true;     // Scope: Master — enable scheduled close only mode
-string input_close_only_start_time        = "03:00";   // Scope: Master — start time for close only mode (HH:mm format)
-string input_close_only_end_time          = "07:00";   // Scope: Master — end time for close only mode (HH:mm format)
+string input_close_only_start_time        = "02:00";   // Scope: Master — start time for close only mode (HH:mm format)
+string input_close_only_end_time          = "06:00";   // Scope: Master — end time for close only mode (HH:mm format)
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
 bool   input_sat_close_only_enabled       = true;           // Scope: Master — enable weekend close-only (Sat start -> Mon end)
-string input_sat_close_only_start_time    = "03:00";   // Scope: Master — Saturday start time (HH:mm)
-string input_mon_close_only_end_time      = "07:00";   // Scope: Master — Monday end time (HH:mm)
+string input_sat_close_only_start_time    = "00:00";   // Scope: Master — Saturday start time (HH:mm)
+string input_mon_close_only_end_time      = "06:00";   // Scope: Master — Monday end time (HH:mm)
 
 // Close Threshold Scheduler (Master only)
 bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes
-string input_close_th_time1               = "03:00";  // HH:mm — schedule slot 1
+string input_close_th_time1               = "02:00";  // HH:mm — schedule slot 1
 int    input_close_th_value1              = 10;       // points — threshold at time1
-string input_close_th_time2               = "03:20";  // HH:mm — schedule slot 2
+string input_close_th_time2               = "02:20";  // HH:mm — schedule slot 2
 int    input_close_th_value2              = 5;       // points — threshold at time2
-string input_close_th_time3               = "03:40";  // HH:mm — schedule slot 3
+string input_close_th_time3               = "02:40";  // HH:mm — schedule slot 3
 int    input_close_th_value3              = 0;        // points — threshold at time3
-string input_close_th_time4               = "04:00";  // HH:mm — schedule (prevent close time)
+string input_close_th_time4               = "03:00";  // HH:mm — schedule (prevent close time)
 int    input_close_th_value4              = 10000;    // points — threshold at time4
-string input_close_th_time5               = "06:30";  // HH:mm — schedule reset to initial close threshold
-string input_close_th_time6               = "07:00";  // HH:mm — schedule freeze close threshold all day
+string input_close_th_time5               = "05:30";  // HH:mm — schedule reset to initial close threshold
+string input_close_th_time6               = "06:00";  // HH:mm — schedule freeze close threshold all day
 
 // Force Close at Time (Master only)
 bool   input_force_close_time_enabled     = false;    // Scope: Master — enable daily forced close at a specific time
-string input_force_close_time             = "03:45";  // Scope: Master — time to force close all (HH:mm)
+string input_force_close_time             = "02:30";  // Scope: Master — time to force close all (HH:mm)
 
 // ========================================
 // API System Configuration
 // ========================================
 
 // Master API Switch
-input bool   input_api_enabled = false;                  // Scope: Both — Enable/Disable ALL API features
+input bool   input_api_enabled = true;                  // Scope: Both — Enable/Disable ALL API features
 
 // Authorization API
 bool   input_api_auth_enabled = false;              // Scope: Both — Enable account authorization via API
@@ -170,20 +170,34 @@ string input_api_auth_url = "https://script.google.com/macros/s/AKfycbzyxxyRp3xJ
 int    input_api_auth_interval_hours = 12;         // Scope: Both — Authorization check interval (hours)
 
 // Signal API (Master only)
-input bool   input_api_signal_enabled = false;           // Scope: Master — Enable signal fetching via API
+input bool   input_api_signal_enabled = true;           // Scope: Master — Enable signal fetching via API
 string input_api_signal_url = "https://script.google.com/macros/s/AKfycbzyxxyRp3xJSe501Cd4BrW-ZbAIJegZ8O5OG-AMKiz4bx3RA5A4ursYIPVKJYok--zS/exec?action=signal";                  // Scope: Master — Signal API endpoint URL
 int    input_api_signal_interval_hours = 1;        // Scope: Master — Signal fetch interval (hours)
 bool   input_api_signal_auto_apply = true;         // Scope: Master — Auto-apply signal to master_side
 double input_api_signal_min_confidence = 0.0;      // Scope: Master — Minimum confidence to apply signal (0.0-1.0)
 
+// Fast Polling (Signal only — auth stays at original interval)
+input bool   input_api_fast_polling = false;              // Scope: Master — Enable fast signal polling
+input int    input_api_fast_polling_interval_seconds = 60;// Scope: Master — Fast polling interval (seconds, default 60)
+
 
 // ========================================
-// TP/SL Active Diff Close (Master only)
+// TP/SL Active Diff Close Level-1 (Master only)
+// Uses averaging/stability confirmation before closing
 // ========================================
-bool   input_tp_active_diff_close_enabled = false; // Scope: Master — Enable TP for active diff close
-int    input_tp_active_diff_close_points = 50;     // Scope: Master — TP points threshold to activate diff close
-bool   input_sl_active_diff_close_enabled = false; // Scope: Master — Enable SL for active diff close
-int    input_sl_active_diff_close_points = 30;     // Scope: Master — SL points threshold to activate diff close
+input bool   input_tp_active_diff_close_enabled = false; // Scope: Master — L1 Enable TP for active diff close
+input int    input_tp_active_diff_close_points = 50;     // Scope: Master — L1 TP points threshold to activate diff close
+input bool   input_sl_active_diff_close_enabled = false; // Scope: Master — L1 Enable SL for active diff close
+input int    input_sl_active_diff_close_points = 30;     // Scope: Master — L1 SL points threshold to activate diff close
+
+// ========================================
+// TP/SL Active Diff Close Level-2 (Master only)
+// Instant close — no averaging/stability, no zone check
+// ========================================
+input bool   input_tp_active_diff_close_l2_enabled = false; // Scope: Master — L2 Enable TP for instant diff close
+input int    input_tp_active_diff_close_l2_points = 100;    // Scope: Master — L2 TP points threshold for instant diff close
+input bool   input_sl_active_diff_close_l2_enabled = false;  // Scope: Master — L2 Enable SL for instant diff close
+input int    input_sl_active_diff_close_l2_points = 100;     // Scope: Master — L2 SL points threshold for instant diff close
 
 // -----------------------------
 // Globals
@@ -345,6 +359,9 @@ int g_api_auth_close_cooldown = 0;    // Per-account cooldown (0 = use input def
 string g_api_auth_min_version = "";   // Per-account min version (empty = no lock)
 bool g_api_version_blocked = false;   // true if EA version is below minimum
 string g_api_auth_error = "";
+int g_api_auth_consecutive_failures = 0;
+bool g_api_auth_hard_failure = false;
+#define MAX_AUTH_TRANSIENT_RETRIES 10
 
 // Signal state
 datetime g_api_signal_last_fetch_time = 0;
@@ -357,6 +374,7 @@ string g_api_signal_error = "";
 // Signal change tracking
 MasterSide g_api_signal_pending_side = SIDE_BUY;
 bool g_api_signal_pending_change = false;
+double g_api_signal_pending_confidence = 0.0;
 
 // Effective master side (can be changed by API signal, initialized from input_master_side)
 MasterSide g_effective_master_side = SIDE_SELL;
@@ -366,6 +384,8 @@ MasterSide g_effective_master_side = SIDE_SELL;
 // ========================================
 bool g_diff_close_blocked_by_tp = false;
 bool g_diff_close_blocked_by_sl = false;
+bool g_diff_close_blocked_by_tp_l2 = false;
+bool g_diff_close_blocked_by_sl_l2 = false;
 
 // Anchor time when both sides confirmed open (used for close cooldown)
 datetime g_last_pair_both_open_time = 0;
@@ -961,16 +981,14 @@ void MaybeForceCloseByTime()
 {
    if(!(input_role==ROLE_MASTER)) return;
    bool eff_force_close_time_enabled = input_force_close_time_enabled;
-   if(input_trading_positive_swap)
-   {
-      eff_force_close_time_enabled = false;
-   }
-   else
+   if(IsSaturday())
    {
       eff_force_close_time_enabled = true;
    }
-   // Enforce on Saturdays regardless of configs
-   if(IsSaturday()) eff_force_close_time_enabled = true;
+   else if(input_trading_positive_swap)
+   {
+      eff_force_close_time_enabled = false;
+   }
    if(!eff_force_close_time_enabled) return;
    // Do not interfere with Saturday quiet window policy
    if(IsInSaturdayQuietWindow()) return;
@@ -2679,14 +2697,26 @@ bool CheckAccountAuthorization()
    if (StringLen(url) == 0)
    {
       Print("[API-AUTH] Error: No authorization URL configured");
+      g_api_auth_hard_failure = true;
       return false;
    }
    
    string response;
    if (!HttpGetRequest(url, response))
    {
-      g_api_auth_error = "HTTP request failed";
+      g_api_auth_consecutive_failures++;
+      g_api_auth_error = StringFormat("HTTP request failed (attempt %d/%d)", g_api_auth_consecutive_failures, MAX_AUTH_TRANSIENT_RETRIES);
       Print("[API-AUTH] ", g_api_auth_error);
+      
+      if (g_api_auth_valid && g_api_auth_consecutive_failures < MAX_AUTH_TRANSIENT_RETRIES)
+      {
+         g_api_auth_hard_failure = false;
+         return true;
+      }
+      
+      g_api_auth_hard_failure = true;
+      g_api_auth_valid = false;
+      g_account_authorized = false;
       return false;
    }
    
@@ -2701,6 +2731,8 @@ bool CheckAccountAuthorization()
       g_api_auth_error = "Account not authorized or expired";
       g_api_auth_valid = false;
       g_account_authorized = false;
+      g_api_auth_hard_failure = true;
+      g_api_auth_consecutive_failures = 0;
       Print("[API-AUTH] ", g_api_auth_error);
       return false;
    }
@@ -2712,6 +2744,8 @@ bool CheckAccountAuthorization()
       g_api_auth_error = StringFormat("Account %I64d expired on %s", account_num, TimeToString(expires));
       g_api_auth_valid = false;
       g_account_authorized = false;
+      g_api_auth_hard_failure = true;
+      g_api_auth_consecutive_failures = 0;
       Print("[API-AUTH] ", g_api_auth_error);
       return false;
    }
@@ -2728,14 +2762,14 @@ bool CheckAccountAuthorization()
    g_account_expires_at = expires;
    g_account_max_lots = max_lots;
    g_api_auth_error = "";
+   g_api_auth_hard_failure = false;
+   g_api_auth_consecutive_failures = 0;
    
    // Check version requirement
    if (!CheckMinVersion())
    {
       g_api_auth_error = StringFormat("EA version %s blocked (min: %s)", EA_VERSION, min_version);
       Print("[API-AUTH] ", g_api_auth_error);
-      // Note: g_api_version_blocked is set by CheckMinVersion()
-      // We still return true because auth itself passed, but version is blocked
    }
    
    if (input_verbose_journal_logs)
@@ -2766,9 +2800,16 @@ bool NeedSignalFetch()
    if (!IsSignalAPIEnabled())
       return false;
    
-      datetime now = TimeCurrent();
-   int hours_since_last = (int)((now - g_api_signal_last_fetch_time) / 3600);
+   datetime now = TimeCurrent();
    
+   if (input_api_fast_polling)
+   {
+      int seconds_since_last = (int)(now - g_api_signal_last_fetch_time);
+      int interval = MathMax(input_api_fast_polling_interval_seconds, 5);
+      return (seconds_since_last >= interval) || !g_api_signal_valid;
+   }
+   
+   int hours_since_last = (int)((now - g_api_signal_last_fetch_time) / 3600);
    return (hours_since_last >= input_api_signal_interval_hours) || !g_api_signal_valid;
 }
 
@@ -2892,20 +2933,25 @@ bool ApplySignalToMasterSide()
    else
       return false;
    
-   if (new_side == g_effective_master_side)
-      return true;
-   
    int self_pairs = CountOpenPairs();
    if (self_pairs > 0)
    {
       g_api_signal_pending_side = new_side;
       g_api_signal_pending_change = true;
+      g_api_signal_pending_confidence = g_api_signal_confidence;
       
       if (input_verbose_journal_logs)
-         Print("[API-SIGNAL] Side change pending (", g_api_signal_current, 
+         Print("[API-SIGNAL] Signal saved as pending (", g_api_signal_current, 
+               ", confidence: ", DoubleToString(g_api_signal_confidence, 2),
                ") - waiting for positions to close");
       
       return false;
+   }
+   
+   if (new_side == g_effective_master_side)
+   {
+      g_api_signal_pending_change = false;
+      return true;
    }
    
    g_effective_master_side = new_side;
@@ -2937,17 +2983,31 @@ void CheckPendingSignalChange()
    if (self_pairs > 0)
       return;
    
-   g_effective_master_side = g_api_signal_pending_side;
-   g_api_signal_pending_change = false;
+   string pending_str = (g_api_signal_pending_side==SIDE_BUY?"BUY":"SELL");
    
-   if (input_verbose_journal_logs)
+   if (g_api_signal_pending_side != g_effective_master_side)
    {
-      Print("[API-SIGNAL] Pending side change applied to ", 
-            (g_api_signal_pending_side==SIDE_BUY?"BUY":"SELL"));
+      g_effective_master_side = g_api_signal_pending_side;
+      
+      if (input_verbose_journal_logs)
+      {
+         Print("[API-SIGNAL] Pending side change applied to ", pending_str,
+               " (confidence: ", DoubleToString(g_api_signal_pending_confidence, 2), ")");
+      }
+      
+      string event_data = "new_side=" + pending_str +
+                          ",confidence=" + DoubleToString(g_api_signal_pending_confidence, 2);
+      LogEvent("SIGNAL_SIDE_APPLIED", event_data);
+   }
+   else
+   {
+      if (input_verbose_journal_logs)
+      {
+         Print("[API-SIGNAL] Pending signal cleared (same as current side: ", pending_str, ")");
+      }
    }
    
-   string event_data = "new_side=" + (g_api_signal_pending_side==SIDE_BUY?"BUY":"SELL");
-   LogEvent("SIGNAL_SIDE_APPLIED", event_data);
+   g_api_signal_pending_change = false;
 }
 
 //+------------------------------------------------------------------+
@@ -3165,6 +3225,55 @@ void UpdateDiffCloseBlockState()
    // Update block flags
    g_diff_close_blocked_by_tp = input_tp_active_diff_close_enabled && !tp_condition_met;
    g_diff_close_blocked_by_sl = input_sl_active_diff_close_enabled && !sl_condition_met;
+}
+
+//+------------------------------------------------------------------+
+//| TP/SL Active Diff Close Level-2 Functions                        |
+//+------------------------------------------------------------------+
+
+bool IsDiffCloseBlockedL2()
+{
+   if (!input_tp_active_diff_close_l2_enabled && !input_sl_active_diff_close_l2_enabled)
+      return true; // L2 not configured — treat as blocked so L2 path is skipped
+   
+   double pnl_points = CalculateMasterOrderPnLPoints();
+   
+   bool tp_condition_met = (pnl_points >= input_tp_active_diff_close_l2_points);
+   bool sl_condition_met = (pnl_points <= -input_sl_active_diff_close_l2_points);
+   
+   g_diff_close_blocked_by_tp_l2 = input_tp_active_diff_close_l2_enabled && !tp_condition_met;
+   g_diff_close_blocked_by_sl_l2 = input_sl_active_diff_close_l2_enabled && !sl_condition_met;
+   
+   if (input_tp_active_diff_close_l2_enabled && input_sl_active_diff_close_l2_enabled)
+   {
+      return !(tp_condition_met || sl_condition_met);
+   }
+   else if (input_tp_active_diff_close_l2_enabled)
+   {
+      return !tp_condition_met;
+   }
+   else
+   {
+      return !sl_condition_met;
+   }
+}
+
+void UpdateDiffCloseBlockStateL2()
+{
+   if (!input_tp_active_diff_close_l2_enabled && !input_sl_active_diff_close_l2_enabled)
+   {
+      g_diff_close_blocked_by_tp_l2 = false;
+      g_diff_close_blocked_by_sl_l2 = false;
+      return;
+   }
+   
+   double pnl_points = CalculateMasterOrderPnLPoints();
+   
+   bool tp_condition_met = (pnl_points >= input_tp_active_diff_close_l2_points);
+   bool sl_condition_met = (pnl_points <= -input_sl_active_diff_close_l2_points);
+   
+   g_diff_close_blocked_by_tp_l2 = input_tp_active_diff_close_l2_enabled && !tp_condition_met;
+   g_diff_close_blocked_by_sl_l2 = input_sl_active_diff_close_l2_enabled && !sl_condition_met;
 }
 
 void PushMedianOpen(const double v)
@@ -3579,31 +3688,46 @@ void MaybeClosePair()
    // Account authorization check
    if(IsAuthAPIEnabled() && !g_account_authorized) return;
    
-   // Check if diff close is blocked by TP/SL conditions
-   if (IsDiffCloseBlocked())
+   // Evaluate both L1 and L2 block states
+   bool l1_blocked = IsDiffCloseBlocked();
+   bool l2_blocked = IsDiffCloseBlockedL2();
+   
+   // If both levels are blocked, reset confirmation state and return
+   if (l1_blocked && l2_blocked)
    {
-      // Reset confirmation state to prevent accumulation across blocked ticks
       g_close_pending = false;
       g_close_ok_count = 0;
       g_raw_close_pending = false;
       g_raw_close_stable_count = 0;
       
-      if (input_verbose_journal_logs && (g_diff_close_blocked_by_tp || g_diff_close_blocked_by_sl))
+      if (input_verbose_journal_logs)
       {
          string reason = "";
-         if (g_diff_close_blocked_by_tp)
-            reason += "[TP not met] ";
-         if (g_diff_close_blocked_by_sl)
-            reason += "[SL not met] ";
+         if (g_diff_close_blocked_by_tp) reason += "[L1-TP not met] ";
+         if (g_diff_close_blocked_by_sl) reason += "[L1-SL not met] ";
+         if (g_diff_close_blocked_by_tp_l2) reason += "[L2-TP not met] ";
+         if (g_diff_close_blocked_by_sl_l2) reason += "[L2-SL not met] ";
          
-         static datetime last_log_time = 0;
-         if (TimeCurrent() - last_log_time > 60)
+         if (reason != "")
          {
-            Print("[DIFF-CLOSE] Blocked: ", reason);
-            last_log_time = TimeCurrent();
+            static datetime last_log_time = 0;
+            if (TimeCurrent() - last_log_time > 60)
+            {
+               Print("[DIFF-CLOSE] Blocked: ", reason);
+               last_log_time = TimeCurrent();
+            }
          }
       }
       return;
+   }
+   
+   // If L1 is blocked, reset its confirmation state to prevent accumulation
+   if (l1_blocked)
+   {
+      g_close_pending = false;
+      g_close_ok_count = 0;
+      g_raw_close_pending = false;
+      g_raw_close_stable_count = 0;
    }
    
    // Saturday quiet window: block any closes
@@ -3626,7 +3750,6 @@ void MaybeClosePair()
    if(CountOpenPairs()<=0) return;
    
    // Close cooldown: avoid normal auto-close until elapsed; do not block reconcile paths elsewhere
-   // If a pair was both-side opened recently, this timestamp should have been set; we set/update it upon successful open + peer ack in watchdog
    if(g_last_pair_both_open_time>0)
    {
       if((int)(TimeCurrent() - g_last_pair_both_open_time) < GetEffectiveCloseCooldownSeconds())
@@ -3640,15 +3763,10 @@ void MaybeClosePair()
    
    if(!g_stable_peer_alive)
    {
-      // หาก peer ไม่ alive ให้เช็คความน่าเชื่อถือของข้อมูล
       ulong now = NowMs();
       ulong quote_age = (now >= g_peer_quote_ms) ? (now - g_peer_quote_ms) : 999999;
       ulong heartbeat_age = (g_peer_hb_ms > 0 && now >= g_peer_hb_ms) ? (now - g_peer_hb_ms) : 999999;
       
-      // Enhanced reliability check: prioritize quote freshness
-      // Strategy: If quotes are fresh, rely on them even if heartbeat is stale
-      // 1. Quote อายุ > 5 วินาที → unreliable (ข้อมูลเก่าเกินไป)
-      // 2. Quote อายุ <= 5 วินาที แต่ heartbeat > 30 วินาที → still unreliable (heartbeat timeout)
       string unreliable_reason = "";
       if(quote_age > 5000)
       {
@@ -3665,10 +3783,8 @@ void MaybeClosePair()
       {
          g_close_blocked_count++;
          
-         // State-change detection: log only on transition or periodic summary
          if(g_last_peer_data_reliable)
          {
-            // First time becoming unreliable
             LogEvent("CLOSE_BLOCKED_START", 
                      StringFormat("peer_data_unreliable;reason=%s;quote_age=%I64u;hb_age=%I64u;peer_alive=%s", 
                      unreliable_reason, quote_age, heartbeat_age, (g_peer_alive ? "true" : "false")));
@@ -3676,7 +3792,6 @@ void MaybeClosePair()
          }
          else if((now - g_last_close_blocked_log_ms) >= 60000)
          {
-            // Periodic summary every 60 seconds
             LogEvent("CLOSE_BLOCKED_SUMMARY", 
                      StringFormat("still_unreliable;reason=%s;count=%d;duration_s=%I64u;last_quote_age=%I64u;last_hb_age=%I64u;consec_fails=%d", 
                      unreliable_reason, g_close_blocked_count, (now - g_last_close_blocked_log_ms)/1000, 
@@ -3688,7 +3803,6 @@ void MaybeClosePair()
       }
       else
       {
-         // Data became reliable (quote fresh enough)
          if(!g_last_peer_data_reliable)
          {
             LogEvent("CLOSE_UNBLOCKED", 
@@ -3705,159 +3819,157 @@ void MaybeClosePair()
    
    double diffClose = DiffClosePoints();
    bool triggerClose = false;
+   string triggerSource = "UNKNOWN";
    
-   // === ZONE STABILITY CHECK (applies to all modes) ===
-   if(input_zone_stability_enabled)
+   // === LEVEL-2: Instant close path (no averaging/stability/zone check) ===
+   if (!l2_blocked && diffClose >= GetCloseThresholdPoints())
    {
-      if(!g_close_zone_stable)
-      {
-         // Zone not stable - reset all pending states
-         g_close_pending = false;
-         g_close_ok_count = 0;
-         g_raw_close_pending = false;
-         g_raw_close_stable_count = 0;
-         // LogEvent("ZONE_CLOSE_UNSTABLE", StringFormat("diff=%.1f;positive_count=%d;negative_count=%d;threshold=%.1f;neg_threshold=%d", 
-         //         diffClose, g_close_positive_count, g_close_negative_count, (double)GetCloseThresholdPoints(), input_zone_negative_threshold));
-         return;
-      }
+      triggerClose = true;
+      triggerSource = "AUTO_L2_INSTANT";
+      LogEvent("L2_CLOSE_TRIGGERED", StringFormat("diffClose=%.1f;threshold=%d;pnl=%.1f", 
+               diffClose, GetCloseThresholdPoints(), CalculateMasterOrderPnLPoints()));
+      g_close_pending = false;
+      g_close_ok_count = 0;
+      g_raw_close_pending = false;
+      g_raw_close_stable_count = 0;
    }
    
-   // PRIORITY: Averaging > Raw Stability > Simple
-   if(input_avg_filter_enabled)
+   // === LEVEL-1: Normal flow with averaging/stability (only if L2 didn't trigger) ===
+   if (!triggerClose && !l1_blocked)
    {
-      // Averaging logic for close (highest priority)
-      if(input_avg_signal_cooldown_ms > 0 && (NowMs() - g_last_avg_close_signal_ms) < (ulong)input_avg_signal_cooldown_ms) return;
-      double avgClose = SmoothedCloseDiff(diffClose);
-      double thrEff = (double)(GetCloseThresholdPoints() + input_diff_hysteresis_points);
-      if(!g_close_pending)
+      if(input_zone_stability_enabled)
       {
-         // Zone stability check for averaging close mode
-         if(avgClose >= thrEff && (!input_zone_stability_enabled || g_close_zone_stable))
-         {
-            g_close_pending = true; g_close_snapshot_avg = avgClose; g_close_ok_count = 0; g_close_deadline_ms = NowMs() + (ulong)input_confirm_timeout_ms;
-         }
-         return;
-      }
-      else
-      {
-         // Zone stability check during close confirmation
-         if(input_zone_stability_enabled && !g_close_zone_stable)
+         if(!g_close_zone_stable)
          {
             g_close_pending = false;
             g_close_ok_count = 0;
-            LogEvent("CLOSE_AVG_ZONE_RESET", StringFormat("diff=%.1f;avg=%.1f;zone_unstable", diffClose, avgClose));
+            g_raw_close_pending = false;
+            g_raw_close_stable_count = 0;
             return;
          }
+      }
+      
+      if(input_avg_filter_enabled)
+      {
+         if(input_avg_signal_cooldown_ms > 0 && (NowMs() - g_last_avg_close_signal_ms) < (ulong)input_avg_signal_cooldown_ms) return;
+         double avgClose = SmoothedCloseDiff(diffClose);
+         double thrEff = (double)(GetCloseThresholdPoints() + input_diff_hysteresis_points);
+         if(!g_close_pending)
+         {
+            if(avgClose >= thrEff && (!input_zone_stability_enabled || g_close_zone_stable))
+            {
+               g_close_pending = true; g_close_snapshot_avg = avgClose; g_close_ok_count = 0; g_close_deadline_ms = NowMs() + (ulong)input_confirm_timeout_ms;
+            }
+            return;
+         }
+         else
+         {
+            if(input_zone_stability_enabled && !g_close_zone_stable)
+            {
+               g_close_pending = false;
+               g_close_ok_count = 0;
+               LogEvent("CLOSE_AVG_ZONE_RESET", StringFormat("diff=%.1f;avg=%.1f;zone_unstable", diffClose, avgClose));
+               return;
+            }
+            
+            bool ok = true;
+            if(input_real_confirm_enabled)
+            {
+               double need = MathMax(g_close_snapshot_avg, thrEff) + (double)input_epsilon_diff_points;
+               ok = (diffClose >= need);
+            }
+            else
+            {
+               ok = (avgClose >= thrEff);
+            }
+            if(ok) g_close_ok_count++; else g_close_ok_count = 0;
+            if(g_close_ok_count >= input_confirm_ticks)
+            {
+               LogEvent("AVG_CLOSE_CONFIRMED", StringFormat("avgClose=%.1f;realClose=%.1f;thrEff=%.1f;count=%d/%d", 
+                        avgClose, diffClose, thrEff, g_close_ok_count, input_confirm_ticks));
+               triggerClose = true; g_close_pending = false; g_last_avg_close_signal_ms = NowMs();
+               triggerSource = "AUTO_L1_AVERAGING";
+               if(input_zone_stability_enabled) ResetZoneStability(false);
+            }
+            else
+            {
+               if(input_confirm_timeout_ms>0 && NowMs() > g_close_deadline_ms) { g_close_pending = false; g_close_ok_count = 0; }
+               if(!triggerClose) return;
+            }
+         }
+      }
+      else if(input_raw_stability_enabled)
+      {
+         double enterThreshold = (double)GetCloseThresholdPoints();
+         double resetThreshold = (double)(GetCloseThresholdPoints() - input_raw_hysteresis_offset);
          
-         bool ok = true;
-         if(input_real_confirm_enabled)
+         if(!g_raw_close_pending)
          {
-            double need = MathMax(g_close_snapshot_avg, thrEff) + (double)input_epsilon_diff_points;
-            ok = (diffClose >= need);
+            if(diffClose >= enterThreshold && (!input_zone_stability_enabled || g_close_zone_stable))
+            {
+               g_raw_close_pending = true;
+               g_raw_close_stable_count = 1;
+               g_raw_close_start_ms = NowMs();
+               LogEvent("RAW_CLOSE_START", StringFormat("diff=%.1f;count=1;reset_at=%.1f;zone_stable=%s", 
+                        diffClose, resetThreshold, g_close_zone_stable?"true":"false"));
+            }
+            return;
          }
          else
          {
-            ok = (avgClose >= thrEff);
-         }
-         if(ok) g_close_ok_count++; else g_close_ok_count = 0;
-         if(g_close_ok_count >= input_confirm_ticks)
-         {
-            LogEvent("AVG_CLOSE_CONFIRMED", StringFormat("avgClose=%.1f;realClose=%.1f;thrEff=%.1f;count=%d/%d", 
-                     avgClose, diffClose, thrEff, g_close_ok_count, input_confirm_ticks));
-            triggerClose = true; g_close_pending = false; g_last_avg_close_signal_ms = NowMs();
-            // Reset zone stability counters after trigger
-            if(input_zone_stability_enabled) ResetZoneStability(false);
-         }
-         else
-         {
-            if(input_confirm_timeout_ms>0 && NowMs() > g_close_deadline_ms) { g_close_pending = false; g_close_ok_count = 0; }
+            if(input_zone_stability_enabled && !g_close_zone_stable)
+            {
+               g_raw_close_pending = false;
+               g_raw_close_stable_count = 0;
+               LogEvent("RAW_CLOSE_ZONE_RESET", StringFormat("diff=%.1f;zone_unstable", diffClose));
+               return;
+            }
+            
+            if(diffClose < resetThreshold)
+            {
+               g_raw_close_pending = false;
+               g_raw_close_stable_count = 0;
+               LogEvent("RAW_CLOSE_RESET", StringFormat("diff=%.1f;below_reset=%.1f", 
+                        diffClose, resetThreshold));
+               return;
+            }
+            
+            g_raw_close_stable_count++;
+            LogEvent("RAW_CLOSE_TICK", StringFormat("diff=%.1f;count=%d/%d", 
+                     diffClose, g_raw_close_stable_count, input_raw_stability_ticks));
+            
+            if(g_raw_close_stable_count >= input_raw_stability_ticks)
+            {
+               triggerClose = true;
+               g_raw_close_pending = false;
+               triggerSource = "AUTO_L1_RAW_STABILITY";
+               LogEvent("RAW_CLOSE_CONFIRMED", StringFormat("diff=%.1f;final_count=%d", 
+                        diffClose, g_raw_close_stable_count));
+               if(input_zone_stability_enabled) ResetZoneStability(false);
+            }
+            
+            if((NowMs() - g_raw_close_start_ms) > (ulong)input_raw_stability_timeout_ms)
+            {
+               g_raw_close_pending = false;
+               g_raw_close_stable_count = 0;
+               LogEvent("RAW_CLOSE_TIMEOUT", StringFormat("elapsed_ms=%I64u", 
+                        NowMs() - g_raw_close_start_ms));
+            }
+            
             if(!triggerClose) return;
          }
       }
-   }
-   else if(input_raw_stability_enabled)
-   {
-      // Raw stability logic for close (second priority)
-      double enterThreshold = (double)GetCloseThresholdPoints();
-      double resetThreshold = (double)(GetCloseThresholdPoints() - input_raw_hysteresis_offset);
-      
-      if(!g_raw_close_pending)
-      {
-         // Zone stability check for raw stability close mode
-         if(diffClose >= enterThreshold && (!input_zone_stability_enabled || g_close_zone_stable))
-         {
-            g_raw_close_pending = true;
-            g_raw_close_stable_count = 1;
-            g_raw_close_start_ms = NowMs();
-            LogEvent("RAW_CLOSE_START", StringFormat("diff=%.1f;count=1;reset_at=%.1f;zone_stable=%s", 
-                     diffClose, resetThreshold, g_close_zone_stable?"true":"false"));
-         }
-         return;
-      }
       else
       {
-         // Zone stability check during raw stability close confirmation
-         if(input_zone_stability_enabled && !g_close_zone_stable)
-         {
-            g_raw_close_pending = false;
-            g_raw_close_stable_count = 0;
-            LogEvent("RAW_CLOSE_ZONE_RESET", StringFormat("diff=%.1f;zone_unstable", diffClose));
-            return;
-         }
-         
-         if(diffClose < resetThreshold)
-         {
-            g_raw_close_pending = false;
-            g_raw_close_stable_count = 0;
-            LogEvent("RAW_CLOSE_RESET", StringFormat("diff=%.1f;below_reset=%.1f", 
-                     diffClose, resetThreshold));
-            return;
-         }
-         
-         g_raw_close_stable_count++;
-         LogEvent("RAW_CLOSE_TICK", StringFormat("diff=%.1f;count=%d/%d", 
-                  diffClose, g_raw_close_stable_count, input_raw_stability_ticks));
-         
-         if(g_raw_close_stable_count >= input_raw_stability_ticks)
-         {
-            triggerClose = true;
-            g_raw_close_pending = false;
-            LogEvent("RAW_CLOSE_CONFIRMED", StringFormat("diff=%.1f;final_count=%d", 
-                     diffClose, g_raw_close_stable_count));
-            // Reset zone stability counters after trigger
-            if(input_zone_stability_enabled) ResetZoneStability(false);
-         }
-         
-         if((NowMs() - g_raw_close_start_ms) > (ulong)input_raw_stability_timeout_ms)
-         {
-            g_raw_close_pending = false;
-            g_raw_close_stable_count = 0;
-            LogEvent("RAW_CLOSE_TIMEOUT", StringFormat("elapsed_ms=%I64u", 
-                     NowMs() - g_raw_close_start_ms));
-         }
-         
-         if(!triggerClose) return;
+         if(diffClose < GetCloseThresholdPoints()) return;
+         if(input_zone_stability_enabled && !g_close_zone_stable) return;
+         triggerClose = true;
+         triggerSource = "AUTO_L1_SIMPLE";
+         if(input_zone_stability_enabled) ResetZoneStability(false);
       }
    }
-   else
-   {
-      // Simple instant logic (lowest priority) with zone stability check
-      if(diffClose < GetCloseThresholdPoints()) return;
-      // Zone stability check for simple close mode
-      if(input_zone_stability_enabled && !g_close_zone_stable) return;
-      triggerClose = true;
-      // Reset zone stability counters after trigger
-      if(input_zone_stability_enabled) ResetZoneStability(false);
-   }
-
 
    if(!triggerClose) return;
-   
-   // Log the trigger source for automatic closes
-   string triggerSource = "UNKNOWN";
-   if(input_avg_filter_enabled) triggerSource = "AUTO_AVERAGING";
-   else if(input_raw_stability_enabled) triggerSource = "AUTO_RAW_STABILITY";
-   else triggerSource = "AUTO_SIMPLE";
    
    // ENHANCED: Add detailed logging for close trigger analysis
    double currentAvgClose = input_avg_filter_enabled ? SmoothedCloseDiff(diffClose) : diffClose;
@@ -5486,13 +5598,21 @@ void OnTimer()
          bool auth_ok = CheckAccountAuthorization();
          if (!auth_ok)
          {
-            long account_num = AccountInfoInteger(ACCOUNT_LOGIN);
-            string error_msg = StringFormat("Account %I64d authorization failed: %s", account_num, g_api_auth_error);
-            Print("[API-AUTH] ", error_msg);
-            Alert("EA Authorization Failed: " + error_msg);
-            LogEvent("AUTH_REVOKED", StringFormat("account=%I64d;error=%s", account_num, g_api_auth_error));
-            ExpertRemove();
-            return;
+            if (!g_api_auth_hard_failure)
+            {
+               if (input_verbose_journal_logs)
+                  Print("[API-AUTH] Transient failure (attempt ", g_api_auth_consecutive_failures, "), EA continues");
+            }
+            else
+            {
+               long account_num = AccountInfoInteger(ACCOUNT_LOGIN);
+               string error_msg = StringFormat("Account %I64d authorization failed: %s", account_num, g_api_auth_error);
+               Print("[API-AUTH] ", error_msg);
+               Alert("EA Authorization Failed: " + error_msg);
+               LogEvent("AUTH_REVOKED", StringFormat("account=%I64d;error=%s", account_num, g_api_auth_error));
+               ExpertRemove();
+               return;
+            }
          }
          
          // Check version requirement (per-account from Auth API)
@@ -5605,6 +5725,7 @@ void OnTick()
    if (input_role == ROLE_MASTER)
    {
       UpdateDiffCloseBlockState();
+      UpdateDiffCloseBlockStateL2();
    }
    
    // === ZONE STABILITY CHECK - ทำทุก tick สำหรับ Master ===

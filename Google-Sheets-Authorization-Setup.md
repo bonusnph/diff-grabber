@@ -62,13 +62,13 @@
 
 #### Sheet 2: Signals
 
-| A | B | C |
-|---|---|---|
-| signal | timestamp | confidence |
-| BUY | 2025-12-01T10:30:00Z | 0.85 |
+| A | B | C | D | E | F |
+|---|---|---|---|---|---|
+| signal | timestamp | confidence | source | ext_override | ext_sheet_id |
+| BUY | 2025-12-01T10:30:00Z | 0.85 | AUTO | FALSE | |
 
 **วิธีกรอกข้อมูล:**
-1. แถว 1: กรอก header → `signal`, `timestamp`, `confidence`
+1. แถว 1: กรอก header → `signal`, `timestamp`, `confidence`, `source`, `ext_override`, `ext_sheet_id`
 2. แถว 2: กรอกสัญญาณปัจจุบัน (มีแค่ 1 แถวข้อมูล)
 
 **คำอธิบายคอลัมน์:**
@@ -77,10 +77,15 @@
 | A | signal | สัญญาณเทรด | `BUY` หรือ `SELL` |
 | B | timestamp | เวลาอัพเดท | ISO 8601 format |
 | C | confidence | ค่าความมั่นใจ | 0.0 - 1.0 |
+| D | source | แหล่งที่มาของ signal (ระบบเติมอัตโนมัติ) | `AUTO` หรือ `EXTERNAL` |
+| E | ext_override | เปิด/ปิดรับ signal จากชีทภายนอก | `TRUE` หรือ `FALSE` |
+| F | ext_sheet_id | Sheet ID หรือ URL ของชีทภายนอก | Google Sheet ID/URL |
 
 > **หมายเหตุ**: Sheet Signals มีแค่ **2 แถว** (header + data)
 > - ถ้าใช้ Auto Scraping: ฟังก์ชัน `scrapeAndUpdateSignal()` จะอัพเดทแถวที่ 2 อัตโนมัติ
 > - ถ้าใช้ Manual: แก้ไขแถวที่ 2 โดยตรง
+> - คอลัมน์ D (`source`): ระบบเติมอัตโนมัติ ไม่ต้องแก้ไข แสดงว่า signal ปัจจุบันมาจาก AUTO (scrape) หรือ EXTERNAL (ชีทนอก)
+> - คอลัมน์ E-F: ตั้งค่า External Signal Proxy (ดูรายละเอียดเพิ่มเติมด้านล่าง)
 
 > **หมายเหตุ Config รายบัญชี**: 
 > - ถ้าเว้นว่างคอลัมน์ cooldown จะใช้ค่า default ใน EA (`input_open_cooldown_seconds`, `input_close_cooldown_seconds`)
@@ -100,8 +105,8 @@ account,expires_at,max_lots,open_cooldown,close_cooldown,min_version
 
 **Signals Sheet:**
 ```
-signal,timestamp,confidence
-BUY,2025-12-01T10:30:00Z,0.85
+signal,timestamp,confidence,source,ext_override,ext_sheet_id
+BUY,2025-12-01T10:30:00Z,0.85,AUTO,FALSE,
 ```
 
 ### 1.5 หมายเหตุสำคัญ
@@ -141,6 +146,7 @@ BUY,2025-12-01T10:30:00Z,0.85
 const SHEET_ID = 'YOUR_GOOGLE_SHEET_ID_HERE';
 const AUTH_SHEET_NAME = 'Authorization';
 const SIGNAL_SHEET_NAME = 'Signals';
+const EXTERNAL_SIGNAL_SHEET_NAME = 'Signals';
 
 // ScraperAPI Configuration (required for bypassing Cloudflare)
 // Sign up at: https://www.scraperapi.com (Free: 1000 requests/month)
@@ -210,8 +216,11 @@ function handleSignalRequest(e) {
       return createErrorResponse('No signal data available');
     }
     
-    let csvContent = data[0].join(',') + '\n';
-    csvContent += data[1].join(',') + '\n';
+    // Return only columns A-D (signal, timestamp, confidence, source)
+    // Exclude config columns E-F (ext_override, ext_sheet_id)
+    const maxCols = Math.min(data[0].length, 4);
+    let csvContent = data[0].slice(0, maxCols).join(',') + '\n';
+    csvContent += data[1].slice(0, maxCols).join(',') + '\n';
     
     return ContentService
       .createTextOutput(csvContent)
@@ -232,9 +241,118 @@ function createErrorResponse(message) {
 }
 
 // ========================================
+// Extract Sheet ID from URL or raw ID
+// ========================================
+function extractSheetIdFromUrl(input) {
+  if (!input || input.toString().trim() === '') {
+    return null;
+  }
+  
+  const str = input.toString().trim();
+  
+  const match = str.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  
+  if (!str.includes('/')) {
+    return str;
+  }
+  
+  return null;
+}
+
+// ========================================
+// Read External Override Config from Main Sheet
+// ========================================
+function getExternalOverrideConfig() {
+  try {
+    const sheet = SpreadsheetApp.openById(SHEET_ID).getSheetByName(SIGNAL_SHEET_NAME);
+    if (!sheet) return { enabled: false };
+    
+    const extOverride = sheet.getRange(2, 5).getValue();
+    const extSheetRaw = sheet.getRange(2, 6).getValue();
+    
+    return {
+      enabled: (extOverride === true || extOverride.toString().toUpperCase() === 'TRUE'),
+      sheetId: extractSheetIdFromUrl(extSheetRaw)
+    };
+  } catch (error) {
+    Logger.log('[EXT] Failed to read config: ' + error.toString());
+    return { enabled: false };
+  }
+}
+
+// ========================================
+// Fetch Signal from External Google Sheet
+// ========================================
+function fetchExternalSignal() {
+  try {
+    const config = getExternalOverrideConfig();
+    
+    if (!config.enabled) {
+      Logger.log('[EXT] External override is disabled');
+      return null;
+    }
+    
+    if (!config.sheetId) {
+      Logger.log('[EXT] External sheet ID is empty or invalid');
+      return null;
+    }
+    
+    Logger.log('[EXT] Fetching from external sheet: ' + config.sheetId);
+    
+    const extSpreadsheet = SpreadsheetApp.openById(config.sheetId);
+    const extSheet = extSpreadsheet.getSheetByName(EXTERNAL_SIGNAL_SHEET_NAME);
+    
+    if (!extSheet) {
+      Logger.log('[EXT] Sheet "' + EXTERNAL_SIGNAL_SHEET_NAME + '" not found');
+      return null;
+    }
+    
+    const data = extSheet.getDataRange().getValues();
+    
+    if (data.length < 2) {
+      Logger.log('[EXT] No data rows in external sheet');
+      return null;
+    }
+    
+    const row = data[1];
+    const signal = row[0] ? row[0].toString().trim().toUpperCase() : '';
+    const timestamp = row[1] ? row[1].toString().trim() : new Date().toISOString();
+    const confidence = row[2] ? parseFloat(row[2]) : 1.0;
+    const active = row[3];
+    
+    const isActive = (active === true || (active && active.toString().toUpperCase() === 'TRUE'));
+    
+    if (!isActive) {
+      Logger.log('[EXT] Expert is offline (active = FALSE)');
+      return null;
+    }
+    
+    if (signal !== 'BUY' && signal !== 'SELL') {
+      Logger.log('[EXT] Invalid signal: "' + signal + '"');
+      return null;
+    }
+    
+    Logger.log('[EXT] Signal: ' + signal + ' (confidence: ' + confidence + ')');
+    
+    return {
+      signal: signal,
+      timestamp: timestamp,
+      confidence: isNaN(confidence) ? 1.0 : confidence
+    };
+    
+  } catch (error) {
+    Logger.log('[EXT] Error: ' + error.toString());
+    return null;
+  }
+}
+
+// ========================================
 // Update Signal (Manual/Programmatic)
 // ========================================
-function updateSignal(signal, confidence) {
+function updateSignal(signal, confidence, source) {
   try {
     if (signal !== 'BUY' && signal !== 'SELL') {
       throw new Error('Invalid signal: ' + signal);
@@ -246,8 +364,9 @@ function updateSignal(signal, confidence) {
     sheet.getRange(2, 1).setValue(signal);
     sheet.getRange(2, 2).setValue(timestamp);
     sheet.getRange(2, 3).setValue(confidence || 1.0);
+    sheet.getRange(2, 4).setValue(source || 'AUTO');
     
-    Logger.log('Signal updated: ' + signal);
+    Logger.log('Signal updated: ' + signal + ' (source: ' + (source || 'AUTO') + ')');
     return true;
     
   } catch (error) {
@@ -257,21 +376,34 @@ function updateSignal(signal, confidence) {
 }
 
 // ========================================
-// Auto-update from TradersUnion Gold Signals
+// Auto-update with External Signal Proxy
 // ========================================
 function scrapeAndUpdateSignal() {
   try {
-    // Check if current time is in blocked period (20:00 - 01:00 UTC)
+    // Step 1: Check external override
+    const extSignal = fetchExternalSignal();
+    
+    if (extSignal) {
+      const success = updateSignal(extSignal.signal, extSignal.confidence, 'EXTERNAL');
+      if (success) {
+        Logger.log('[EXT] Signal overridden: ' + extSignal.signal);
+      }
+      return success;
+    }
+    
+    Logger.log('[AUTO] Fallback to auto-scrape');
+    
+    // Step 2: Blocked period check
     if (isInBlockedPeriod()) {
       Logger.log('Currently in blocked period (20:00-01:00 UTC)');
-      Logger.log('Forcing signal to SELL...');
-      const success = updateSignal('SELL', 1.0);
+      const success = updateSignal('SELL', 1.0, 'AUTO');
       if (success) {
         Logger.log('Signal forced to SELL successfully');
       }
       return success;
     }
     
+    // Step 3: Scrape from TradersUnion
     const targetUrl = 'https://tradersunion.com/currencies/forecast/gold/signals/';
     let url = targetUrl;
     let fetchOptions = {
@@ -280,22 +412,18 @@ function scrapeAndUpdateSignal() {
       followRedirects: true
     };
     
-    // Use ScraperAPI if enabled (bypasses Cloudflare)
     if (USE_SCRAPER_API) {
       if (!SCRAPER_API_KEY || SCRAPER_API_KEY === '') {
         Logger.log('ERROR: ScraperAPI enabled but API key is missing!');
-        Logger.log('Get your API key at: https://www.scraperapi.com/signup');
         return false;
       }
       
-      // Build ScraperAPI URL
       url = 'https://api.scraperapi.com/?api_key=' + SCRAPER_API_KEY + 
             '&url=' + encodeURIComponent(targetUrl) +
-            '&render=false';  // Set to true if need JavaScript rendering
+            '&render=false';
       
       Logger.log('Using ScraperAPI to bypass Cloudflare...');
     } else {
-      // Direct fetch (may be blocked by Cloudflare)
       fetchOptions.headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -305,7 +433,6 @@ function scrapeAndUpdateSignal() {
       Logger.log('Fetching directly (no ScraperAPI)...');
     }
     
-    // Fetch webpage content
     const response = UrlFetchApp.fetch(url, fetchOptions);
     const statusCode = response.getResponseCode();
     
@@ -314,7 +441,6 @@ function scrapeAndUpdateSignal() {
       
       if (statusCode === 403 && !USE_SCRAPER_API) {
         Logger.log('Blocked by Cloudflare! Consider enabling ScraperAPI.');
-        Logger.log('Set USE_SCRAPER_API = true and add your API key.');
       }
       
       return false;
@@ -322,14 +448,11 @@ function scrapeAndUpdateSignal() {
     
     const html = response.getContentText();
     
-    // Check if we got Cloudflare challenge page
     if (html.includes('Attention Required') && html.includes('Cloudflare')) {
       Logger.log('Cloudflare challenge detected!');
-      Logger.log('Enable ScraperAPI to bypass: Set USE_SCRAPER_API = true');
       return false;
     }
     
-    // Parse signal from HTML
     const signal = parseSignalFromHTML(html);
     
     if (!signal) {
@@ -337,9 +460,8 @@ function scrapeAndUpdateSignal() {
       return false;
     }
     
-    // Update signal with default confidence 0.85
     const confidence = 0.85;
-    updateSignal(signal, confidence);
+    updateSignal(signal, confidence, 'AUTO');
     
     Logger.log('Signal updated successfully: ' + signal);
     return true;
@@ -452,7 +574,6 @@ function parseSignalFromHTML(html) {
       Logger.log('[Method 3] "Forecast:" not found');
     }
     
-    // Debug: Show HTML preview
     Logger.log('\nAll methods failed!');
     Logger.log('HTML preview (first 800 chars):\n' + html.substring(0, 800));
     Logger.log('\nNo signal found');
@@ -476,7 +597,6 @@ function createHourlyTrigger() {
     }
   }
   
-  // Run every 30 minutes (e.g., 10:00, 10:30, 11:00, 11:30, ...)
   ScriptApp.newTrigger('scrapeAndUpdateSignal')
     .timeBased()
     .everyMinutes(30)
@@ -489,13 +609,10 @@ function createHourlyTrigger() {
 // Scheduled Signal Control (Market Close)
 // ========================================
 
-// Check if current time is in blocked period (20:00 - 01:00 UTC)
 function isInBlockedPeriod() {
   const now = new Date();
   const utcHour = now.getUTCHours();
   
-  // Blocked period: 20:00 UTC to 01:00 UTC (next day)
-  // Hours: 20, 21, 22, 23, 0
   if (utcHour >= 20 || utcHour < 1) {
     return true;
   }
@@ -503,13 +620,12 @@ function isInBlockedPeriod() {
   return false;
 }
 
-// Force signal to SELL (used during market close hours)
 function forceSellSignal() {
   try {
     Logger.log('=== Force SELL Signal (Scheduled) ===');
     Logger.log('Time: ' + new Date().toISOString());
     
-    const success = updateSignal('SELL', 1.0);
+    const success = updateSignal('SELL', 1.0, 'AUTO');
     
     if (success) {
       Logger.log('Signal forced to SELL successfully');
@@ -525,10 +641,7 @@ function forceSellSignal() {
   }
 }
 
-// Create trigger for scheduled signal control
-// - Every 30 minutes: Scrape API (01:00-20:00 UTC) or Force SELL (20:00-01:00 UTC)
 function createScheduledSignalTriggers() {
-  // Delete existing triggers
   const triggers = ScriptApp.getProjectTriggers();
   for (let i = 0; i < triggers.length; i++) {
     const handler = triggers[i].getHandlerFunction();
@@ -538,22 +651,17 @@ function createScheduledSignalTriggers() {
     }
   }
   
-  // Create trigger every 30 minutes
-  // - During 01:00-20:00 UTC: Scrape from API
-  // - During 20:00-01:00 UTC: Force SELL
   ScriptApp.newTrigger('scrapeAndUpdateSignal')
     .timeBased()
     .everyMinutes(30)
     .create();
   
   Logger.log('Created trigger (every 30 minutes)');
-  
   Logger.log('=== Scheduled Triggers Summary ===');
-  Logger.log('01:00-20:00 UTC: Scrape from API every 30 min');
+  Logger.log('01:00-20:00 UTC: Scrape/External every 30 min');
   Logger.log('20:00-01:00 UTC: Force SELL every 30 min');
 }
 
-// Delete all scheduled signal triggers
 function deleteScheduledSignalTriggers() {
   const triggers = ScriptApp.getProjectTriggers();
   let deletedCount = 0;
@@ -806,6 +914,58 @@ input_auth_sheet_url = "https://docs.google.com/spreadsheets/d/1e9VNVA5oPjIggPQ2
 **การปิด Auto Scraping:**
 1. ไปที่ Apps Script → Triggers
 2. ลบ trigger ของ `scrapeAndUpdateSignal`
+
+### 6.3 External Signal Proxy (รับ Signal จากผู้เชี่ยวชาญภายนอก)
+
+ฟีเจอร์นี้ช่วยให้ผู้เชี่ยวชาญภายนอกสามารถส่ง signal เข้ามา override สัญญาณอัตโนมัติได้ โดยมี switch เปิด/ปิด และ fallback อัตโนมัติ
+
+#### การเปิดใช้งาน External Signal Proxy
+
+1. เปิด Google Sheet หลัก ไปที่ Sheet `Signals`
+2. ที่คอลัมน์ E แถวที่ 2 (ext_override): เปลี่ยนเป็น `TRUE`
+3. ที่คอลัมน์ F แถวที่ 2 (ext_sheet_id): ใส่ Sheet ID หรือ URL เต็มของชีทภายนอก
+   - ตัวอย่าง Sheet ID: `1AbC2dEfG3hIjKlMnOpQrStUvWxYz`
+   - ตัวอย่าง URL: `https://docs.google.com/spreadsheets/d/1AbC2dEfG3hIjK.../edit`
+
+#### การสร้างชีทภายนอก (สำหรับผู้เชี่ยวชาญ)
+
+1. สร้าง Google Sheet ใหม่
+2. ตั้งชื่อ Sheet แรกเป็น **`Signals`** (ต้องตรงตัวอักษรใหญ่-เล็ก)
+3. กรอก header แถวที่ 1: `signal`, `timestamp`, `confidence`, `active`
+4. กรอกข้อมูลแถวที่ 2:
+
+| A | B | C | D |
+|---|---|---|---|
+| signal | timestamp | confidence | active |
+| SELL | 2025-12-01T11:00:00Z | 0.92 | TRUE |
+
+**คำอธิบายคอลัมน์ชีทภายนอก:**
+| คอลัมน์ | ชื่อ | คำอธิบาย | ค่าที่รองรับ |
+|---------|------|----------|-------------|
+| A | signal | สัญญาณเทรด | `BUY` หรือ `SELL` |
+| B | timestamp | เวลาอัพเดท (ไม่บังคับ) | ISO 8601 format |
+| C | confidence | ค่าความมั่นใจ (ไม่บังคับ) | 0.0 - 1.0 |
+| D | active | สวิตช์เปิด/ปิดส่ง signal | `TRUE` หรือ `FALSE` |
+
+5. **แชร์ชีทภายนอก** ให้กับบัญชี Google ของเจ้าของ Apps Script หลัก (อย่างน้อยสิทธิ์ "ผู้ดู")
+
+#### วิธีใช้งานสำหรับผู้เชี่ยวชาญ
+
+- **เริ่มส่ง signal**: ตั้ง `active` = `TRUE` แล้วกรอก `signal` เป็น `BUY` หรือ `SELL`
+- **หยุดส่ง signal**: ตั้ง `active` = `FALSE` (ระบบจะ fallback ไปใช้ auto-scrape อัตโนมัติ)
+- **เปลี่ยน signal**: แก้ไขคอลัมน์ A เป็น `BUY` หรือ `SELL` ได้ตลอดเวลา
+
+#### การทำงานของ Fallback
+
+- ถ้า `ext_override` = `FALSE` → ใช้ auto-scrape เสมอ
+- ถ้า `ext_override` = `TRUE` + ชีทนอก `active` = `TRUE` + signal ถูกต้อง → ใช้ signal จากชีทนอก
+- ถ้า `ext_override` = `TRUE` แต่ชีทนอกไม่พร้อม (active=FALSE, ข้อมูลผิด, สิทธิ์ผิด, ฯลฯ) → fallback ไปใช้ auto-scrape อัตโนมัติ
+
+#### การดูแหล่งที่มาของ Signal
+
+ดูคอลัมน์ D (`source`) ในชีทหลัก:
+- `AUTO` = signal มาจากการ scrape อัตโนมัติ
+- `EXTERNAL` = signal มาจากชีทภายนอก (ผู้เชี่ยวชาญ)
 
 ## ตัวอย่างรูปแบบวันที่
 
