@@ -682,6 +682,212 @@
 		updateAccountDeposits();
 	}
 
+	let adjustingPLUnits: Set<number> = new Set();
+	let adjustingAllPL = false;
+
+	async function adjustUnitPLToZero(unit: number) {
+		const stat = unitStats.find((s) => s.unit === unit);
+		if (!stat || Math.abs(stat.profitLoss) < 0.01) return;
+
+		const accounts = unitGroups[unit] || [];
+		if (accounts.length === 0) return;
+
+		const direction = stat.profitLoss > 0 ? 'DP Note' : 'WD Note';
+		if (!confirm(`Zero P/L for Unit ${unit}?\n\nP/L: ${formatNumber(stat.profitLoss)}\nWill add ${formatNumber(Math.abs(stat.profitLoss))} to ${direction} of account ${accounts[0].account_number}`)) return;
+
+		adjustingPLUnits = new Set([...adjustingPLUnits, unit]);
+		const firstAccount = accounts[0].account_number;
+		const pl = Math.round(stat.profitLoss * 100) / 100;
+
+		if (pl > 0) {
+			accountDeposits = {
+				...accountDeposits,
+				[firstAccount]: Math.round(((accountDeposits[firstAccount] ?? 0) + pl) * 100) / 100
+			};
+			await updateAccountDeposits();
+		} else {
+			accountWithdrawals = {
+				...accountWithdrawals,
+				[firstAccount]: Math.round(((accountWithdrawals[firstAccount] ?? 0) + Math.abs(pl)) * 100) / 100
+			};
+			await updateAccountWithdrawals();
+		}
+
+		adjustingPLUnits = new Set([...adjustingPLUnits].filter((u) => u !== unit));
+	}
+
+	async function adjustAllGroupsPL() {
+		const affectedUnits = unitStats.filter((s) => Math.abs(s.profitLoss) >= 0.01);
+		if (affectedUnits.length === 0) return;
+
+		const summary = affectedUnits.map((s) => `  Unit ${s.unit}: P/L ${s.profitLoss >= 0 ? '+' : ''}${formatNumber(s.profitLoss)}`).join('\n');
+		if (!confirm(`Zero P/L for all groups?\n\n${summary}\n\nThis will adjust WD/DP Notes for ${affectedUnits.length} group(s).`)) return;
+
+		adjustingAllPL = true;
+		const wdUpdates: Record<string, number> = {};
+		const dpUpdates: Record<string, number> = {};
+
+		for (const stat of unitStats) {
+			if (Math.abs(stat.profitLoss) < 0.01) continue;
+			const accounts = unitGroups[stat.unit] || [];
+			if (accounts.length === 0) continue;
+
+			const firstAccount = accounts[0].account_number;
+			const pl = Math.round(stat.profitLoss * 100) / 100;
+			if (pl > 0) {
+				dpUpdates[firstAccount] = Math.round(((accountDeposits[firstAccount] ?? 0) + pl) * 100) / 100;
+			} else if (pl < 0) {
+				wdUpdates[firstAccount] = Math.round(((accountWithdrawals[firstAccount] ?? 0) + Math.abs(pl)) * 100) / 100;
+			}
+		}
+
+		if (Object.keys(dpUpdates).length > 0) {
+			accountDeposits = { ...accountDeposits, ...dpUpdates };
+		}
+		if (Object.keys(wdUpdates).length > 0) {
+			accountWithdrawals = { ...accountWithdrawals, ...wdUpdates };
+		}
+		if (Object.keys(dpUpdates).length > 0 || Object.keys(wdUpdates).length > 0) {
+			await updateAccountWithdrawalsAndDeposits();
+		}
+
+		adjustingAllPL = false;
+	}
+
+	let consolidatingUnits: Set<number> = new Set();
+	let consolidatingAll = false;
+
+	function getGroupWDDPSummary(unit: number) {
+		const accounts = unitGroups[unit] || [];
+		let totalWD = 0;
+		let totalDP = 0;
+		let maxWDAccount = '';
+		let maxWDValue = 0;
+
+		for (const a of accounts) {
+			const wd = accountWithdrawals[a.account_number] ?? 0;
+			const dp = accountDeposits[a.account_number] ?? 0;
+			totalWD += wd;
+			totalDP += dp;
+			if (wd > maxWDValue) {
+				maxWDValue = wd;
+				maxWDAccount = a.account_number;
+			}
+		}
+
+		if (!maxWDAccount && accounts.length > 0) maxWDAccount = accounts[0].account_number;
+
+		const net = Math.round((totalWD - totalDP) * 100) / 100;
+		return { accounts, totalWD, totalDP, net, maxWDAccount };
+	}
+
+	function isGroupNotNetted(unitAccounts: AccountSummary[]): boolean {
+		const nonZeroCount = unitAccounts.filter((a) => (accountWithdrawals[a.account_number] ?? 0) > 0 || (accountDeposits[a.account_number] ?? 0) > 0).length;
+		if (nonZeroCount > 1) return true;
+		return unitAccounts.some((a) => (accountWithdrawals[a.account_number] ?? 0) > 0 && (accountDeposits[a.account_number] ?? 0) > 0);
+	}
+
+	async function consolidateGroupWDDP(unit: number) {
+		const { accounts, totalWD, totalDP, net, maxWDAccount } = getGroupWDDPSummary(unit);
+		if (accounts.length === 0 || !isGroupNotNetted(accounts)) return;
+
+		const lines = accounts
+			.filter((a) => (accountWithdrawals[a.account_number] ?? 0) > 0 || (accountDeposits[a.account_number] ?? 0) > 0)
+			.map((a) => `  ${a.account_number}: WD ${formatNumber(accountWithdrawals[a.account_number] ?? 0)}, DP ${formatNumber(accountDeposits[a.account_number] ?? 0)}`)
+			.join('\n');
+		const resultLine = net > 0
+			? `Net WD: ${formatNumber(net)} -> ${maxWDAccount}`
+			: net < 0
+				? `Net DP: ${formatNumber(Math.abs(net))} -> ${accounts[0].account_number}`
+				: 'Net: 0 (all cleared)';
+
+		if (!confirm(`Consolidate WD/DP for Unit ${unit}?\n\nCurrent:\n${lines}\n\nResult:\n  ${resultLine}\n  All other WD/DP cleared to 0`)) return;
+
+		consolidatingUnits = new Set([...consolidatingUnits, unit]);
+		await applyConsolidation(accounts, net, maxWDAccount);
+		consolidatingUnits = new Set([...consolidatingUnits].filter((u) => u !== unit));
+	}
+
+	async function consolidateAllGroupsWDDP() {
+		const groups: Array<{ unit: number; totalWD: number; totalDP: number; net: number; maxWDAccount: string; accounts: typeof summaries }> = [];
+
+		for (const [unitStr] of Object.entries(unitGroups)) {
+			const unit = parseInt(unitStr);
+			const summary = getGroupWDDPSummary(unit);
+			if (isGroupNotNetted(summary.accounts)) groups.push({ unit, ...summary });
+		}
+
+		if (groups.length === 0) return;
+
+		const lines = groups.map((g) => `  Unit ${g.unit}: WD ${formatNumber(g.totalWD)}, DP ${formatNumber(g.totalDP)} -> Net ${g.net >= 0 ? 'WD' : 'DP'} ${formatNumber(Math.abs(g.net))}`).join('\n');
+		if (!confirm(`Consolidate WD/DP for all groups?\n\n${lines}\n\nThis will net WD/DP for ${groups.length} group(s).`)) return;
+
+		consolidatingAll = true;
+
+		const newWD = { ...accountWithdrawals };
+		const newDP = { ...accountDeposits };
+
+		for (const g of groups) {
+			for (const a of g.accounts) {
+				newWD[a.account_number] = 0;
+				newDP[a.account_number] = 0;
+			}
+			if (g.net > 0) {
+				newWD[g.maxWDAccount] = g.net;
+			} else if (g.net < 0) {
+				newDP[g.accounts[0].account_number] = Math.abs(g.net);
+			}
+		}
+
+		accountWithdrawals = newWD;
+		accountDeposits = newDP;
+		await updateAccountWithdrawalsAndDeposits();
+
+		consolidatingAll = false;
+	}
+
+	async function applyConsolidation(accounts: typeof summaries, net: number, maxWDAccount: string) {
+		const newWD = { ...accountWithdrawals };
+		const newDP = { ...accountDeposits };
+
+		for (const a of accounts) {
+			newWD[a.account_number] = 0;
+			newDP[a.account_number] = 0;
+		}
+
+		if (net > 0) {
+			newWD[maxWDAccount] = net;
+		} else if (net < 0) {
+			newDP[accounts[0].account_number] = Math.abs(net);
+		}
+
+		accountWithdrawals = newWD;
+		accountDeposits = newDP;
+		await updateAccountWithdrawalsAndDeposits();
+	}
+
+	async function updateAccountWithdrawalsAndDeposits() {
+		try {
+			const response = await fetch('/api/settings', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					account_withdrawals: accountWithdrawals,
+					account_deposits: accountDeposits
+				})
+			});
+
+			if (response.ok) {
+				const data = await response.json();
+				accountWithdrawals = data.account_withdrawals || accountWithdrawals;
+				accountDeposits = data.account_deposits || accountDeposits;
+				await fetchData();
+			}
+		} catch (error) {
+			console.error('Error updating account withdrawals and deposits:', error);
+		}
+	}
+
 	$: accountByNumber = (summaries || []).reduce(
 		(map, a) => {
 			(map as any)[a.account_number] = a;
@@ -1675,6 +1881,26 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												({((unitStat.profitLoss / unitInitialCapitals[unit]) * 100).toFixed(2)}%)
 											{/if}
 										</span>
+										{#if Math.abs(unitStat.profitLoss) >= 0.01}
+											<button
+												on:click|stopPropagation={() => adjustUnitPLToZero(unit)}
+												disabled={adjustingPLUnits.has(unit)}
+												class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-yellow-600/80 hover:bg-yellow-500 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+												title="Adjust P/L to 0 by modifying {unitStat.profitLoss > 0 ? 'DP Note' : 'WD Note'}"
+											>
+												{adjustingPLUnits.has(unit) ? '...' : 'Zero P/L'}
+											</button>
+										{/if}
+										{#if isGroupNotNetted(unitGroups[unit] || [])}
+											<button
+												on:click|stopPropagation={() => consolidateGroupWDDP(unit)}
+												disabled={consolidatingUnits.has(unit)}
+												class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-cyan-600/80 hover:bg-cyan-500 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+												title="Net WD and DP within this group"
+											>
+												{consolidatingUnits.has(unit) ? '...' : 'Net WD/DP'}
+											</button>
+										{/if}
 									</div>
 								{/if}
 							</div>
@@ -1780,6 +2006,58 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						</div>
 						{/if}
 					{/each}
+
+					<!-- Sum Total -->
+					{#if unitStats.length > 0}
+						{@const brokerEquities = (() => {
+							const map: Record<string, number> = {};
+							for (const a of summaries || []) {
+								if (!activeBrokers.has(a.broker_name) || !activeAccountNames.has(a.account_name)) continue;
+								const broker = a.broker_name || 'Unknown';
+								map[broker] = (map[broker] || 0) + a.latest_equity;
+							}
+							return Object.entries(map).sort((a, b) => b[1] - a[1]);
+						})()}
+						<div class="mt-3 bg-gray-800/80 border border-gray-600 rounded-lg px-4 py-2">
+							<div class="flex items-center justify-between">
+								<span class="text-sm font-semibold text-gray-300">Sum Total</span>
+								<div class="flex items-center gap-2">
+									<span class="text-sm font-bold text-white">
+										T: {formatNumber(unitStats.reduce((sum, s) => sum + s.totalBalance, 0))}
+									</span>
+									{#if unitStats.some((s) => Math.abs(s.profitLoss) >= 0.01)}
+										<button
+											on:click={adjustAllGroupsPL}
+											disabled={adjustingAllPL}
+											class="text-[10px] px-2 py-0.5 rounded font-medium bg-yellow-600/80 hover:bg-yellow-500 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+											title="Adjust P/L to 0 for all groups"
+										>
+											{adjustingAllPL ? 'Adjusting...' : 'Zero P/L All Groups'}
+										</button>
+									{/if}
+									{#if Object.values(unitGroups).some((accs) => isGroupNotNetted(accs))}
+										<button
+											on:click={consolidateAllGroupsWDDP}
+											disabled={consolidatingAll}
+											class="text-[10px] px-2 py-0.5 rounded font-medium bg-cyan-600/80 hover:bg-cyan-500 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+											title="Net WD and DP for all groups"
+										>
+											{consolidatingAll ? 'Consolidating...' : 'Net WD/DP All Groups'}
+										</button>
+									{/if}
+								</div>
+							</div>
+							{#if brokerEquities.length > 0}
+								<div class="flex flex-wrap gap-2 mt-1.5">
+									{#each brokerEquities as [broker, equity]}
+										<span class="text-xs bg-gray-700/60 text-gray-200 rounded px-2 py-0.5">
+											{broker}: <span class="font-semibold text-white">{formatNumber(equity)}</span>
+										</span>
+									{/each}
+								</div>
+							{/if}
+						</div>
+					{/if}
 			</div>
 
 			{#if summaries.length === 0}
