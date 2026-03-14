@@ -1091,15 +1091,18 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 		name="viewport"
 		content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
 	/>
+	<style>
+		:root { background-color: #1c1917; }
+	</style>
 </svelte:head>
 
-<div class="min-h-screen bg-slate-50" class:hidden={!appReady}>
+<div class="min-h-screen bg-stone-900" class:hidden={!appReady}>
 	<!-- Sticky Top Bar -->
-	<div class="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-gray-200/60">
+	<div class="sticky top-0 z-30 bg-stone-900/90 backdrop-blur-md border-b border-stone-700/50">
 		<div class="max-w-7xl mx-auto px-4 py-2.5 flex items-center justify-between">
 			<button
 				on:click={() => (showSettingsModal = true)}
-				class="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+				class="text-stone-500 hover:text-stone-300 p-1.5 rounded-lg hover:bg-stone-800 transition-colors"
 				title="Settings"
 				aria-label="Open Settings"
 			>
@@ -1109,9 +1112,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				</svg>
 			</button>
 
-			<div class="flex items-center gap-2 text-xs text-gray-400">
+			<div class="flex items-center gap-2 text-xs text-stone-500">
 				{#if latestUpdate}
-					<span class="hidden sm:inline">{formatDateTime(new Date(latestUpdate).toISOString())}</span>
+					<span>{formatDateTime(new Date(latestUpdate).toISOString())}</span>
 				{/if}
 				<span class="flex items-center gap-0.5" title="Next refresh">
 					<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
@@ -1119,7 +1122,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				</span>
 				<button
 					on:click={fetchData}
-					class="p-1 rounded-md bg-indigo-500 hover:bg-indigo-600 text-white transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+					class="p-1 rounded-md bg-indigo-500 hover:bg-indigo-600 text-white transition-colors disabled:bg-stone-700 disabled:cursor-not-allowed"
 					title="Refresh"
 					aria-label="Refresh"
 					disabled={loading || isRefreshing}
@@ -1145,25 +1148,25 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 		<!-- Hero P/L -->
 		<div class="text-center pt-2 pb-4">
 			{#if !isDataComplete}
-				<span class="inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 border border-amber-200 text-amber-600 mb-2">Partial Data</span>
+				<span class="inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-900/40 border border-amber-700/50 text-amber-400 mb-2">Partial Data</span>
 			{/if}
 			<p
 				class="text-5xl md:text-7xl font-black tracking-tight leading-none {!isDataComplete ? 'opacity-60' : ''}"
-				class:text-emerald-500={adjustedProfitLossPercent >= 0}
-				class:text-red-500={adjustedProfitLossPercent < 0}
-			>
-				{adjustedProfitLossPercent >= 0 ? '+' : ''}{formatPercent(adjustedProfitLossPercent)}
-			</p>
-			<p
-				class="text-xl md:text-2xl font-semibold mt-1 tracking-tight"
-				class:text-emerald-600={adjustedProfitLoss >= 0}
-				class:text-red-600={adjustedProfitLoss < 0}
+				class:text-emerald-500={adjustedProfitLoss >= 0}
+				class:text-red-500={adjustedProfitLoss < 0}
 			>
 				{adjustedProfitLoss >= 0 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
 			</p>
+			<p
+				class="text-xl md:text-2xl font-semibold mt-1 tracking-tight"
+				class:text-emerald-400={adjustedProfitLossPercent >= 0}
+				class:text-red-400={adjustedProfitLossPercent < 0}
+			>
+				{adjustedProfitLossPercent >= 0 ? '+' : ''}{formatPercent(adjustedProfitLossPercent)}
+			</p>
 
 			{#if totalWaitingWD !== 0 || totalDeposits !== 0}
-				<div class="flex items-center justify-center gap-3 mt-2 text-xs text-gray-400">
+				<div class="flex items-center justify-center gap-3 mt-2 text-xs text-stone-500">
 					<span>Total P/L: {stats.profit_loss >= 0 ? '+' : ''}{formatNumber(stats.profit_loss)}</span>
 					{#if totalWaitingWD !== 0}
 						<span>WD: {totalWaitingWD >= 0 ? '+' : ''}{formatNumber(totalWaitingWD)}</span>
@@ -1183,11 +1186,11 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						Δ {(snapshotDelta ?? 0) >= 0 ? '+' : ''}{formatNumber(snapshotDelta ?? 0)}
 					</span>
 				{/if}
-				<button on:click={() => takeSnapshot('adjusted')} class="text-xs px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-500 transition-colors disabled:opacity-50" disabled={snapshotLoading}>
+				<button on:click={() => takeSnapshot('adjusted')} class="text-xs px-2.5 py-1 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-400 transition-colors disabled:opacity-50" disabled={snapshotLoading}>
 					Snapshot
 				</button>
 				{#if snapshot}
-					<button on:click={clearSnapshot} class="text-xs px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-500 transition-colors disabled:opacity-50" disabled={snapshotLoading}>
+					<button on:click={clearSnapshot} class="text-xs px-2.5 py-1 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-400 transition-colors disabled:opacity-50" disabled={snapshotLoading}>
 						Clear
 					</button>
 				{/if}
@@ -1197,20 +1200,20 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 		<!-- Stats Grid: 3 metric cards -->
 		<div class="grid grid-cols-3 gap-3">
 			<!-- Active Accounts -->
-			<div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-3">
-				<div class="text-xs font-medium text-gray-400 uppercase tracking-wider">Active</div>
-				<div class="text-2xl font-bold text-gray-800 mt-0.5">{stats.account_count}</div>
+			<div class="bg-stone-800 rounded-2xl border border-stone-700/50 shadow-sm p-3">
+				<div class="text-xs font-medium text-stone-500 uppercase tracking-wider">Active</div>
+				<div class="text-2xl font-bold text-stone-200 mt-0.5">{stats.account_count}</div>
 			</div>
 
 			<!-- Open Pairs -->
-			<div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-3">
-				<div class="text-xs font-medium text-gray-400 uppercase tracking-wider">Open Pairs</div>
+			<div class="bg-stone-800 rounded-2xl border border-stone-700/50 shadow-sm p-3">
+				<div class="text-xs font-medium text-stone-500 uppercase tracking-wider">Open Pairs</div>
 				<div class="flex items-baseline gap-2 mt-0.5">
-					<span class="text-2xl font-bold text-gray-800">{tradingPairs}</span>
+					<span class="text-2xl font-bold text-stone-200">{tradingPairs}</span>
 					{#if positivePairsCount > 0 || negativePairsCount > 0}
 						<span class="text-xs">
 							<span class="text-emerald-500 font-semibold">+{positivePairsCount}</span>
-							<span class="text-gray-300 mx-0.5">/</span>
+							<span class="text-stone-500 mx-0.5">/</span>
 							<span class="text-red-500 font-semibold">-{negativePairsCount}</span>
 						</span>
 					{/if}
@@ -1218,38 +1221,38 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			</div>
 
 			<!-- Low Equity Warning -->
-			<div class="rounded-2xl border shadow-sm p-3 {lowEquityWarningCount > 0 ? 'bg-red-50 border-red-100' : 'bg-white border-gray-100'}">
-				<div class="text-xs font-medium uppercase tracking-wider {lowEquityWarningCount > 0 ? 'text-red-500' : 'text-gray-400'}">Low Equity</div>
-				<div class="text-2xl font-bold mt-0.5 {lowEquityWarningCount > 0 ? 'text-red-500' : 'text-gray-800'}">{lowEquityWarningCount}</div>
+			<div class="rounded-2xl border shadow-sm p-3 {lowEquityWarningCount > 0 ? 'bg-red-900/30 border-red-800/50' : 'bg-stone-800 border-stone-700/50'}">
+				<div class="text-xs font-medium uppercase tracking-wider {lowEquityWarningCount > 0 ? 'text-red-400' : 'text-stone-500'}">Low Equity</div>
+				<div class="text-2xl font-bold mt-0.5 {lowEquityWarningCount > 0 ? 'text-red-400' : 'text-stone-200'}">{lowEquityWarningCount}</div>
 			</div>
 		</div>
 
 		<!-- Open Pairs Detail -->
 		{#if positivePairs.length > 0 || negativePairs.length > 0}
 		<div class="grid grid-cols-2 gap-3">
-			<div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-3">
-				<div class="text-xs font-medium text-emerald-500 uppercase tracking-wider mb-1.5">Positive Open</div>
+			<div class="bg-stone-800 rounded-2xl border border-stone-700/50 shadow-sm p-3">
+				<div class="text-xs font-medium text-emerald-400 uppercase tracking-wider mb-1.5">Positive Open</div>
 				<div class="flex flex-wrap gap-1.5">
 					{#each positivePairs as d}
-						<span class="inline-flex items-center justify-center min-w-7 h-6 px-1.5 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-600 border border-emerald-100">
+						<span class="inline-flex items-center justify-center min-w-7 h-6 px-1.5 rounded-lg text-xs font-bold bg-emerald-900/40 text-emerald-400 border border-emerald-800/50">
 							+{Math.round(d.delta as number)}
 						</span>
 					{/each}
 					{#if positivePairs.length === 0}
-						<span class="text-xs text-gray-300">--</span>
+						<span class="text-xs text-stone-600">--</span>
 					{/if}
 				</div>
 			</div>
-			<div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-3">
-				<div class="text-xs font-medium text-red-500 uppercase tracking-wider mb-1.5">Negative Open</div>
+			<div class="bg-stone-800 rounded-2xl border border-stone-700/50 shadow-sm p-3">
+				<div class="text-xs font-medium text-red-400 uppercase tracking-wider mb-1.5">Negative Open</div>
 				<div class="flex flex-wrap gap-1.5">
 					{#each negativePairs as d}
-						<span class="inline-flex items-center justify-center min-w-7 h-6 px-1.5 rounded-lg text-xs font-bold bg-red-50 text-red-600 border border-red-100">
+						<span class="inline-flex items-center justify-center min-w-7 h-6 px-1.5 rounded-lg text-xs font-bold bg-red-900/40 text-red-400 border border-red-800/50">
 							{Math.round(d.delta as number)}
 						</span>
 					{/each}
 					{#if negativePairs.length === 0}
-						<span class="text-xs text-gray-300">--</span>
+						<span class="text-xs text-stone-600">--</span>
 					{/if}
 				</div>
 			</div>
@@ -1261,7 +1264,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			<div class="flex items-center gap-1.5">
 				<button 
 					on:click={collapseAllUnits}
-					class="text-xs px-2.5 py-1.5 rounded-lg bg-white hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors border border-gray-200 shadow-sm flex items-center gap-1"
+					class="text-xs px-2.5 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-400 hover:text-stone-300 transition-colors border border-stone-700/50 shadow-sm flex items-center gap-1"
 					title="Collapse all unit groups"
 				>
 					<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" /></svg>
@@ -1269,23 +1272,23 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				</button>
 				<button 
 					on:click={expandAllUnits}
-					class="text-xs px-2.5 py-1.5 rounded-lg bg-white hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors border border-gray-200 shadow-sm flex items-center gap-1"
+					class="text-xs px-2.5 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-400 hover:text-stone-300 transition-colors border border-stone-700/50 shadow-sm flex items-center gap-1"
 					title="Expand all unit groups"
 				>
 					<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
 					Expand
 				</button>
 			</div>
-			<button on:click={() => (showFilters = !showFilters)} class="text-xs px-2.5 py-1.5 rounded-lg bg-white hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors border border-gray-200 shadow-sm flex items-center gap-1">
+			<button on:click={() => (showFilters = !showFilters)} class="text-xs px-2.5 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-400 hover:text-stone-300 transition-colors border border-stone-700/50 shadow-sm flex items-center gap-1">
 				<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" /></svg>
 				{showFilters ? 'Hide Filters' : 'Filters'}
 			</button>
 		</div>
 
 		{#if showFilters}
-		<div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-3 space-y-2">
+		<div class="bg-stone-800 rounded-2xl border border-stone-700/50 shadow-sm p-3 space-y-2">
 			<div class="flex items-center gap-1.5 flex-wrap">
-				<span class="text-xs text-gray-400 font-medium">Broker:</span>
+				<span class="text-xs text-stone-500 font-medium">Broker:</span>
 				{#each uniqueBrokersList as b}
 					<button
 						on:click={() => toggleBroker(b.name)}
@@ -1293,21 +1296,21 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						class:bg-indigo-500={activeBrokers.has(b.name)}
 						class:text-white={activeBrokers.has(b.name)}
 						class:border-indigo-400={activeBrokers.has(b.name)}
-						class:bg-white={!activeBrokers.has(b.name)}
-						class:text-gray-500={!activeBrokers.has(b.name)}
-						class:border-gray-200={!activeBrokers.has(b.name)}
+						class:bg-stone-700={!activeBrokers.has(b.name)}
+						class:text-stone-400={!activeBrokers.has(b.name)}
+						class:border-stone-600={!activeBrokers.has(b.name)}
 						title={`Toggle broker ${b.name}`}
 					>
 						{b.name} <span class="opacity-60">({b.count})</span>
 					</button>
 				{/each}
 				<div class="ml-auto flex items-center gap-1">
-					<button on:click={selectAllBrokers} class="text-xs px-1.5 py-0.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-50">All</button>
-					<button on:click={clearAllBrokers} class="text-xs px-1.5 py-0.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-50">Clear</button>
+					<button on:click={selectAllBrokers} class="text-xs px-1.5 py-0.5 rounded-md text-stone-500 hover:text-stone-300 hover:bg-stone-700">All</button>
+					<button on:click={clearAllBrokers} class="text-xs px-1.5 py-0.5 rounded-md text-stone-500 hover:text-stone-300 hover:bg-stone-700">Clear</button>
 				</div>
 			</div>
 			<div class="flex items-center gap-1.5 flex-wrap">
-				<span class="text-xs text-gray-400 font-medium">Account:</span>
+				<span class="text-xs text-stone-500 font-medium">Account:</span>
 				{#each uniqueAccountNamesList as a}
 					<button
 						on:click={() => toggleAccountName(a.name)}
@@ -1315,17 +1318,17 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						class:bg-indigo-500={activeAccountNames.has(a.name)}
 						class:text-white={activeAccountNames.has(a.name)}
 						class:border-indigo-400={activeAccountNames.has(a.name)}
-						class:bg-white={!activeAccountNames.has(a.name)}
-						class:text-gray-500={!activeAccountNames.has(a.name)}
-						class:border-gray-200={!activeAccountNames.has(a.name)}
+						class:bg-stone-700={!activeAccountNames.has(a.name)}
+						class:text-stone-400={!activeAccountNames.has(a.name)}
+						class:border-stone-600={!activeAccountNames.has(a.name)}
 						title={`Toggle account ${a.name}`}
 					>
 						{shortName(a.name)} <span class="opacity-60">({a.count})</span>
 					</button>
 				{/each}
 				<div class="ml-auto flex items-center gap-1">
-					<button on:click={selectAllAccountNames} class="text-xs px-1.5 py-0.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-50">All</button>
-					<button on:click={clearAllAccountNames} class="text-xs px-1.5 py-0.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-50">Clear</button>
+					<button on:click={selectAllAccountNames} class="text-xs px-1.5 py-0.5 rounded-md text-stone-500 hover:text-stone-300 hover:bg-stone-700">All</button>
+					<button on:click={clearAllAccountNames} class="text-xs px-1.5 py-0.5 rounded-md text-stone-500 hover:text-stone-300 hover:bg-stone-700">Clear</button>
 				</div>
 			</div>
 		</div>
@@ -1348,16 +1351,11 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						
 						{#if visibleAccounts.length > 0}
 						<div
-							class="bg-white rounded-2xl border shadow-sm overflow-hidden"
-							class:border-indigo-200={groupIsTrading}
-							class:border-gray-100={!groupIsTrading}
+							class="bg-stone-800 rounded-2xl border shadow-sm overflow-hidden {groupIsTrading ? 'border-indigo-700/50' : 'border-stone-700/50'}"
 						>
 							<!-- Unit Header Row 1: Name + badges -->
 							<div 
-								class="px-4 py-2.5 cursor-pointer transition-colors"
-								class:hover:bg-gray-50={!accounts.some(isLowEquityWarning)}
-								class:bg-red-50={accounts.some(isLowEquityWarning)}
-								class:hover:bg-red-100={accounts.some(isLowEquityWarning)}
+								class="px-4 py-2.5 cursor-pointer transition-colors {accounts.some(isLowEquityWarning) ? 'bg-red-900/20 hover:bg-red-900/30' : 'hover:bg-stone-700/50'}"
 								on:click={() => {
 									unitVisibility = { ...unitVisibility, [unit]: !(unitVisibility[unit] !== false) };
 								}}
@@ -1375,27 +1373,39 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								<div class="flex items-center justify-between">
 									<div class="flex items-center gap-2">
 										<svg 
-											class="w-3.5 h-3.5 text-gray-300 transition-transform duration-200 flex-shrink-0"
+											class="w-3.5 h-3.5 text-stone-500 transition-transform duration-200 flex-shrink-0"
 											class:rotate-90={unitVisibility[unit] !== false}
 											fill="none" stroke="currentColor" viewBox="0 0 24 24"
 										>
 											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
 										</svg>
-										<h3 class="text-sm font-semibold text-gray-800">
+										<h3 class="text-sm font-semibold text-stone-200">
 											{unit === 0 ? 'Unknown Unit' : getUnitDisplayName(unit)}
 										</h3>
-										<span class="text-[10px] text-gray-400">#{unit}</span>
+										<span class="text-[10px] text-stone-500">#{unit}</span>
 										{#if accounts.some(isLowEquityWarning)}
 											<span class="w-1.5 h-1.5 rounded-full bg-red-400 flex-shrink-0" title="Low equity"></span>
 										{/if}
 										{#if unitHasStaleData}
 											<span class="w-1.5 h-1.5 rounded-full bg-orange-400 flex-shrink-0" title="Stale data"></span>
 										{/if}
+										{#if unitStat}
+											{#if Math.abs(unitStat.profitLoss) >= 0.01}
+												<button on:click|stopPropagation={() => adjustUnitPLToZero(unit)} disabled={adjustingPLUnits.has(unit)} class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-900/40 hover:bg-amber-900/60 text-amber-400 disabled:opacity-50 transition-colors">
+													{adjustingPLUnits.has(unit) ? '...' : 'Set P/L Zero'}
+												</button>
+											{/if}
+											{#if isGroupNotNetted(unitGroups[unit] || [])}
+												<button on:click|stopPropagation={() => consolidateGroupWDDP(unit)} disabled={consolidatingUnits.has(unit)} class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-cyan-900/40 hover:bg-cyan-900/60 text-cyan-400 disabled:opacity-50 transition-colors">
+													{consolidatingUnits.has(unit) ? '...' : 'Simplify WD/DP'}
+												</button>
+											{/if}
+										{/if}
 									</div>
 									<div class="flex items-center gap-1.5 flex-shrink-0">
 										{#if computeUnitDelta(accounts) !== null}
 											{@const delta = computeUnitDelta(accounts) as number}
-											<span class="text-xs px-1.5 py-0.5 rounded-md font-semibold" class:bg-emerald-50={delta >= 0} class:text-emerald-600={delta >= 0} class:bg-red-50={delta < 0} class:text-red-600={delta < 0}>
+											<span class="text-xs px-1.5 py-0.5 rounded-md font-semibold {delta >= 0 ? 'bg-emerald-900/40 text-emerald-400' : 'bg-red-900/40 text-red-400'}">
 												{delta > 0 ? '+' : ''}{delta.toFixed(0)} pts
 											</span>
 										{/if}
@@ -1403,7 +1413,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											{@const accountWithPosition = visibleAccounts.find(a => (a.lastSize || 0) > 0)}
 											{@const positionLots = accountWithPosition?.lastSize || 0}
 											{#if positionLots > 0}
-												<span class="text-xs px-1.5 py-0.5 rounded-md font-semibold bg-violet-50 text-violet-600">
+												<span class="text-xs px-1.5 py-0.5 rounded-md font-semibold bg-violet-900/40 text-violet-400">
 													{positionLots.toFixed(2)}L
 												</span>
 											{/if}
@@ -1411,30 +1421,22 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 									</div>
 								</div>
 
-								<!-- Row 2: Stats line -->
+								<!-- Row 2: Stats line + P/L -->
 								{#if unitStat}
-									<div class="flex items-center gap-x-3 gap-y-0.5 flex-wrap mt-1.5 text-xs text-gray-400">
-										<span>C: {formatNumber(unitInitialCapitals[unit] ?? 0)}</span>
-										<span>T: {formatNumber(unitStat.totalBalance)}</span>
-										{#if (unitGroups[unit] || []).reduce((s, a) => s + (accountWithdrawals[a.account_number] ?? 0), 0) > 0}
-											<span>WD: +{formatNumber((unitGroups[unit] || []).reduce((s, a) => s + (accountWithdrawals[a.account_number] ?? 0), 0))}</span>
-										{/if}
-										{#if (unitGroups[unit] || []).reduce((s, a) => s + (accountDeposits[a.account_number] ?? 0), 0) > 0}
-											<span>DP: -{formatNumber((unitGroups[unit] || []).reduce((s, a) => s + (accountDeposits[a.account_number] ?? 0), 0))}</span>
-										{/if}
-										<span class="font-semibold" class:text-emerald-600={unitStat.profitLoss >= 0} class:text-red-600={unitStat.profitLoss < 0}>
-											P/L: {unitStat.profitLoss >= 0 ? '+' : ''}{formatNumber(unitStat.profitLoss)}{#if unitInitialCapitals[unit] && unitInitialCapitals[unit] > 0} ({((unitStat.profitLoss / unitInitialCapitals[unit]) * 100).toFixed(1)}%){/if}
+									<div class="flex items-center justify-between mt-1.5">
+										<div class="flex items-center gap-x-3 gap-y-0.5 flex-wrap text-xs text-stone-500">
+											<span>C: {formatNumber(unitInitialCapitals[unit] ?? 0)}</span>
+											<span>T: {formatNumber(unitStat.totalBalance)}</span>
+											{#if (unitGroups[unit] || []).reduce((s, a) => s + (accountWithdrawals[a.account_number] ?? 0), 0) > 0}
+												<span>WD: +{formatNumber((unitGroups[unit] || []).reduce((s, a) => s + (accountWithdrawals[a.account_number] ?? 0), 0))}</span>
+											{/if}
+											{#if (unitGroups[unit] || []).reduce((s, a) => s + (accountDeposits[a.account_number] ?? 0), 0) > 0}
+												<span>DP: -{formatNumber((unitGroups[unit] || []).reduce((s, a) => s + (accountDeposits[a.account_number] ?? 0), 0))}</span>
+											{/if}
+										</div>
+										<span class="text-xs font-semibold flex-shrink-0 ml-3" class:text-emerald-400={unitStat.profitLoss >= 0} class:text-red-400={unitStat.profitLoss < 0}>
+											{unitStat.profitLoss >= 0 ? '+' : ''}{formatNumber(unitStat.profitLoss)}{#if unitInitialCapitals[unit] && unitInitialCapitals[unit] > 0} <span class="font-normal text-stone-500">({((unitStat.profitLoss / unitInitialCapitals[unit]) * 100).toFixed(1)}%)</span>{/if}
 										</span>
-										{#if Math.abs(unitStat.profitLoss) >= 0.01}
-											<button on:click|stopPropagation={() => adjustUnitPLToZero(unit)} disabled={adjustingPLUnits.has(unit)} class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-50 hover:bg-amber-100 text-amber-600 disabled:opacity-50 transition-colors">
-												{adjustingPLUnits.has(unit) ? '...' : 'Zero'}
-											</button>
-										{/if}
-										{#if isGroupNotNetted(unitGroups[unit] || [])}
-											<button on:click|stopPropagation={() => consolidateGroupWDDP(unit)} disabled={consolidatingUnits.has(unit)} class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-cyan-50 hover:bg-cyan-100 text-cyan-600 disabled:opacity-50 transition-colors">
-												{consolidatingUnits.has(unit) ? '...' : 'Net'}
-											</button>
-										{/if}
 									</div>
 								{/if}
 
@@ -1457,9 +1459,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										<div class="flex items-center gap-1.5 mt-1 flex-wrap">
 											{#each nonZeroEntries as [broker, s]}
 												<div class="flex items-center gap-1 text-[10px]">
-													<span class="text-gray-400">{truncateWithEllipsis(broker, 6)}</span>
-													{#if s.d > 0}<span class="text-emerald-500 font-medium">D{formatNumber(s.d)}</span>{/if}
-													{#if s.w > 0}<span class="text-red-500 font-medium">W{formatNumber(s.w)}</span>{/if}
+													<span class="text-stone-500">{truncateWithEllipsis(broker, 6)}</span>
+													{#if s.d > 0}<span class="text-emerald-400 font-medium">D{formatNumber(s.d)}</span>{/if}
+													{#if s.w > 0}<span class="text-red-400 font-medium">W{formatNumber(s.w)}</span>{/if}
 												</div>
 											{/each}
 										</div>
@@ -1472,29 +1474,28 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							<div class="overflow-x-auto px-1">
 								<table class="w-full text-xs">
 									<thead>
-										<tr class="border-b border-gray-200">
-											<th class="text-right py-1.5 px-2 text-gray-500 font-medium">Adjust</th>
-											<th class="text-left py-1.5 px-2 text-gray-500 font-medium">Account / Name</th>
-											<th class="text-left py-1.5 px-2 text-gray-500 font-medium">Broker</th>
-											<th class="text-right py-1.5 px-2 text-gray-500 font-medium">Balance</th>
-											<th class="text-right py-1.5 px-2 text-gray-500 font-medium">Equity</th>
-											<th class="text-right py-1.5 px-2 text-gray-500 font-medium">WD Note (+)</th>
-											<th class="text-right py-1.5 px-2 text-gray-500 font-medium">DP Note (-)</th>
-											<th class="text-center py-1.5 px-2 text-gray-500 font-medium">Status</th>
-											<th class="text-left py-1.5 px-2 text-gray-500 font-medium">Updated</th>
+										<tr class="border-b border-stone-700">
+											<th class="text-right py-1.5 px-2 text-stone-500 font-medium">Adjust</th>
+											<th class="text-left py-1.5 px-2 text-stone-500 font-medium">Account / Name</th>
+											<th class="text-left py-1.5 px-2 text-stone-500 font-medium">Broker</th>
+											<th class="text-right py-1.5 px-2 text-stone-500 font-medium">Balance</th>
+											<th class="text-right py-1.5 px-2 text-stone-500 font-medium">Equity</th>
+											<th class="text-right py-1.5 px-2 text-stone-500 font-medium">WD Note (+)</th>
+											<th class="text-right py-1.5 px-2 text-stone-500 font-medium">DP Note (-)</th>
+											<th class="text-center py-1.5 px-2 text-stone-500 font-medium">Status</th>
+											<th class="text-left py-1.5 px-2 text-stone-500 font-medium">Updated</th>
 										</tr>
 									</thead>
 									<tbody>
 										{#each visibleAccounts as account}
 											{@const dataAge = getDataAge(account.last_update)}
 											<tr
-												class="border-b border-gray-100 hover:bg-gray-50 transition-colors"
-												class:bg-red-50={dataAge.status === 'fresh' && isLowEquityWarning(account)}
+												class="border-b border-stone-700/50 hover:bg-stone-700/30 transition-colors {dataAge.status === 'fresh' && isLowEquityWarning(account) ? 'bg-red-900/20' : ''}"
 											>
                                             <td
 													class="py-1.5 px-2 text-right font-medium text-xs"
-                                                class:text-red-500={getUnitTargetEquity(account.unit) - account.latest_equity < 0}
-                                                class:text-emerald-600={getUnitTargetEquity(account.unit) - account.latest_equity > 0}
+                                                class:text-red-400={getUnitTargetEquity(account.unit) - account.latest_equity < 0}
+                                                class:text-emerald-400={getUnitTargetEquity(account.unit) - account.latest_equity > 0}
 												>
                                                 {#if getUnitTargetEquity(account.unit) - account.latest_equity > 0}
                                                     D {formatNumber(Math.abs(getUnitTargetEquity(account.unit) - account.latest_equity))}
@@ -1506,19 +1507,19 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												</td>
 												<td class="py-1.5 px-2">
 													<div class="flex flex-col leading-tight">
-														<span class="font-mono font-semibold text-gray-800 text-xs">
+														<span class="font-mono font-semibold text-stone-200 text-xs">
 															{account.account_number}
 														</span>
-														<span class="text-gray-500 text-xs truncate" title={account.account_name}
+														<span class="text-stone-500 text-xs truncate" title={account.account_name}
 															>{shortName(account.account_name)}</span
 														>
 													</div>
 												</td>
-												<td class="py-1.5 px-2 text-gray-500 text-xs">{account.broker_name}</td>
-												<td class="py-1.5 px-2 text-right font-medium text-gray-800 text-xs"
+												<td class="py-1.5 px-2 text-stone-500 text-xs">{account.broker_name}</td>
+												<td class="py-1.5 px-2 text-right font-medium text-stone-200 text-xs"
 													>{formatNumber(account.latest_balance)}</td
 												>
-												<td class="py-1.5 px-2 text-right font-medium text-gray-800 text-xs"
+												<td class="py-1.5 px-2 text-right font-medium text-stone-200 text-xs"
 													>{formatNumber(account.latest_equity)}</td
 												>
 												<td class="py-1.5 px-2 text-right">
@@ -1529,7 +1530,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 														value={accountWithdrawals[account.account_number] ?? 0}
 														on:change={(e) =>
 															handleAccountWithdrawalChange(account.account_number, e)}
-														class="w-20 border border-gray-200 bg-gray-50 text-gray-800 rounded-md px-1.5 py-0.5 text-right text-xs focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400"
+														class="w-20 border border-stone-600 bg-stone-700 text-stone-200 rounded-md px-1.5 py-0.5 text-right text-xs focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400"
 													/>
 												</td>
 												<td class="py-1.5 px-2 text-right">
@@ -1540,7 +1541,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 														value={accountDeposits[account.account_number] ?? 0}
 														on:change={(e) =>
 															handleAccountDepositChange(account.account_number, e)}
-														class="w-20 border border-gray-200 bg-gray-50 text-gray-800 rounded-md px-1.5 py-0.5 text-right text-xs focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400"
+														class="w-20 border border-stone-600 bg-stone-700 text-stone-200 rounded-md px-1.5 py-0.5 text-right text-xs focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400"
 													/>
 												</td>
 												<td class="py-1.5 px-2 text-center">
@@ -1554,7 +1555,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 														</span>
 													{/if}
 												</td>
-												<td class="py-1.5 px-2 text-gray-500 text-xs"
+												<td class="py-1.5 px-2 text-stone-500 text-xs"
 													>{formatDateTime(account.last_update)}</td
 												>
 											</tr>
@@ -1584,26 +1585,26 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				}
 				return Object.entries(map).sort((a, b) => b[1].equity - a[1].equity);
 			})()}
-			<div class="bg-indigo-50/60 rounded-2xl border border-indigo-200/60 shadow-sm px-4 py-3">
+			<div class="bg-indigo-950/40 rounded-2xl border border-indigo-800/40 shadow-sm px-4 py-3">
 				<div class="flex items-center justify-between">
 					<div class="flex flex-col">
 						<span class="text-xs font-medium text-indigo-400 uppercase tracking-wider">Total</span>
 						{#if initialCapital > 0}
-							<span class="text-[10px] text-gray-400 mt-0.5">Capital: {formatNumber(initialCapital)}</span>
+							<span class="text-[10px] text-stone-500 mt-0.5">Capital: {formatNumber(initialCapital)}</span>
 						{/if}
 					</div>
 					<div class="flex items-center gap-2">
-						<span class="text-lg font-bold text-gray-800">
+						<span class="text-lg font-bold text-stone-200">
 							{formatNumber(unitStats.reduce((sum, s) => sum + s.totalBalance, 0))}
 						</span>
 						{#if unitStats.some((s) => Math.abs(s.profitLoss) >= 0.01)}
-							<button on:click={adjustAllGroupsPL} disabled={adjustingAllPL} class="text-[10px] px-2 py-0.5 rounded-md font-medium bg-amber-50 hover:bg-amber-100 text-amber-600 disabled:opacity-50 transition-colors">
-								{adjustingAllPL ? '...' : 'Zero All'}
+							<button on:click={adjustAllGroupsPL} disabled={adjustingAllPL} class="text-[10px] px-2 py-0.5 rounded-md font-medium bg-amber-900/40 hover:bg-amber-900/60 text-amber-400 disabled:opacity-50 transition-colors">
+								{adjustingAllPL ? '...' : 'Set P/L Zero All'}
 							</button>
 						{/if}
 						{#if Object.values(unitGroups).some((accs) => isGroupNotNetted(accs))}
-							<button on:click={consolidateAllGroupsWDDP} disabled={consolidatingAll} class="text-[10px] px-2 py-0.5 rounded-md font-medium bg-cyan-50 hover:bg-cyan-100 text-cyan-600 disabled:opacity-50 transition-colors">
-								{consolidatingAll ? '...' : 'Net All'}
+							<button on:click={consolidateAllGroupsWDDP} disabled={consolidatingAll} class="text-[10px] px-2 py-0.5 rounded-md font-medium bg-cyan-900/40 hover:bg-cyan-900/60 text-cyan-400 disabled:opacity-50 transition-colors">
+								{consolidatingAll ? '...' : 'Simplify WD/DP All'}
 							</button>
 						{/if}
 					</div>
@@ -1622,14 +1623,14 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										}
 										expandedBrokers = expandedBrokers;
 									}}
-									class="w-full flex items-center justify-between text-xs text-gray-500 bg-gray-50 hover:bg-gray-100 rounded-lg px-2.5 py-1.5 transition-colors"
+									class="w-full flex items-center justify-between text-xs text-stone-400 bg-stone-800/60 hover:bg-stone-700/60 rounded-lg px-2.5 py-1.5 transition-colors"
 								>
 									<span class="flex items-center gap-1.5">
-										<svg class="w-3 h-3 text-gray-400 transition-transform {expandedBrokers.has(broker) ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+										<svg class="w-3 h-3 text-stone-500 transition-transform {expandedBrokers.has(broker) ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
 										{broker}
-										<span class="text-[10px] text-gray-400">({Object.keys(brokerData.names).length})</span>
+										<span class="text-[10px] text-stone-500">({Object.keys(brokerData.names).length})</span>
 									</span>
-									<span class="font-semibold text-gray-700">{formatNumber(brokerData.equity)}</span>
+									<span class="font-semibold text-stone-300">{formatNumber(brokerData.equity)}</span>
 								</button>
 								{#if expandedBrokers.has(broker)}
 									<div class="ml-5 mt-1 flex flex-col gap-1">
@@ -1647,34 +1648,34 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 															}
 															expandedBrokerNames = expandedBrokerNames;
 														}}
-														class="w-full flex items-center justify-between text-[11px] text-gray-500 hover:bg-gray-50 rounded-md px-2.5 py-1 transition-colors"
+														class="w-full flex items-center justify-between text-[11px] text-stone-400 hover:bg-stone-700/40 rounded-md px-2.5 py-1 transition-colors"
 													>
 														<span class="flex items-center gap-1.5">
-															<svg class="w-2.5 h-2.5 text-gray-300 transition-transform {expandedBrokerNames.has(nameKey) ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+															<svg class="w-2.5 h-2.5 text-stone-500 transition-transform {expandedBrokerNames.has(nameKey) ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
 															<span class="truncate">{name}</span>
-															<span class="text-[10px] text-gray-400">({nameData.accounts.length})</span>
+															<span class="text-[10px] text-stone-500">({nameData.accounts.length})</span>
 														</span>
-														<span class="font-medium text-gray-600 whitespace-nowrap">{formatNumber(nameData.equity)}</span>
+														<span class="font-medium text-stone-300 whitespace-nowrap">{formatNumber(nameData.equity)}</span>
 													</button>
 													{#if expandedBrokerNames.has(nameKey)}
 														<div class="ml-5 mt-0.5 space-y-0.5">
 															{#each nameData.accounts.sort((a, b) => b.equity - a.equity) as acct}
-																<div class="flex items-center justify-between text-[10px] px-2.5 py-0.5 rounded bg-gray-50/60">
-																	<span class="text-gray-400 tabular-nums">{acct.number}</span>
-																	<span class="font-medium text-gray-500 whitespace-nowrap">{formatNumber(acct.equity)}</span>
+																<div class="flex items-center justify-between text-[10px] px-2.5 py-0.5 rounded bg-stone-800/40">
+																	<span class="text-stone-500 tabular-nums">{acct.number}</span>
+																	<span class="font-medium text-stone-400 whitespace-nowrap">{formatNumber(acct.equity)}</span>
 																</div>
 															{/each}
 														</div>
 													{/if}
 												{:else}
 													<!-- Single account under this name — show inline -->
-													<div class="flex items-center justify-between text-[11px] text-gray-500 px-2.5 py-1 rounded-md">
+													<div class="flex items-center justify-between text-[11px] text-stone-400 px-2.5 py-1 rounded-md">
 														<span class="flex items-center gap-1.5">
 															<span class="w-2.5"></span>
 															<span class="truncate">{name}</span>
-															<span class="text-[10px] text-gray-400">{nameData.accounts[0].number}</span>
+															<span class="text-[10px] text-stone-500">{nameData.accounts[0].number}</span>
 														</span>
-														<span class="font-medium text-gray-600 whitespace-nowrap">{formatNumber(nameData.equity)}</span>
+														<span class="font-medium text-stone-300 whitespace-nowrap">{formatNumber(nameData.equity)}</span>
 													</div>
 												{/if}
 											</div>
@@ -1689,12 +1690,12 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 		{/if}
 
 		{#if summaries.length === 0}
-			<div class="bg-white border border-gray-100 rounded-2xl shadow-sm p-12 text-center">
-				<svg class="mx-auto h-10 w-10 text-gray-200 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<div class="bg-stone-800 border border-stone-700/50 rounded-2xl shadow-sm p-12 text-center">
+				<svg class="mx-auto h-10 w-10 text-stone-600 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
 				</svg>
-				<h3 class="text-base font-medium text-gray-700 mb-1">No Data Available</h3>
-				<p class="text-sm text-gray-400">Waiting for EA to send account data...</p>
+				<h3 class="text-base font-medium text-stone-300 mb-1">No Data Available</h3>
+				<p class="text-sm text-stone-500">Waiting for EA to send account data...</p>
 			</div>
 		{/if}
 
@@ -1705,7 +1706,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 <!-- Settings Modal -->
 {#if showSettingsModal}
 	<div
-		class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 overflow-y-auto flex items-center justify-center p-6"
+		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 overflow-y-auto flex items-center justify-center p-6"
 		on:click={() => (showSettingsModal = false)}
 		on:keydown={(e) => e.key === 'Escape' && (showSettingsModal = false)}
 		role="dialog"
@@ -1714,17 +1715,17 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 		tabindex="-1"
 	>
 		<div
-			class="bg-white rounded-2xl shadow-xl w-full max-w-7xl mx-4 my-8 flex flex-col max-h-[85vh] border border-gray-100"
+			class="bg-stone-800 rounded-2xl shadow-xl w-full max-w-7xl mx-4 my-8 flex flex-col max-h-[85vh] border border-stone-700"
 			role="document"
 			on:click|stopPropagation
 			on:keydown|stopPropagation
 			on:mousedown|stopPropagation
 		>
 			<div class="flex justify-between items-center p-6 pb-4">
-				<h2 id="settings-title" class="text-xl font-semibold text-gray-900">Settings</h2>
+				<h2 id="settings-title" class="text-xl font-semibold text-stone-200">Settings</h2>
 				<button
 					on:click={() => (showSettingsModal = false)}
-					class="text-gray-400 hover:text-gray-600 transition-colors"
+					class="text-stone-500 hover:text-stone-300 transition-colors"
 					aria-label="Close Settings"
 				>
 					<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1741,12 +1742,12 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                 <!-- Unit Settings: Initial Capital & Warning % per unit -->
                 <div>
                     <fieldset>
-                        <legend class="block text-sm font-medium text-gray-700 mb-2">Unit Settings</legend>
+                        <legend class="block text-sm font-medium text-stone-300 mb-2">Unit Settings</legend>
                         <div class="space-y-2 mb-3">
                             {#each unitList as unit}
-                                <div class="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-xl px-3 py-2">
+                                <div class="flex items-center justify-between bg-stone-700/50 border border-stone-600 rounded-xl px-3 py-2">
                                     <div class="flex items-center space-x-2">
-                                        <span class="text-sm font-medium text-gray-600">Unit {unit}:</span>
+                                        <span class="text-sm font-medium text-stone-400">Unit {unit}:</span>
                                         <input
                                             type="number"
                                             min="0"
@@ -1756,10 +1757,10 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                                                 const v = parseFloat((e.target as HTMLInputElement).value);
                                                 unitInitialCapitals = { ...unitInitialCapitals, [unit]: isNaN(v) || v < 0 ? 0 : v };
                                             }}
-        class="w-32 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
+        class="w-32 border border-stone-600 bg-stone-700 text-stone-200 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
                                         />
-                                        <span class="text-sm text-gray-500">USD</span>
-                                        <span class="text-sm text-gray-500">/ Warn %</span>
+                                        <span class="text-sm text-stone-500">USD</span>
+                                        <span class="text-sm text-stone-500">/ Warn %</span>
                                         <input
                                             type="number"
                                             min="1"
@@ -1771,9 +1772,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                                                 const pct = isNaN(v) || v < 1 || v > 100 ? 30 : v;
                                                 unitWarningEquityPercentages = { ...unitWarningEquityPercentages, [unit]: pct };
                                             }}
-        class="w-20 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
+        class="w-20 border border-stone-600 bg-stone-700 text-stone-200 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
                                         />
-                                        <span class="text-sm text-gray-500">%</span>
+                                        <span class="text-sm text-stone-500">%</span>
                                     </div>
                                     <button
                                         on:click={() => {
@@ -1796,11 +1797,11 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 
                         <!-- Add new unit setting -->
                         <div class="flex items-center space-x-2">
-                            <input type="number" bind:value={newUnitSettingNumber} placeholder="Unit #" min="1" class="w-20 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-center focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400" />
-                            <input type="number" bind:value={newUnitSettingCap} placeholder="Initial Capital" min="0" step="100" class="w-32 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400" />
-                            <span class="text-gray-500">USD</span>
-                            <span class="text-gray-500">/ Warn %</span>
-                            <input type="number" bind:value={newUnitSettingWarn} placeholder="%" min="1" max="100" step="1" class="w-20 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400" />
+                            <input type="number" bind:value={newUnitSettingNumber} placeholder="Unit #" min="1" class="w-20 border border-stone-600 bg-stone-700 text-stone-200 rounded-lg px-2 py-1 text-center focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400" />
+                            <input type="number" bind:value={newUnitSettingCap} placeholder="Initial Capital" min="0" step="100" class="w-32 border border-stone-600 bg-stone-700 text-stone-200 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400" />
+                            <span class="text-stone-500">USD</span>
+                            <span class="text-stone-500">/ Warn %</span>
+                            <input type="number" bind:value={newUnitSettingWarn} placeholder="%" min="1" max="100" step="1" class="w-20 border border-stone-600 bg-stone-700 text-stone-200 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400" />
                             <button
                                 on:click={addUnitSetting}
                                 class="bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-1 rounded-lg text-sm transition-colors"
@@ -1809,7 +1810,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                                 Add
                             </button>
                         </div>
-                        <p class="text-xs text-gray-400 mt-1">Initial capital and warning threshold are set per unit. Total Initial Capital is the sum of all units.</p>
+                        <p class="text-xs text-stone-500 mt-1">Initial capital and warning threshold are set per unit. Total Initial Capital is the sum of all units.</p>
                     </fieldset>
                 </div>
 
@@ -1818,16 +1819,16 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				<!-- Unit Mappings Setting -->
 				<div>
 					<fieldset>
-						<legend class="block text-sm font-medium text-gray-700 mb-2"> Unit Mappings </legend>
+						<legend class="block text-sm font-medium text-stone-300 mb-2"> Unit Mappings </legend>
 
 						<!-- Existing mappings -->
 						<div class="space-y-2 mb-3">
 							{#each Object.entries(unitMappings) as [unit, name]}
 								<div
-									class="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-xl px-3 py-2"
+									class="flex items-center justify-between bg-stone-700/50 border border-stone-600 rounded-xl px-3 py-2"
 								>
 									<div class="flex items-center space-x-2">
-										<span class="text-sm font-medium text-gray-600">Unit {unit}:</span>
+										<span class="text-sm font-medium text-stone-400">Unit {unit}:</span>
 										<input
 											type="text"
 											value={name}
@@ -1837,7 +1838,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												unitMappings = { ...unitMappings, [u]: v };
 												updateUnitMappings();
 											}}
-											class="border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
+											class="border border-stone-600 bg-stone-700 text-stone-200 rounded-lg px-2 py-1 focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
 										/>
 									</div>
 									<button
@@ -1864,15 +1865,15 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								type="number"
 								bind:value={newUnitNumber}
 								placeholder="Unit #"
-								class="w-20 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-center focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
+								class="w-20 border border-stone-600 bg-stone-700 text-stone-200 rounded-lg px-2 py-1 text-center focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
 								min="1"
 							/>
-							<span class="text-gray-400">→</span>
+							<span class="text-stone-500">→</span>
 							<input
 								type="text"
 								bind:value={newUnitName}
 								placeholder="Unit name"
-								class="flex-1 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
+								class="flex-1 border border-stone-600 bg-stone-700 text-stone-200 rounded-lg px-2 py-1 focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
 							/>
 							<button
 								on:click={addUnitMapping}
@@ -1882,7 +1883,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								Add
 							</button>
 						</div>
-						<p class="text-xs text-gray-400 mt-1">
+						<p class="text-xs text-stone-500 mt-1">
 							Map unit numbers to descriptive names (e.g., 1 → "xs-sell")
 						</p>
 					</fieldset>
@@ -1891,18 +1892,18 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				<!-- Unit-Specific Broker Min Margin Settings -->
 				<div>
 					<fieldset>
-						<legend class="block text-sm font-medium text-gray-700 mb-2">
+						<legend class="block text-sm font-medium text-stone-300 mb-2">
 							Unit-Specific Broker Min Margin
 						</legend>
 						<div class="space-y-3 mb-3">
 							{#each Object.entries(unitBrokerMinMargins) as [unitStr, brokerMargins]}
 								{@const unit = parseInt(unitStr)}
-								<div class="bg-gray-50 border border-gray-200 rounded-xl">
-									<div class="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
-										<span class="text-sm text-gray-700">Unit {unit} ({getUnitDisplayName(unit)})</span>
-										<span class="text-xs text-gray-400">{Object.keys(brokerMargins).length} brokers</span>
+								<div class="bg-stone-700/50 border border-stone-600 rounded-xl">
+									<div class="px-3 py-2 border-b border-stone-600 flex items-center justify-between">
+										<span class="text-sm text-stone-300">Unit {unit} ({getUnitDisplayName(unit)})</span>
+										<span class="text-xs text-stone-500">{Object.keys(brokerMargins).length} brokers</span>
 									</div>
-									<div class="divide-y divide-gray-200">
+									<div class="divide-y divide-stone-600">
 										{#each Object.entries(brokerMargins) as [brokerName, margin]}
 											<div class="flex items-center justify-between px-3 py-2">
 												<div class="flex items-center space-x-2 flex-1">
@@ -1915,10 +1916,10 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 																updateUnitBrokerMargin(unit, brokerName, newName, margin);
 															}
 														}}
-														class="bg-white border border-gray-200 text-gray-700 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400 min-w-0 flex-1"
+														class="bg-stone-700 border border-stone-600 text-stone-200 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400 min-w-0 flex-1"
 													/>
-													<span class="text-gray-400">=</span>
-													<input
+						<span class="text-stone-500">=</span>
+						<input
 														type="number"
 														min="0"
 														step="100"
@@ -1928,9 +1929,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 															const value = isNaN(parsed) || parsed < 0 ? 0 : parsed;
 															updateUnitBrokerMargin(unit, brokerName, brokerName, value);
 														}}
-														class="w-24 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-right text-sm focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400"
+														class="w-24 border border-stone-600 bg-stone-700 text-stone-200 rounded-lg px-2 py-1 text-right text-sm focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400"
 													/>
-													<span class="text-xs text-gray-500">USD</span>
+													<span class="text-xs text-stone-500">USD</span>
 												</div>
 												<button
 													on:click={() => removeUnitBrokerMinMargin(unit, brokerName)}
@@ -1952,7 +1953,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								</div>
 							{/each}
 							{#if Object.keys(unitBrokerMinMargins).length === 0}
-								<div class="text-xs text-gray-400">No unit-specific broker margins configured.</div>
+								<div class="text-xs text-stone-500">No unit-specific broker margins configured.</div>
 							{/if}
 						</div>
 						<div class="flex items-center space-x-2">
@@ -1961,23 +1962,23 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								bind:value={newUnitBrokerUnit}
 								placeholder="Unit #"
 								min="1"
-								class="w-20 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-center focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
+								class="w-20 border border-stone-600 bg-stone-700 text-stone-200 rounded-lg px-2 py-1 text-center focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
 							/>
-							<span class="text-gray-400">→</span>
+							<span class="text-stone-500">→</span>
 							<input
 								type="text"
 								bind:value={newUnitBrokerName}
 								placeholder="Broker name"
-								class="flex-1 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
+								class="flex-1 border border-stone-600 bg-stone-700 text-stone-200 rounded-lg px-2 py-1 focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
 							/>
-							<span class="text-gray-400">=</span>
+							<span class="text-stone-500">=</span>
 							<input
 								type="number"
 								bind:value={newUnitBrokerMargin}
 								placeholder="Min margin"
 								min="0"
 								step="100"
-								class="w-32 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
+								class="w-32 border border-stone-600 bg-stone-700 text-stone-200 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
 							/>
 							<button
 								on:click={addUnitBrokerMinMargin}
@@ -1987,7 +1988,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								Add
 							</button>
 						</div>
-						<p class="text-xs text-gray-400 mt-1">
+						<p class="text-xs text-stone-500 mt-1">
 							Set minimum margin per broker per unit. Broker names are case-insensitive. You can edit broker names directly by clicking on them.
 						</p>
 					</fieldset>
@@ -1997,35 +1998,35 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				<!-- WD Notes Setting (per account) -->
 				<div>
 					<fieldset>
-						<legend class="block text-sm font-medium text-gray-700 mb-2"> WD Notes </legend>
-						<p class="text-xs text-gray-400 mb-2">
+						<legend class="block text-sm font-medium text-stone-300 mb-2"> WD Notes </legend>
+						<p class="text-xs text-stone-500 mb-2">
 							Set waiting withdrawal per account. Clearing the input saves as 0.
 						</p>
 						<div class="space-y-3 max-h-64 overflow-y-auto pr-1">
 							{#each Object.entries(wdByUnit || {}) as [uStr, entries]}
 								{@const u = parseInt(uStr)}
-								<div class="bg-gray-50 border border-gray-200 rounded-xl">
-									<div class="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
-										<span class="text-sm text-gray-700">Unit {u === 0 ? 'Unknown' : u}</span>
-										<span class="text-xs text-gray-400"
+								<div class="bg-stone-700/50 border border-stone-600 rounded-xl">
+									<div class="px-3 py-2 border-b border-stone-600 flex items-center justify-between">
+										<span class="text-sm text-stone-300">Unit {u === 0 ? 'Unknown' : u}</span>
+										<span class="text-xs text-stone-500"
 											>WD Total: {formatNumber(
 												(entries || []).reduce((s, e) => s + (e.amount ?? 0), 0)
 											)}</span
 										>
 									</div>
-									<div class="divide-y divide-gray-100">
+									<div class="divide-y divide-stone-600/50">
 										{#each entries as e}
 											<div class="flex items-center justify-between px-3 py-2">
-												<div class="text-xs text-gray-600 truncate mr-2">
+												<div class="text-xs text-stone-400 truncate mr-2">
 													<span class="font-mono">{e.account_number}</span>
 													{#if accountByNumber[e.account_number]}
-														<span class="text-gray-400">
+														<span class="text-stone-500">
 															— {shortName(accountByNumber[e.account_number].account_name)}</span
 														>
 													{/if}
 												</div>
 												<div class="flex items-center gap-2">
-													<span class="text-xs text-gray-600">{formatNumber(e.amount)}</span>
+													<span class="text-xs text-stone-400">{formatNumber(e.amount)}</span>
 													<button
 														on:click={() => removeAccountWithdrawal(e.account_number)}
 														class="text-red-400 hover:text-red-500 transition-colors"
@@ -2052,10 +2053,10 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								</div>
 							{/each}
 							{#if Object.keys(wdByUnit || {}).length === 0}
-								<div class="text-xs text-gray-400">No non-zero WD notes.</div>
+								<div class="text-xs text-stone-500">No non-zero WD notes.</div>
 							{/if}
 						</div>
-						<p class="text-xs text-gray-400 mt-1">
+						<p class="text-xs text-stone-500 mt-1">
 							Stored as mapping: account_number → amount (grouped by unit for display).
 						</p>
 					</fieldset>
@@ -2064,35 +2065,35 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				<!-- DP Notes Setting (per account) -->
 				<div>
 					<fieldset>
-						<legend class="block text-sm font-medium text-gray-700 mb-2"> DP Notes </legend>
-						<p class="text-xs text-gray-400 mb-2">
+						<legend class="block text-sm font-medium text-stone-300 mb-2"> DP Notes </legend>
+						<p class="text-xs text-stone-500 mb-2">
 							Set deposit adjustment per account. This will reduce P/L calculation.
 						</p>
 						<div class="space-y-3 max-h-64 overflow-y-auto pr-1">
 							{#each Object.entries(dpByUnit || {}) as [uStr, entries]}
 								{@const u = parseInt(uStr)}
-								<div class="bg-gray-50 border border-gray-200 rounded-xl">
-									<div class="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
-										<span class="text-sm text-gray-700">Unit {u === 0 ? 'Unknown' : u}</span>
-										<span class="text-xs text-gray-400"
+								<div class="bg-stone-700/50 border border-stone-600 rounded-xl">
+									<div class="px-3 py-2 border-b border-stone-600 flex items-center justify-between">
+										<span class="text-sm text-stone-300">Unit {u === 0 ? 'Unknown' : u}</span>
+										<span class="text-xs text-stone-500"
 											>DP Total: {formatNumber(
 												(entries || []).reduce((s, e) => s + (e.amount ?? 0), 0)
 											)}</span
 										>
 									</div>
-									<div class="divide-y divide-gray-100">
+									<div class="divide-y divide-stone-600/50">
 										{#each entries as e}
 											<div class="flex items-center justify-between px-3 py-2">
-												<div class="text-xs text-gray-600 truncate mr-2">
+												<div class="text-xs text-stone-400 truncate mr-2">
 													<span class="font-mono">{e.account_number}</span>
 													{#if accountByNumber[e.account_number]}
-														<span class="text-gray-400">
+														<span class="text-stone-500">
 															— {shortName(accountByNumber[e.account_number].account_name)}</span
 														>
 													{/if}
 												</div>
 												<div class="flex items-center gap-2">
-													<span class="text-xs text-gray-600">{formatNumber(e.amount)}</span>
+													<span class="text-xs text-stone-400">{formatNumber(e.amount)}</span>
 													<button
 														on:click={() => removeAccountDeposit(e.account_number)}
 														class="text-red-400 hover:text-red-500 transition-colors"
@@ -2119,29 +2120,29 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								</div>
 							{/each}
 							{#if Object.keys(dpByUnit || {}).length === 0}
-								<div class="text-xs text-gray-400">No non-zero DP notes.</div>
+								<div class="text-xs text-stone-500">No non-zero DP notes.</div>
 							{/if}
 						</div>
-						<p class="text-xs text-gray-400 mt-1">
+						<p class="text-xs text-stone-500 mt-1">
 							Stored as mapping: account_number → amount (grouped by unit for display).
 						</p>
 					</fieldset>
 				</div>
 
 				<!-- Delete Account Data Section -->
-				<div class="border-t border-gray-200 pt-6">
+				<div class="border-t border-stone-700 pt-6">
 					<fieldset>
 						<legend class="block text-sm font-medium text-red-600 mb-2">
 							Danger Zone
 						</legend>
-						<div class="bg-red-50 border border-red-200 rounded-xl p-4">
+						<div class="bg-red-900/20 border border-red-800/40 rounded-xl p-4">
 							<div class="flex items-start space-x-3">
-								<svg class="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<svg class="w-5 h-5 text-red-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
 								</svg>
 								<div class="flex-1">
-									<h4 class="text-sm font-medium text-red-700 mb-1">ลบข้อมูลบัญชีทั้งหมด</h4>
-									<p class="text-xs text-red-600 mb-3">
+									<h4 class="text-sm font-medium text-red-400 mb-1">ลบข้อมูลบัญชีทั้งหมด</h4>
+									<p class="text-xs text-red-400/80 mb-3">
 										การดำเนินการนี้จะลบข้อมูลบัญชีทั้งหมดจาก Supabase แต่จะไม่ลบการตั้งค่าอื่นๆ เช่น Initial Capital, Unit Mappings เป็นต้น
 									</p>
 									<button
@@ -2158,18 +2159,18 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			</div>
 
 			<div
-				class="px-6 py-4 border-t border-gray-100 bg-gray-50 rounded-b-2xl flex items-center justify-end gap-3"
+				class="px-6 py-4 border-t border-stone-700 bg-stone-800/80 rounded-b-2xl flex items-center justify-end gap-3"
 			>
 				<button
 					on:click={() => (showSettingsModal = false)}
-					class="px-4 py-2 rounded-xl bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
+					class="px-4 py-2 rounded-xl bg-stone-700 text-stone-300 hover:bg-stone-600 transition-colors"
 				>
 					Cancel
 				</button>
 				<button
 					on:click={saveSettings}
 					disabled={savingSettings}
-					class="px-4 py-2 rounded-xl bg-indigo-500 text-white hover:bg-indigo-600 disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
+					class="px-4 py-2 rounded-xl bg-indigo-500 text-white hover:bg-indigo-600 disabled:bg-stone-700 disabled:text-stone-500 disabled:cursor-not-allowed transition-colors"
 				>
 					{savingSettings ? 'Saving...' : 'Save'}
 				</button>
@@ -2181,7 +2182,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 <!-- Delete Confirmation Modal -->
 {#if showDeleteConfirmModal}
 	<div
-		class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-60 flex items-center justify-center p-6"
+		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-60 flex items-center justify-center p-6"
 		on:click={() => (showDeleteConfirmModal = false)}
 		on:keydown={(e) => e.key === 'Escape' && (showDeleteConfirmModal = false)}
 		role="dialog"
@@ -2190,7 +2191,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 		tabindex="-1"
 	>
 		<div
-			class="bg-white border border-red-200 rounded-2xl shadow-xl w-full max-w-md mx-4"
+			class="bg-stone-800 border border-red-800/40 rounded-2xl shadow-xl w-full max-w-md mx-4"
 			role="document"
 			on:click|stopPropagation
 			on:keydown|stopPropagation
@@ -2204,13 +2205,13 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						</svg>
 					</div>
 					<div>
-						<h3 id="delete-confirm-title" class="text-lg font-semibold text-gray-900">ยืนยันการลบข้อมูล</h3>
-						<p class="text-sm text-gray-500">การดำเนินการนี้ไม่สามารถย้อนกลับได้</p>
+						<h3 id="delete-confirm-title" class="text-lg font-semibold text-stone-200">ยืนยันการลบข้อมูล</h3>
+						<p class="text-sm text-stone-500">การดำเนินการนี้ไม่สามารถย้อนกลับได้</p>
 					</div>
 				</div>
 
 				<div class="mb-6">
-					<p class="text-sm text-gray-600 mb-3">
+					<p class="text-sm text-stone-400 mb-3">
 						คุณแน่ใจหรือไม่ที่จะลบข้อมูลบัญชีทั้งหมดจาก Supabase?
 					</p>
 					<div class="bg-red-50 border border-red-200 rounded-xl p-3">
@@ -2224,7 +2225,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				<div class="flex items-center justify-end gap-3">
 					<button
 						on:click={() => (showDeleteConfirmModal = false)}
-						class="px-4 py-2 rounded-xl bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
+						class="px-4 py-2 rounded-xl bg-stone-700 text-stone-300 hover:bg-stone-600 transition-colors"
 						disabled={deletingData}
 					>
 						ยกเลิก
@@ -2232,7 +2233,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					<button
 						on:click={clearAllAccountData}
 						disabled={deletingData}
-						class="px-4 py-2 rounded-xl bg-red-500 text-white hover:bg-red-600 disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+						class="px-4 py-2 rounded-xl bg-red-500 text-white hover:bg-red-600 disabled:bg-stone-700 disabled:text-stone-500 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
 					>
 						{#if deletingData}
 							<svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
