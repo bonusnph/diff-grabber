@@ -57,17 +57,20 @@
 	// Unit visibility state (default all expanded)
 	let unitVisibility: Record<number, boolean> = {};
 
+	// Broker detail expansion in sum total (level 1: broker, level 2: broker::name)
+	let expandedBrokers: Set<string> = new Set();
+	let expandedBrokerNames: Set<string> = new Set();
+
 	// Pause auto fetch when settings modal is open
 	$: (() => {
 		if (showSettingsModal) {
 			autoFetchEnabled = false;
-		} else if (isAuthenticated) {
+		} else {
 			autoFetchEnabled = true;
 		}
 	})();
 
-	// App is ready only after auth and settings loaded
-	$: appReady = isAuthenticated && settingsLoaded;
+	$: appReady = settingsLoaded;
 
 	$: uniqueBrokersList = (() => {
 		const counts = new Map<string, number>();
@@ -173,72 +176,6 @@
 		if (shouldUpdate) unitVisibility = next;
 	})();
 
-
-	// PIN Protection
-	let isAuthenticated = false;
-	let showPinModal = true;
-	let pinInput = '';
-	let pinError = '';
-	let correctPin = '250514';
-	let pinLoading = false;
-
-	const AUTH_COOKIE_NAME = 'pm_auth_v1';
-	const AUTH_MAX_AGE_SEC = 24 * 60 * 60;
-
-	function setCookie(name: string, value: string, maxAgeSeconds: number) {
-		document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${maxAgeSeconds}; samesite=lax`;
-	}
-
-	function getCookie(name: string): string | null {
-		const pattern = `; ${name}=`;
-		const parts = `; ${document.cookie}`.split(pattern);
-		if (parts.length < 2) return null;
-		const value = parts.pop()!.split(';').shift();
-		return value ? decodeURIComponent(value) : null;
-	}
-
-	function deleteCookie(name: string) {
-		document.cookie = `${name}=; path=/; max-age=0; samesite=lax`;
-	}
-
-	function persistAuth() {
-		try {
-			setCookie(AUTH_COOKIE_NAME, '1', AUTH_MAX_AGE_SEC);
-		} catch (_) {}
-	}
-
-	function clearPersistedAuth() {
-		try {
-			deleteCookie(AUTH_COOKIE_NAME);
-		} catch (_) {}
-	}
-
-	async function checkPersistedAuth(): Promise<boolean> {
-		try {
-			const has = getCookie(AUTH_COOKIE_NAME);
-			if (!has) return false;
-			isAuthenticated = true;
-			showPinModal = false;
-			pinInput = '';
-			pinError = '';
-			// Start loading data after authentication
-			await loadInitialCapital();
-			await fetchData();
-			startPolling();
-			return true;
-		} catch (_) {
-			return false;
-		}
-	}
-
-	function logout() {
-		clearPersistedAuth();
-		isAuthenticated = false;
-		showPinModal = true;
-		pinInput = '';
-		pinError = '';
-		stopPolling();
-	}
 
 	// Unit mappings editing
 	let newUnitNumber = '';
@@ -347,10 +284,6 @@
 	$: negativePairsCount = negativePairs.length;
 	$: positiveTradingAccountsCount = positivePairs.reduce((sum, d) => sum + d.tradingCount, 0);
 	$: negativeTradingAccountsCount = negativePairs.reduce((sum, d) => sum + d.tradingCount, 0);
-
-	// Count accounts with insufficient balance
-	$: insufficientBalanceAccounts = summaries.filter(isInsufficientBalance);
-	$: insufficientBalanceCount = insufficientBalanceAccounts.length;
 
 	// Count accounts with low equity warning
 	$: lowEquityWarningAccounts = summaries.filter(isLowEquityWarning);
@@ -1000,12 +933,6 @@
 		return undefined;
 	}
 
-	function isInsufficientBalance(account: AccountSummary): boolean {
-		const min = getBrokerMinFor(account.broker_name, account.unit);
-		if (min === undefined) return false;
-		return account.latest_equity <= min;
-	}
-
     function getUnitTargetEquity(unit: number): number {
         const cap = unitInitialCapitals[unit] ?? 0;
         return cap / 2;
@@ -1030,91 +957,6 @@
 		);
 		if (!buy || !sell) return null;
 		return ((sell.lastPositionEntryPrice as number) - (buy.lastPositionEntryPrice as number)) * 100;
-	}
-
-	// PIN Protection Functions
-	function handlePinInput(digit: string) {
-		if (pinInput.length < 6) {
-			pinInput += digit;
-			pinError = '';
-		}
-	}
-
-	function clearPin() {
-		pinInput = '';
-		pinError = '';
-	}
-
-	function backspacePin() {
-		pinInput = pinInput.slice(0, -1);
-		pinError = '';
-	}
-
-	async function validatePin() {
-		if (pinLoading) return;
-
-		pinLoading = true;
-		try {
-			// Load PIN from Supabase if not already loaded
-			if (correctPin === '250514') {
-				const response = await fetch('/api/settings');
-				if (response.ok) {
-					const settings = await response.json();
-					// For now, use hardcoded PIN since we don't have PIN API endpoint yet
-					correctPin = '250514';
-				}
-			}
-
-			if (pinInput === correctPin) {
-				isAuthenticated = true;
-				showPinModal = false;
-				pinInput = '';
-				pinError = '';
-				persistAuth();
-				// Start loading data after authentication
-				await loadInitialCapital();
-				await fetchData();
-				startPolling();
-			} else {
-				pinError = 'รหัส PIN ไม่ถูกต้อง';
-				pinInput = '';
-			}
-		} catch (error) {
-			console.error('Error validating PIN:', error);
-			pinError = 'เกิดข้อผิดพลาดในการตรวจสอบ PIN';
-			pinInput = '';
-		} finally {
-			pinLoading = false;
-		}
-	}
-
-	// Auto-validate when 6 digits are entered
-	$: (async () => {
-		if (showPinModal && !pinLoading && pinInput.length === 6) {
-			// trigger validation automatically
-			validatePin();
-		}
-	})();
-
-	function handleKeydown(event: KeyboardEvent) {
-		if (!showPinModal) return;
-
-		const key = event.key;
-		if (key >= '0' && key <= '9') {
-			event.preventDefault();
-			handlePinInput(key);
-		} else if (key === 'Backspace') {
-			event.preventDefault();
-			backspacePin();
-		} else if (key === 'Enter') {
-			event.preventDefault();
-			if (pinInput.length === 6) {
-				validatePin();
-			}
-		} else if (key === 'Escape') {
-			event.preventDefault();
-			clearPin();
-		}
 	}
 
 	function formatNumber(num: number): string {
@@ -1157,18 +999,16 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 }
 
 	onMount(() => {
-		// Don't load data until authenticated
-		// Data loading will be triggered after PIN validation
-		checkPersistedAuth();
+		(async () => {
+			await loadInitialCapital();
+			await fetchData();
+			startPolling();
+		})();
 
-		// Add keyboard event listener for PIN input
-		document.addEventListener('keydown', handleKeydown);
-		// Start 10s boundary countdown
 		updateCountdown();
 		countdownInterval = setInterval(updateCountdown, 1000);
 
 		return () => {
-			document.removeEventListener('keydown', handleKeydown);
 			if (countdownInterval) {
 				clearInterval(countdownInterval);
 				countdownInterval = null;
@@ -1253,477 +1093,246 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 	/>
 </svelte:head>
 
-<!-- PIN Protection Modal -->
-{#if showPinModal}
-	<div class="fixed inset-0 bg-black bg-opacity-90 flex items-center justify-center z-50">
-		<div class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl p-8 w-full max-w-md mx-4">
-			<div class="text-center mb-6">
-				<div
-					class="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-4"
+<div class="min-h-screen bg-slate-50" class:hidden={!appReady}>
+	<!-- Sticky Top Bar -->
+	<div class="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-gray-200/60">
+		<div class="max-w-7xl mx-auto px-4 py-2.5 flex items-center justify-between">
+			<button
+				on:click={() => (showSettingsModal = true)}
+				class="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+				title="Settings"
+				aria-label="Open Settings"
+			>
+				<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+				</svg>
+			</button>
+
+			<div class="flex items-center gap-2 text-xs text-gray-400">
+				{#if latestUpdate}
+					<span class="hidden sm:inline">{formatDateTime(new Date(latestUpdate).toISOString())}</span>
+				{/if}
+				<span class="flex items-center gap-0.5" title="Next refresh">
+					<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+					{String(countdownSeconds).padStart(2, '0')}s
+				</span>
+				<button
+					on:click={fetchData}
+					class="p-1 rounded-md bg-indigo-500 hover:bg-indigo-600 text-white transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+					title="Refresh"
+					aria-label="Refresh"
+					disabled={loading || isRefreshing}
 				>
-					<svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="2"
-							d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
-						/>
-					</svg>
-				</div>
-				<h2 class="text-2xl font-bold text-white mb-2">ป้อนรหัส PIN</h2>
-				<p class="text-gray-400">กรุณาป้อนรหัส PIN เพื่อเข้าใช้งานระบบ</p>
+					{#if isRefreshing}
+						<svg class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+					{:else}
+						<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+					{/if}
+				</button>
 			</div>
 
-			<!-- PIN Display -->
-			<div class="flex justify-center space-x-2 mb-6">
-				{#each Array(6) as _, i}
-					<div
-						class="w-12 h-12 border-2 border-gray-600 rounded-lg flex items-center justify-center bg-gray-700"
-					>
-						{#if i < pinInput.length}
-							<div class="w-3 h-3 bg-blue-400 rounded-full"></div>
-						{/if}
-					</div>
-				{/each}
-			</div>
+		</div>
+	</div>
 
-			<!-- Error Message -->
-			{#if pinError}
-				<div class="text-center mb-4">
-					<p class="text-red-400 text-sm">{pinError}</p>
+	<div class="max-w-7xl mx-auto px-4 py-4 space-y-4">
+		{#if loading}
+			<div class="flex justify-center items-center h-64">
+				<div class="animate-spin rounded-full h-10 w-10 border-2 border-indigo-500 border-t-transparent"></div>
+			</div>
+		{:else}
+
+		<!-- Hero P/L -->
+		<div class="text-center pt-2 pb-4">
+			{#if !isDataComplete}
+				<span class="inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 border border-amber-200 text-amber-600 mb-2">Partial Data</span>
+			{/if}
+			<p
+				class="text-5xl md:text-7xl font-black tracking-tight leading-none {!isDataComplete ? 'opacity-60' : ''}"
+				class:text-emerald-500={adjustedProfitLossPercent >= 0}
+				class:text-red-500={adjustedProfitLossPercent < 0}
+			>
+				{adjustedProfitLossPercent >= 0 ? '+' : ''}{formatPercent(adjustedProfitLossPercent)}
+			</p>
+			<p
+				class="text-xl md:text-2xl font-semibold mt-1 tracking-tight"
+				class:text-emerald-600={adjustedProfitLoss >= 0}
+				class:text-red-600={adjustedProfitLoss < 0}
+			>
+				{adjustedProfitLoss >= 0 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
+			</p>
+
+			{#if totalWaitingWD !== 0 || totalDeposits !== 0}
+				<div class="flex items-center justify-center gap-3 mt-2 text-xs text-gray-400">
+					<span>Total P/L: {stats.profit_loss >= 0 ? '+' : ''}{formatNumber(stats.profit_loss)}</span>
+					{#if totalWaitingWD !== 0}
+						<span>WD: {totalWaitingWD >= 0 ? '+' : ''}{formatNumber(totalWaitingWD)}</span>
+					{/if}
+					{#if totalDeposits !== 0}
+						<span>DP: -{formatNumber(totalDeposits)}</span>
+					{/if}
 				</div>
 			{/if}
 
-			<!-- Number Pad -->
-			<div class="grid grid-cols-3 gap-3 mb-6" style="touch-action: manipulation;">
-				{#each ['1', '2', '3', '4', '5', '6', '7', '8', '9'] as digit}
+			<!-- Snapshot -->
+			<div class="flex items-center justify-center gap-2 mt-2.5">
+				{#if snapshot}
+					<span class="text-xs px-2 py-0.5 rounded-full text-white"
+						class:bg-emerald-500={(snapshotDelta ?? 0) >= 0}
+						class:bg-red-500={(snapshotDelta ?? 0) < 0}>
+						Δ {(snapshotDelta ?? 0) >= 0 ? '+' : ''}{formatNumber(snapshotDelta ?? 0)}
+					</span>
+				{/if}
+				<button on:click={() => takeSnapshot('adjusted')} class="text-xs px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-500 transition-colors disabled:opacity-50" disabled={snapshotLoading}>
+					Snapshot
+				</button>
+				{#if snapshot}
+					<button on:click={clearSnapshot} class="text-xs px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-500 transition-colors disabled:opacity-50" disabled={snapshotLoading}>
+						Clear
+					</button>
+				{/if}
+			</div>
+		</div>
+
+		<!-- Stats Grid: 3 metric cards -->
+		<div class="grid grid-cols-3 gap-3">
+			<!-- Active Accounts -->
+			<div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-3">
+				<div class="text-xs font-medium text-gray-400 uppercase tracking-wider">Active</div>
+				<div class="text-2xl font-bold text-gray-800 mt-0.5">{stats.account_count}</div>
+			</div>
+
+			<!-- Open Pairs -->
+			<div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-3">
+				<div class="text-xs font-medium text-gray-400 uppercase tracking-wider">Open Pairs</div>
+				<div class="flex items-baseline gap-2 mt-0.5">
+					<span class="text-2xl font-bold text-gray-800">{tradingPairs}</span>
+					{#if positivePairsCount > 0 || negativePairsCount > 0}
+						<span class="text-xs">
+							<span class="text-emerald-500 font-semibold">+{positivePairsCount}</span>
+							<span class="text-gray-300 mx-0.5">/</span>
+							<span class="text-red-500 font-semibold">-{negativePairsCount}</span>
+						</span>
+					{/if}
+				</div>
+			</div>
+
+			<!-- Low Equity Warning -->
+			<div class="rounded-2xl border shadow-sm p-3 {lowEquityWarningCount > 0 ? 'bg-red-50 border-red-100' : 'bg-white border-gray-100'}">
+				<div class="text-xs font-medium uppercase tracking-wider {lowEquityWarningCount > 0 ? 'text-red-500' : 'text-gray-400'}">Low Equity</div>
+				<div class="text-2xl font-bold mt-0.5 {lowEquityWarningCount > 0 ? 'text-red-500' : 'text-gray-800'}">{lowEquityWarningCount}</div>
+			</div>
+		</div>
+
+		<!-- Open Pairs Detail -->
+		{#if positivePairs.length > 0 || negativePairs.length > 0}
+		<div class="grid grid-cols-2 gap-3">
+			<div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-3">
+				<div class="text-xs font-medium text-emerald-500 uppercase tracking-wider mb-1.5">Positive Open</div>
+				<div class="flex flex-wrap gap-1.5">
+					{#each positivePairs as d}
+						<span class="inline-flex items-center justify-center min-w-7 h-6 px-1.5 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-600 border border-emerald-100">
+							+{Math.round(d.delta as number)}
+						</span>
+					{/each}
+					{#if positivePairs.length === 0}
+						<span class="text-xs text-gray-300">--</span>
+					{/if}
+				</div>
+			</div>
+			<div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-3">
+				<div class="text-xs font-medium text-red-500 uppercase tracking-wider mb-1.5">Negative Open</div>
+				<div class="flex flex-wrap gap-1.5">
+					{#each negativePairs as d}
+						<span class="inline-flex items-center justify-center min-w-7 h-6 px-1.5 rounded-lg text-xs font-bold bg-red-50 text-red-600 border border-red-100">
+							{Math.round(d.delta as number)}
+						</span>
+					{/each}
+					{#if negativePairs.length === 0}
+						<span class="text-xs text-gray-300">--</span>
+					{/if}
+				</div>
+			</div>
+		</div>
+		{/if}
+
+		<!-- Toolbar -->
+		<div class="flex items-center justify-between">
+			<div class="flex items-center gap-1.5">
+				<button 
+					on:click={collapseAllUnits}
+					class="text-xs px-2.5 py-1.5 rounded-lg bg-white hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors border border-gray-200 shadow-sm flex items-center gap-1"
+					title="Collapse all unit groups"
+				>
+					<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" /></svg>
+					Collapse
+				</button>
+				<button 
+					on:click={expandAllUnits}
+					class="text-xs px-2.5 py-1.5 rounded-lg bg-white hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors border border-gray-200 shadow-sm flex items-center gap-1"
+					title="Expand all unit groups"
+				>
+					<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
+					Expand
+				</button>
+			</div>
+			<button on:click={() => (showFilters = !showFilters)} class="text-xs px-2.5 py-1.5 rounded-lg bg-white hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors border border-gray-200 shadow-sm flex items-center gap-1">
+				<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" /></svg>
+				{showFilters ? 'Hide Filters' : 'Filters'}
+			</button>
+		</div>
+
+		{#if showFilters}
+		<div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-3 space-y-2">
+			<div class="flex items-center gap-1.5 flex-wrap">
+				<span class="text-xs text-gray-400 font-medium">Broker:</span>
+				{#each uniqueBrokersList as b}
 					<button
-						on:click={() => handlePinInput(digit)}
-						class="w-full h-12 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition-colors focus:ring-2 focus:ring-blue-500 focus:outline-none text-xl"
-						style="touch-action: manipulation; -webkit-tap-highlight-color: transparent;"
+						on:click={() => toggleBroker(b.name)}
+						class="px-2 py-0.5 rounded-full border text-xs transition-colors"
+						class:bg-indigo-500={activeBrokers.has(b.name)}
+						class:text-white={activeBrokers.has(b.name)}
+						class:border-indigo-400={activeBrokers.has(b.name)}
+						class:bg-white={!activeBrokers.has(b.name)}
+						class:text-gray-500={!activeBrokers.has(b.name)}
+						class:border-gray-200={!activeBrokers.has(b.name)}
+						title={`Toggle broker ${b.name}`}
 					>
-						{digit}
+						{b.name} <span class="opacity-60">({b.count})</span>
 					</button>
 				{/each}
-				<button
-					on:click={clearPin}
-					class="w-full h-12 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition-colors focus:ring-2 focus:ring-blue-500 focus:outline-none text-xl"
-					style="touch-action: manipulation; -webkit-tap-highlight-color: transparent;"
-					aria-label="Clear PIN"
-				>
-					<svg class="w-5 h-5 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="2"
-							d="M6 18L18 6M6 6l12 12"
-						/>
-					</svg>
-				</button>
-				<button
-					on:click={() => handlePinInput('0')}
-					class="w-full h-12 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition-colors focus:ring-2 focus:ring-blue-500 focus:outline-none text-xl"
-					style="touch-action: manipulation; -webkit-tap-highlight-color: transparent;"
-				>
-					0
-				</button>
-				<button
-					on:click={backspacePin}
-					class="w-full h-12 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition-colors focus:ring-2 focus:ring-blue-500 focus:outline-none text-xl"
-					style="touch-action: manipulation; -webkit-tap-highlight-color: transparent;"
-					aria-label="Backspace"
-				>
-					<svg class="w-5 h-5 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="2"
-							d="M12 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M3 12l6.414 6.414a2 2 0 001.414.586H19a2 2 0 002-2V7a2 2 0 00-2-2h-8.172a2 2 0 00-1.414.586L3 12z"
-						/>
-					</svg>
-				</button>
-			</div>
-
-			<!-- Submit Button -->
-			<button
-				on:click={validatePin}
-				disabled={pinInput.length !== 6 || pinLoading}
-				class="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium py-3 rounded-lg transition-colors focus:ring-2 focus:ring-blue-500 focus:outline-none flex items-center justify-center text-xl"
-				style="touch-action: manipulation; -webkit-tap-highlight-color: transparent;"
-			>
-				{#if pinLoading}
-					<svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
-						<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"
-						></circle>
-						<path
-							class="opacity-75"
-							fill="currentColor"
-							d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-						></path>
-					</svg>
-					กำลังตรวจสอบ...
-				{:else}
-					เข้าสู่ระบบ
-				{/if}
-			</button>
-
-			<div class="mt-4 text-center">
-				<p class="text-xs text-gray-500">ใช้แป้นพิมพ์หรือคลิกปุ่มเพื่อป้อนรหัส PIN</p>
-			</div>
-		</div>
-	</div>
-{/if}
-
-<div class="min-h-screen bg-gray-900 p-3" class:hidden={showPinModal || !appReady}>
-	<div class="max-w-7xl mx-auto">
-		<!-- Header -->
-		<div class="mb-2">
-			<div class="flex justify-between items-center mb-2">
-				<!-- Settings Button (Left) -->
-				<button
-					on:click={() => (showSettingsModal = true)}
-					class="bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white p-2 rounded-md transition-colors"
-					title="Settings"
-					aria-label="Open Settings"
-				>
-					<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="2"
-							d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-						/>
-						<path
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="2"
-							d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-						/>
-					</svg>
-				</button>
-
-				<!-- Logout Button (Right) -->
-				<button
-					on:click={logout}
-					class="bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white p-2 rounded-md transition-colors"
-					title="Logout"
-					aria-label="Logout"
-				>
-					<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="2"
-							d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 11-6 0V7a3 3 0 116 0v1"
-						/>
-					</svg>
-				</button>
-			</div>
-		</div>
-
-		{#if loading}
-			<div class="flex justify-center items-center h-64">
-				<div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-400"></div>
-			</div>
-		{:else}
-		<!-- Profit/Loss Highlight Card -->
-		<div
-			class="bg-gradient-to-r from-gray-800 to-gray-700 border border-gray-600 rounded-lg shadow-lg p-3 mb-3 text-white"
-		>
-			<div class="flex flex-col gap-1 md:flex-row md:items-center md:justify-between mb-2">
-				<div
-					class="flex flex-row flex-wrap items-center text-xs text-gray-400 gap-2 md:gap-3 md:whitespace-nowrap"
-				>
-					{#if latestUpdate}
-						<span>Updated: {formatDateTime(new Date(latestUpdate).toISOString())}</span>
-					{/if}
-					<span class="flex items-center gap-1" title="Next refresh">
-						<svg
-							class="w-3 h-3 text-gray-300"
-							fill="none"
-							stroke="currentColor"
-							viewBox="0 0 24 24"
-							aria-hidden="true"
-						>
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-							/>
-						</svg>
-						<span>{String(countdownSeconds).padStart(2, '0')}s</span>
-					</span>
-					<div
-						class="flex items-center justify-between md:justify-start gap-2 w-full md:w-auto md:ml-2 mt-1 md:mt-0"
-					>
-						<span
-							class="px-2 py-0.5 rounded-full text-xs font-semibold bg-yellow-700 border border-yellow-500 text-yellow-100"
-							>Active: {stats.account_count}</span
-						>
-						<button
-							on:click={fetchData}
-							class="p-1.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed ml-auto md:ml-0"
-							title="Refresh"
-							aria-label="Refresh"
-							disabled={loading || isRefreshing}
-						>
-							{#if isRefreshing}
-								<svg class="animate-spin w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-									<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-									<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-								</svg>
-							{:else}
-								<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-									<path
-										stroke-linecap="round"
-										stroke-linejoin="round"
-										stroke-width="2"
-										d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-									/>
-								</svg>
-							{/if}
-						</button>
-					</div>
-				</div>
-				<!-- Open Pairs Summary (moved inside Total Profit/Loss card) -->
-				<!-- Row 1: Positive and Negative Open Points -->
-				<div class="grid grid-cols-2 gap-2 mt-2">
-					<div class="rounded-lg shadow-lg p-2 {positivePairs.length > 0 ? 'bg-gradient-to-br from-green-900/60 to-green-800/40' : ''}"
-					>
-						<h3 class="text-sm font-bold text-green-300 uppercase tracking-wide">Positive Open</h3>
-						<div class="mt-1 flex flex-wrap gap-1.5">
-							{#each positivePairs as d}
-								<span class="inline-flex items-center justify-center min-w-7 h-6 px-1.5 rounded-full text-xs font-bold bg-green-700/60 text-green-200 shadow-sm">
-									{(d.delta as number) >= 0 ? '+' : ''}{Math.round(d.delta as number)}
-								</span>
-							{/each}
-						</div>
-					</div>
-					<div class="rounded-lg shadow-lg p-2 {negativePairs.length > 0 ? 'bg-gradient-to-br from-red-900/60 to-red-800/40' : ''}"
-					>
-						<h3 class="text-sm font-bold text-red-300 uppercase tracking-wide">Negative Open</h3>
-						<div class="mt-1 flex flex-wrap gap-1.5">
-							{#each negativePairs as d}
-								<span class="inline-flex items-center justify-center min-w-7 h-6 px-1.5 rounded-full text-xs font-bold bg-red-700/60 text-red-200 shadow-sm">
-									{Math.round(d.delta as number)}
-								</span>
-							{/each}
-						</div>
-					</div>
-				</div>
-				
-				<!-- Row 2: Warning Boxes -->
-				<div class="grid grid-cols-2 gap-2 mt-2">
-					<div class="bg-gray-800 rounded-md shadow p-2 opacity-90">
-						<h3 class="text-xs font-semibold text-red-300 uppercase tracking-wide">Insufficient Balance</h3>
-						<div class="mt-1 flex items-center justify-between">
-							<div class="flex items-center gap-1">
-								<span class="text-lg font-bold text-red-400">{insufficientBalanceCount}</span>
-							</div>
-							{#if insufficientBalanceCount > 0}
-								<div class="flex items-center gap-1">
-									<svg class="w-3 h-3 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
-									</svg>
-									<span class="text-xs text-red-400 font-medium">Alert</span>
-								</div>
-							{/if}
-						</div>
-						{#if insufficientBalanceCount > 0}
-							<div class="mt-1 text-xs text-gray-400">
-								Below minimum margin requirement
-							</div>
-						{/if}
-					</div>
-                <div class="bg-gray-800  rounded-md shadow p-2 opacity-90">
-						<h3 class="text-xs font-semibold text-yellow-300 uppercase tracking-wide">Low Equity Warning</h3>
-						<div class="mt-1 flex items-center justify-between">
-							<div class="flex items-center gap-1">
-								<span class="text-lg font-bold text-yellow-400">{lowEquityWarningCount}</span>
-							</div>
-							{#if lowEquityWarningCount > 0}
-								<div class="flex items-center gap-1">
-									<svg class="w-3 h-3 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
-									</svg>
-									<span class="text-xs text-yellow-400 font-medium">Warning</span>
-								</div>
-							{/if}
-						</div>
-                        {#if lowEquityWarningCount > 0}
-                            <div class="mt-1 text-xs text-gray-400">
-                                Below unit equity threshold
-                            </div>
-                        {/if}
-					</div>
+				<div class="ml-auto flex items-center gap-1">
+					<button on:click={selectAllBrokers} class="text-xs px-1.5 py-0.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-50">All</button>
+					<button on:click={clearAllBrokers} class="text-xs px-1.5 py-0.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-50">Clear</button>
 				</div>
 			</div>
-			<div
-				class="text-center transition-all duration-500 ease-out filter"
-			>
-				
-				<!-- Enhanced P/L Display with prominent styling -->
-		<div 
-			class="bg-gradient-to-br from-gray-800/60 to-gray-700/40 rounded-xl shadow-lg p-3 mx-2"
-				>
-					<!-- Main P/L Percentage (emphasized) -->
-							<p
-						class="text-6xl font-black {!isDataComplete ? 'opacity-60' : ''}"
-						class:text-green-300={adjustedProfitLossPercent >= 0}
-						class:text-red-300={adjustedProfitLossPercent < 0}
+			<div class="flex items-center gap-1.5 flex-wrap">
+				<span class="text-xs text-gray-400 font-medium">Account:</span>
+				{#each uniqueAccountNamesList as a}
+					<button
+						on:click={() => toggleAccountName(a.name)}
+						class="px-2 py-0.5 rounded-full border text-xs transition-colors"
+						class:bg-indigo-500={activeAccountNames.has(a.name)}
+						class:text-white={activeAccountNames.has(a.name)}
+						class:border-indigo-400={activeAccountNames.has(a.name)}
+						class:bg-white={!activeAccountNames.has(a.name)}
+						class:text-gray-500={!activeAccountNames.has(a.name)}
+						class:border-gray-200={!activeAccountNames.has(a.name)}
+						title={`Toggle account ${a.name}`}
 					>
-						{adjustedProfitLossPercent >= 0 ? '+' : ''}{formatPercent(adjustedProfitLossPercent)}
-					</p>
-					
-					<!-- Secondary P/L Amount -->
-				<div class="rounded-lg p-1 mb-2"
-					>
-						<p
-							class="text-3xl font-black"
-							class:text-green-200={adjustedProfitLoss >= 0}
-							class:text-red-200={adjustedProfitLoss < 0}
-						>
-							{adjustedProfitLoss >= 0 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
-						</p>
-					</div>
-
-							{#if totalWaitingWD !== 0 || totalDeposits !== 0}
-						<p class="text-sm text-gray-300 mb-2 bg-gray-700/50 rounded px-2 py-1">
-							<span class="text-gray-300">
-								Real P/L: {stats.profit_loss >= 0 ? '+' : ''}{formatNumber(stats.profit_loss)}
-							</span>
-							{#if totalWaitingWD !== 0}
-								<span class="mx-2 text-gray-500">|</span>
-								<span class="text-gray-300">
-									WD: {totalWaitingWD >= 0 ? '+' : ''}{formatNumber(totalWaitingWD)}
-								</span>
-							{/if}
-							{#if totalDeposits !== 0}
-								<span class="mx-2 text-gray-500">|</span>
-								<span class="text-gray-300">
-									DP: -{formatNumber(totalDeposits)}
-								</span>
-							{/if}
-						</p>
-					{/if}
-
-							<!-- Snapshot delta + actions -->
-							<div class="flex items-center justify-center gap-2 mt-1">
-								{#if snapshot}
-									<span class="text-xs px-2 py-0.5 rounded-full text-white"
-										class:bg-green-800={(snapshotDelta ?? 0) >= 0}
-										class:bg-red-800={(snapshotDelta ?? 0) < 0}>
-										Δ vs snapshot: {(snapshotDelta ?? 0) >= 0 ? '+' : ''}{formatNumber(snapshotDelta ?? 0)} ({snapshot?.kind})
-									</span>
-								{/if}
-								<button on:click={() => takeSnapshot('adjusted')} class="text-xs px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-700 text-white disabled:bg-gray-600" disabled={snapshotLoading}>
-									Snapshot
-								</button>
-								{#if snapshot}
-									<button on:click={clearSnapshot} class="text-xs px-2 py-0.5 rounded bg-gray-600 hover:bg-gray-500 text-white disabled:bg-gray-600" disabled={snapshotLoading}>
-										Clear
-									</button>
-								{/if}
-							</div>
-					
-					{#if !isDataComplete}
-					<div class="flex items-center justify-center gap-3">
-						
-							<span
-								class="px-3 py-1.5 rounded-full text-sm font-bold bg-yellow-800 text-yellow-100 shadow-md"
-								>⚠️ Partial Data</span
-							>
-					</div>
-					{/if}
+						{shortName(a.name)} <span class="opacity-60">({a.count})</span>
+					</button>
+				{/each}
+				<div class="ml-auto flex items-center gap-1">
+					<button on:click={selectAllAccountNames} class="text-xs px-1.5 py-0.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-50">All</button>
+					<button on:click={clearAllAccountNames} class="text-xs px-1.5 py-0.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-50">Clear</button>
 				</div>
 			</div>
 		</div>
+		{/if}
 
-			<!-- Account Summaries by Unit -->
-		<div class="bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-2 mb-2">
-			<div class="flex items-center justify-between mb-1">
-					<div class="flex items-center gap-1 ml-auto">
-					<button 
-						on:click={collapseAllUnits}
-						class="text-xs px-1.5 py-0.5 rounded bg-gray-600 hover:bg-gray-500 text-gray-200 hover:text-white border border-gray-500 transition-colors flex items-center gap-1"
-							title="Collapse all unit groups"
-						>
-							<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
-							</svg>
-							Collapse All
-						</button>
-					<button 
-						on:click={expandAllUnits}
-						class="text-xs px-1.5 py-0.5 rounded bg-gray-600 hover:bg-gray-500 text-gray-200 hover:text-white border border-gray-500 transition-colors flex items-center gap-1"
-							title="Expand all unit groups"
-						>
-							<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-							</svg>
-							Expand All
-						</button>
-					<button on:click={() => (showFilters = !showFilters)} class="text-xs px-1.5 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 border border-gray-600 flex items-center gap-1">
-							<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-							</svg>
-							{showFilters ? 'Hide Filters' : 'Show Filters'}
-						</button>
-					</div>
-				</div>
-
-								{#if showFilters}
-				<!-- Filters: Broker / Account Name -->
-			<div class="mb-2 space-y-1.5">
-					<div class="flex items-center gap-1 flex-wrap">
-						<span class="text-xs text-gray-400">Broker:</span>
-						{#each uniqueBrokersList as b}
-							<button
-								on:click={() => toggleBroker(b.name)}
-								class="px-1.5 py-0.5 rounded-full border text-xs transition-colors"
-								class:bg-blue-600={activeBrokers.has(b.name)}
-								class:text-white={activeBrokers.has(b.name)}
-								class:border-blue-400={activeBrokers.has(b.name)}
-								class:bg-gray-700={!activeBrokers.has(b.name)}
-								class:text-gray-300={!activeBrokers.has(b.name)}
-								class:border-gray-600={!activeBrokers.has(b.name)}
-								title={`Toggle broker ${b.name}`}
-							>
-								{b.name}
-								<span class="opacity-70">({b.count})</span>
-							</button>
-						{/each}
-					<div class="ml-auto flex items-center gap-1">
-						<button on:click={selectAllBrokers} class="text-xs px-1 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">All</button>
-						<button on:click={clearAllBrokers} class="text-xs px-1 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">Clear</button>
-						</div>
-					</div>
-					<div class="flex items-center gap-1 flex-wrap">
-						<span class="text-xs text-gray-400">Account:</span>
-						{#each uniqueAccountNamesList as a}
-							<button
-								on:click={() => toggleAccountName(a.name)}
-								class="px-1.5 py-0.5 rounded-full border text-xs transition-colors"
-								class:bg-blue-600={activeAccountNames.has(a.name)}
-								class:text-white={activeAccountNames.has(a.name)}
-								class:border-blue-400={activeAccountNames.has(a.name)}
-								class:bg-gray-700={!activeAccountNames.has(a.name)}
-								class:text-gray-300={!activeAccountNames.has(a.name)}
-								class:border-gray-600={!activeAccountNames.has(a.name)}
-								title={`Toggle account ${a.name}`}
-							>
-								{shortName(a.name)}
-								<span class="opacity-70">({a.count})</span>
-							</button>
-						{/each}
-					<div class="ml-auto flex items-center gap-1">
-						<button on:click={selectAllAccountNames} class="text-xs px-1 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">All</button>
-						<button on:click={clearAllAccountNames} class="text-xs px-1 py-0.5 rounded bg-gray-700 text-gray-200 hover:bg-gray-600">Clear</button>
-						</div>
-					</div>
-				</div>
-				{/if}
+		<!-- Unit Groups -->
+		<div class="space-y-3">
 
 					{#each Object.entries(unitGroups) as [unitStr, accounts]}
 						{@const unit = parseInt(unitStr)}
@@ -1739,17 +1348,16 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						
 						{#if visibleAccounts.length > 0}
 						<div
-							class="mb-2 rounded-md"
-							class:bg-blue-700={groupIsTrading}
-							class:border-2={groupIsTrading}
-							class:border-blue-400={groupIsTrading}
-							class:p-1={groupIsTrading}
+							class="bg-white rounded-2xl border shadow-sm overflow-hidden"
+							class:border-indigo-200={groupIsTrading}
+							class:border-gray-100={!groupIsTrading}
 						>
-							<!-- Unit Header (always visible) -->
+							<!-- Unit Header Row 1: Name + badges -->
 							<div 
-							class="flex justify-between items-center mb-1 border-b border-gray-600 pb-0.5 cursor-pointer hover:bg-gray-700 hover:bg-opacity-50 rounded px-1 py-0.5 transition-colors"
-								class:bg-red-950={accounts.some(isInsufficientBalance)}
-								class:bg-yellow-900={!accounts.some(isInsufficientBalance) && accounts.some(isLowEquityWarning)}
+								class="px-4 py-2.5 cursor-pointer transition-colors"
+								class:hover:bg-gray-50={!accounts.some(isLowEquityWarning)}
+								class:bg-red-50={accounts.some(isLowEquityWarning)}
+								class:hover:bg-red-100={accounts.some(isLowEquityWarning)}
 								on:click={() => {
 									unitVisibility = { ...unitVisibility, [unit]: !(unitVisibility[unit] !== false) };
 								}}
@@ -1763,177 +1371,130 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								tabindex="0"
 								title="Click to expand/collapse unit group"
 							>
-								<div class="flex items-center space-x-1">
-									<!-- Expand/Collapse Icon -->
-									<svg 
-										class="w-4 h-4 text-gray-400 transition-transform duration-200"
-										class:rotate-90={unitVisibility[unit] !== false}
-										fill="none" 
-										stroke="currentColor" 
-										viewBox="0 0 24 24"
-									>
-										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-									</svg>
-									<h3 class="text-base font-medium text-gray-200">
-										{unit === 0 ? 'Unknown Unit' : getUnitDisplayName(unit)}
-										{#if accounts.some(isInsufficientBalance)}
-											<span class="text-red-400 font-bold ml-1" title="มีบัญชีที่เงินไม่เพียงพอในกลุ่มนี้">*</span>
-										{:else if accounts.some(isLowEquityWarning)}
-											<span class="text-yellow-400 font-bold ml-1" title="มีบัญชีที่ equity ต่ำกว่าเกณฑ์เตือนในกลุ่มนี้">⚠</span>
+								<!-- Row 1: Unit name + status badges -->
+								<div class="flex items-center justify-between">
+									<div class="flex items-center gap-2">
+										<svg 
+											class="w-3.5 h-3.5 text-gray-300 transition-transform duration-200 flex-shrink-0"
+											class:rotate-90={unitVisibility[unit] !== false}
+											fill="none" stroke="currentColor" viewBox="0 0 24 24"
+										>
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+										</svg>
+										<h3 class="text-sm font-semibold text-gray-800">
+											{unit === 0 ? 'Unknown Unit' : getUnitDisplayName(unit)}
+										</h3>
+										<span class="text-[10px] text-gray-400">#{unit}</span>
+										{#if accounts.some(isLowEquityWarning)}
+											<span class="w-1.5 h-1.5 rounded-full bg-red-400 flex-shrink-0" title="Low equity"></span>
 										{/if}
 										{#if unitHasStaleData}
-											<span class="text-orange-400 font-bold ml-1" title="มีบัญชีที่ข้อมูลเก่ากว่า 5 นาทีในกลุ่มนี้">⏰</span>
+											<span class="w-1.5 h-1.5 rounded-full bg-orange-400 flex-shrink-0" title="Stale data"></span>
 										{/if}
-									</h3>
-									<span class="text-xs text-gray-500 bg-gray-600 px-1 py-0.5 rounded">
-										#{unit}
-									</span>
-								{#if computeUnitDelta(accounts) !== null}
-									{@const delta = computeUnitDelta(accounts) as number}
-									<span
-										class="text-xs px-1 py-0.5 rounded font-semibold text-white"
-										class:bg-green-600={delta >= 0}
-										class:bg-red-600={delta < 0}
-									>
-										Open {delta > 0 ? '+' : ''}{delta.toFixed(0)} points
-									</span>
-								{/if}
-							{#if true}
-								{@const accountWithPosition = visibleAccounts.find(a => (a.lastSize || 0) > 0)}
-								{@const positionLots = accountWithPosition?.lastSize || 0}
-								{#if positionLots > 0}
-									<span
-										class="text-xs px-1 py-0.5 rounded font-semibold text-white bg-purple-600"
-										title="Current position size"
-									>
-										{positionLots.toFixed(2)} lots
-									</span>
-								{/if}
-							{/if}
-                                    {#if true}
-                                        {@const targetEquity = getUnitTargetEquity(unit)}
-										{@const sumsByBroker = (() => {
-											const map: Record<string, { d: number; w: number }> = {};
-											for (const a of visibleAccounts || []) {
-												const broker = a.broker_name || '';
-												if (!map[broker]) map[broker] = { d: 0, w: 0 };
-                                                const diff = a.latest_equity - targetEquity;
-												if (diff >= 0) map[broker].w += diff;
-												else map[broker].d += -diff;
-											}
-											return map;
-										})()}
-										{@const nonZeroEntries = Object.entries(sumsByBroker).filter(([_, s]) => (s?.d || 0) > 0 || (s?.w || 0) > 0)}
-										{#if nonZeroEntries.length > 0}
-											<div class="flex items-center gap-1 ml-1 flex-wrap">
-												{#each nonZeroEntries as [broker, s]}
-									<div class="flex items-center gap-1 bg-gray-700/40 rounded px-1 py-0.5">
-										<span class="text-[10px] text-gray-200">{truncateWithEllipsis(broker, 6)}</span>
-														{#if s.d > 0}
-															<span class="text-[10px] px-1 rounded font-semibold bg-green-700/60 text-green-200 border border-green-500/40">D {formatNumber(s.d)}</span>
-														{/if}
-														{#if s.w > 0}
-															<span class="text-[10px] px-1 rounded font-semibold bg-red-700/60 text-red-200 border border-red-500/40">W {formatNumber(s.w)}</span>
-														{/if}
-													</div>
-												{/each}
-											</div>
-										{/if}
-									{/if}
-								</div>
-								{#if unitStat}
-									<div
-										class="flex flex-col md:flex-row items-start md:items-center space-y-0.5 md:space-y-0 md:space-x-2 text-xs"
-									>
-										<span class="text-xs text-gray-500 bg-gray-600 px-1 py-0.5 rounded">
-											C: {formatNumber(unitInitialCapitals[unit] ?? 0)}
-										</span>
-										<span class="text-gray-400">
-											T: {formatNumber(unitStat.totalBalance)}
-										</span>
-										{#if (unitGroups[unit] || []).reduce((s, a) => s + (accountWithdrawals[a.account_number] ?? 0), 0) > 0}
-											<span class="text-gray-400">
-												WD: +{formatNumber(
-													(unitGroups[unit] || []).reduce(
-														(s, a) => s + (accountWithdrawals[a.account_number] ?? 0),
-														0
-													)
-												)}
+									</div>
+									<div class="flex items-center gap-1.5 flex-shrink-0">
+										{#if computeUnitDelta(accounts) !== null}
+											{@const delta = computeUnitDelta(accounts) as number}
+											<span class="text-xs px-1.5 py-0.5 rounded-md font-semibold" class:bg-emerald-50={delta >= 0} class:text-emerald-600={delta >= 0} class:bg-red-50={delta < 0} class:text-red-600={delta < 0}>
+												{delta > 0 ? '+' : ''}{delta.toFixed(0)} pts
 											</span>
+										{/if}
+										{#if true}
+											{@const accountWithPosition = visibleAccounts.find(a => (a.lastSize || 0) > 0)}
+											{@const positionLots = accountWithPosition?.lastSize || 0}
+											{#if positionLots > 0}
+												<span class="text-xs px-1.5 py-0.5 rounded-md font-semibold bg-violet-50 text-violet-600">
+													{positionLots.toFixed(2)}L
+												</span>
+											{/if}
+										{/if}
+									</div>
+								</div>
+
+								<!-- Row 2: Stats line -->
+								{#if unitStat}
+									<div class="flex items-center gap-x-3 gap-y-0.5 flex-wrap mt-1.5 text-xs text-gray-400">
+										<span>C: {formatNumber(unitInitialCapitals[unit] ?? 0)}</span>
+										<span>T: {formatNumber(unitStat.totalBalance)}</span>
+										{#if (unitGroups[unit] || []).reduce((s, a) => s + (accountWithdrawals[a.account_number] ?? 0), 0) > 0}
+											<span>WD: +{formatNumber((unitGroups[unit] || []).reduce((s, a) => s + (accountWithdrawals[a.account_number] ?? 0), 0))}</span>
 										{/if}
 										{#if (unitGroups[unit] || []).reduce((s, a) => s + (accountDeposits[a.account_number] ?? 0), 0) > 0}
-											<span class="text-gray-400">
-												DP: -{formatNumber(
-													(unitGroups[unit] || []).reduce(
-														(s, a) => s + (accountDeposits[a.account_number] ?? 0),
-														0
-													)
-												)}
-											</span>
+											<span>DP: -{formatNumber((unitGroups[unit] || []).reduce((s, a) => s + (accountDeposits[a.account_number] ?? 0), 0))}</span>
 										{/if}
-										<span
-											class="font-medium"
-											class:text-green-400={unitStat.profitLoss >= 0}
-											class:text-red-400={unitStat.profitLoss < 0}
-										>
-											P/L: {unitStat.profitLoss >= 0 ? '+' : ''}{formatNumber(unitStat.profitLoss)}
-											{#if unitInitialCapitals[unit] && unitInitialCapitals[unit] > 0}
-												({((unitStat.profitLoss / unitInitialCapitals[unit]) * 100).toFixed(2)}%)
-											{/if}
+										<span class="font-semibold" class:text-emerald-600={unitStat.profitLoss >= 0} class:text-red-600={unitStat.profitLoss < 0}>
+											P/L: {unitStat.profitLoss >= 0 ? '+' : ''}{formatNumber(unitStat.profitLoss)}{#if unitInitialCapitals[unit] && unitInitialCapitals[unit] > 0} ({((unitStat.profitLoss / unitInitialCapitals[unit]) * 100).toFixed(1)}%){/if}
 										</span>
 										{#if Math.abs(unitStat.profitLoss) >= 0.01}
-											<button
-												on:click|stopPropagation={() => adjustUnitPLToZero(unit)}
-												disabled={adjustingPLUnits.has(unit)}
-												class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-yellow-600/80 hover:bg-yellow-500 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-												title="Adjust P/L to 0 by modifying {unitStat.profitLoss > 0 ? 'DP Note' : 'WD Note'}"
-											>
-												{adjustingPLUnits.has(unit) ? '...' : 'Zero P/L'}
+											<button on:click|stopPropagation={() => adjustUnitPLToZero(unit)} disabled={adjustingPLUnits.has(unit)} class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-50 hover:bg-amber-100 text-amber-600 disabled:opacity-50 transition-colors">
+												{adjustingPLUnits.has(unit) ? '...' : 'Zero'}
 											</button>
 										{/if}
 										{#if isGroupNotNetted(unitGroups[unit] || [])}
-											<button
-												on:click|stopPropagation={() => consolidateGroupWDDP(unit)}
-												disabled={consolidatingUnits.has(unit)}
-												class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-cyan-600/80 hover:bg-cyan-500 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-												title="Net WD and DP within this group"
-											>
-												{consolidatingUnits.has(unit) ? '...' : 'Net WD/DP'}
+											<button on:click|stopPropagation={() => consolidateGroupWDDP(unit)} disabled={consolidatingUnits.has(unit)} class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-cyan-50 hover:bg-cyan-100 text-cyan-600 disabled:opacity-50 transition-colors">
+												{consolidatingUnits.has(unit) ? '...' : 'Net'}
 											</button>
 										{/if}
 									</div>
+								{/if}
+
+								<!-- Row 3: Broker D/W breakdown (compact) -->
+								{#if true}
+									{@const targetEquity = getUnitTargetEquity(unit)}
+									{@const sumsByBroker = (() => {
+										const map: Record<string, { d: number; w: number }> = {};
+										for (const a of visibleAccounts || []) {
+											const broker = a.broker_name || '';
+											if (!map[broker]) map[broker] = { d: 0, w: 0 };
+											const diff = a.latest_equity - targetEquity;
+											if (diff >= 0) map[broker].w += diff;
+											else map[broker].d += -diff;
+										}
+										return map;
+									})()}
+									{@const nonZeroEntries = Object.entries(sumsByBroker).filter(([_, s]) => (s?.d || 0) > 0 || (s?.w || 0) > 0)}
+									{#if nonZeroEntries.length > 0}
+										<div class="flex items-center gap-1.5 mt-1 flex-wrap">
+											{#each nonZeroEntries as [broker, s]}
+												<div class="flex items-center gap-1 text-[10px]">
+													<span class="text-gray-400">{truncateWithEllipsis(broker, 6)}</span>
+													{#if s.d > 0}<span class="text-emerald-500 font-medium">D{formatNumber(s.d)}</span>{/if}
+													{#if s.w > 0}<span class="text-red-500 font-medium">W{formatNumber(s.w)}</span>{/if}
+												</div>
+											{/each}
+										</div>
+									{/if}
 								{/if}
 							</div>
 							
 							{#if unitVisibility[unit] !== false}
 							<!-- Compact Table View -->
-							<div class="overflow-x-auto">
+							<div class="overflow-x-auto px-1">
 								<table class="w-full text-xs">
 									<thead>
-										<tr class="border-b border-gray-600">
-											<th class="text-right py-1 px-2 text-gray-400 font-medium">Adjust</th>
-											<th class="text-left py-1 px-2 text-gray-400 font-medium">Account / Name</th>
-											<th class="text-left py-1 px-2 text-gray-400 font-medium">Broker</th>
-											<th class="text-right py-1 px-2 text-gray-400 font-medium">Balance</th>
-											<th class="text-right py-1 px-2 text-gray-400 font-medium">Equity</th>
-											<th class="text-right py-1 px-2 text-gray-400 font-medium">WD Note (+)</th>
-											<th class="text-right py-1 px-2 text-gray-400 font-medium">DP Note (-)</th>
-											<th class="text-center py-1 px-2 text-gray-400 font-medium">Status</th>
-											<th class="text-left py-1 px-2 text-gray-400 font-medium">Updated</th>
+										<tr class="border-b border-gray-200">
+											<th class="text-right py-1.5 px-2 text-gray-500 font-medium">Adjust</th>
+											<th class="text-left py-1.5 px-2 text-gray-500 font-medium">Account / Name</th>
+											<th class="text-left py-1.5 px-2 text-gray-500 font-medium">Broker</th>
+											<th class="text-right py-1.5 px-2 text-gray-500 font-medium">Balance</th>
+											<th class="text-right py-1.5 px-2 text-gray-500 font-medium">Equity</th>
+											<th class="text-right py-1.5 px-2 text-gray-500 font-medium">WD Note (+)</th>
+											<th class="text-right py-1.5 px-2 text-gray-500 font-medium">DP Note (-)</th>
+											<th class="text-center py-1.5 px-2 text-gray-500 font-medium">Status</th>
+											<th class="text-left py-1.5 px-2 text-gray-500 font-medium">Updated</th>
 										</tr>
 									</thead>
 									<tbody>
 										{#each visibleAccounts as account}
 											{@const dataAge = getDataAge(account.last_update)}
 											<tr
-												class="border-b border-gray-700 hover:bg-gray-600 transition-colors"
-												class:bg-yellow-800={!isInsufficientBalance(account) && dataAge.status === 'fresh' && isLowEquityWarning(account)}
-												class:bg-red-950={isInsufficientBalance(account)}
+												class="border-b border-gray-100 hover:bg-gray-50 transition-colors"
+												class:bg-red-50={dataAge.status === 'fresh' && isLowEquityWarning(account)}
 											>
                                             <td
-													class="py-1 px-2 text-right font-medium text-xs"
-                                                class:text-red-400={getUnitTargetEquity(account.unit) - account.latest_equity < 0}
-                                                class:text-green-400={getUnitTargetEquity(account.unit) - account.latest_equity > 0}
+													class="py-1.5 px-2 text-right font-medium text-xs"
+                                                class:text-red-500={getUnitTargetEquity(account.unit) - account.latest_equity < 0}
+                                                class:text-emerald-600={getUnitTargetEquity(account.unit) - account.latest_equity > 0}
 												>
                                                 {#if getUnitTargetEquity(account.unit) - account.latest_equity > 0}
                                                     D {formatNumber(Math.abs(getUnitTargetEquity(account.unit) - account.latest_equity))}
@@ -1943,25 +1504,24 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 														{formatNumber(0)}
 													{/if}
 												</td>
-												<td class="py-1 px-2">
+												<td class="py-1.5 px-2">
 													<div class="flex flex-col leading-tight">
-														<span class="font-mono font-semibold text-white text-xs">
-															{#if isInsufficientBalance(account)}<span class="text-red-400">*</span>
-															{/if}{account.account_number}
+														<span class="font-mono font-semibold text-gray-800 text-xs">
+															{account.account_number}
 														</span>
-														<span class="text-gray-400 text-xs truncate" title={account.account_name}
+														<span class="text-gray-500 text-xs truncate" title={account.account_name}
 															>{shortName(account.account_name)}</span
 														>
 													</div>
 												</td>
-												<td class="py-1 px-2 text-gray-400 text-xs">{account.broker_name}</td>
-												<td class="py-1 px-2 text-right font-medium text-white text-xs"
+												<td class="py-1.5 px-2 text-gray-500 text-xs">{account.broker_name}</td>
+												<td class="py-1.5 px-2 text-right font-medium text-gray-800 text-xs"
 													>{formatNumber(account.latest_balance)}</td
 												>
-												<td class="py-1 px-2 text-right font-medium text-white text-xs"
+												<td class="py-1.5 px-2 text-right font-medium text-gray-800 text-xs"
 													>{formatNumber(account.latest_equity)}</td
 												>
-												<td class="py-1 px-2 text-right">
+												<td class="py-1.5 px-2 text-right">
 													<input
 														type="number"
 														min="0"
@@ -1969,10 +1529,10 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 														value={accountWithdrawals[account.account_number] ?? 0}
 														on:change={(e) =>
 															handleAccountWithdrawalChange(account.account_number, e)}
-														class="w-20 border border-gray-600 bg-gray-700 text-white rounded px-1 py-0.5 text-right text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+														class="w-20 border border-gray-200 bg-gray-50 text-gray-800 rounded-md px-1.5 py-0.5 text-right text-xs focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400"
 													/>
 												</td>
-												<td class="py-1 px-2 text-right">
+												<td class="py-1.5 px-2 text-right">
 													<input
 														type="number"
 														min="0"
@@ -1980,21 +1540,21 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 														value={accountDeposits[account.account_number] ?? 0}
 														on:change={(e) =>
 															handleAccountDepositChange(account.account_number, e)}
-														class="w-20 border border-gray-600 bg-gray-700 text-white rounded px-1 py-0.5 text-right text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+														class="w-20 border border-gray-200 bg-gray-50 text-gray-800 rounded-md px-1.5 py-0.5 text-right text-xs focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400"
 													/>
 												</td>
-												<td class="py-1 px-2 text-center">
+												<td class="py-1.5 px-2 text-center">
 													{#if dataAge.status === 'stale'}
-														<span class="text-orange-400 font-bold" title="ข้อมูลเก่ากว่า 5 นาที ({dataAge.minutes} นาที)">
-															⏰
+														<span class="text-orange-500 font-bold" title="ข้อมูลเก่ากว่า 5 นาที ({dataAge.minutes} นาที)">
+															~
 														</span>
 													{:else}
-														<span class="text-green-400" title="ข้อมูลใหม่">
+														<span class="text-emerald-500" title="ข้อมูลใหม่">
 															✓
 														</span>
 													{/if}
 												</td>
-												<td class="py-1 px-2 text-gray-400 text-xs"
+												<td class="py-1.5 px-2 text-gray-500 text-xs"
 													>{formatDateTime(account.last_update)}</td
 												>
 											</tr>
@@ -2006,84 +1566,138 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						</div>
 						{/if}
 					{/each}
+		</div>
 
-					<!-- Sum Total -->
-					{#if unitStats.length > 0}
-						{@const brokerEquities = (() => {
-							const map: Record<string, number> = {};
-							for (const a of summaries || []) {
-								if (!activeBrokers.has(a.broker_name) || !activeAccountNames.has(a.account_name)) continue;
-								const broker = a.broker_name || 'Unknown';
-								map[broker] = (map[broker] || 0) + a.latest_equity;
-							}
-							return Object.entries(map).sort((a, b) => b[1] - a[1]);
-						})()}
-						<div class="mt-3 bg-gray-800/80 border border-gray-600 rounded-lg px-4 py-2">
-							<div class="flex items-center justify-between">
-								<span class="text-sm font-semibold text-gray-300">Sum Total</span>
-								<div class="flex items-center gap-2">
-									<span class="text-sm font-bold text-white">
-										T: {formatNumber(unitStats.reduce((sum, s) => sum + s.totalBalance, 0))}
-									</span>
-									{#if unitStats.some((s) => Math.abs(s.profitLoss) >= 0.01)}
-										<button
-											on:click={adjustAllGroupsPL}
-											disabled={adjustingAllPL}
-											class="text-[10px] px-2 py-0.5 rounded font-medium bg-yellow-600/80 hover:bg-yellow-500 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-											title="Adjust P/L to 0 for all groups"
-										>
-											{adjustingAllPL ? 'Adjusting...' : 'Zero P/L All Groups'}
-										</button>
-									{/if}
-									{#if Object.values(unitGroups).some((accs) => isGroupNotNetted(accs))}
-										<button
-											on:click={consolidateAllGroupsWDDP}
-											disabled={consolidatingAll}
-											class="text-[10px] px-2 py-0.5 rounded font-medium bg-cyan-600/80 hover:bg-cyan-500 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-											title="Net WD and DP for all groups"
-										>
-											{consolidatingAll ? 'Consolidating...' : 'Net WD/DP All Groups'}
-										</button>
-									{/if}
-								</div>
-							</div>
-							{#if brokerEquities.length > 0}
-								<div class="flex flex-wrap gap-2 mt-1.5">
-									{#each brokerEquities as [broker, equity]}
-										<span class="text-xs bg-gray-700/60 text-gray-200 rounded px-2 py-0.5">
-											{broker}: <span class="font-semibold text-white">{formatNumber(equity)}</span>
-										</span>
-									{/each}
-								</div>
-							{/if}
-						</div>
-					{/if}
-			</div>
-
-			{#if summaries.length === 0}
-				<div class="bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-8">
-					<div class="text-center text-gray-400">
-						<svg
-							class="mx-auto h-12 w-12 text-gray-500 mb-4"
-							fill="none"
-							viewBox="0 0 24 24"
-							stroke="currentColor"
-						>
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
-							/>
-						</svg>
-						<h3 class="text-lg font-medium text-white mb-2">No Data Available</h3>
-						<p class="text-gray-300">Waiting for EA to send account data...</p>
-						<p class="text-sm text-gray-500 mt-2">
-							Make sure your EA is running and configured with the correct API URL.
-						</p>
+		<!-- Sum Total -->
+		{#if unitStats.length > 0}
+			{@const brokerTree = (() => {
+				const map: Record<string, { equity: number; names: Record<string, { equity: number; accounts: { number: string; equity: number }[] }> }> = {};
+				for (const a of summaries || []) {
+					if (!activeBrokers.has(a.broker_name) || !activeAccountNames.has(a.account_name)) continue;
+					const broker = a.broker_name || 'Unknown';
+					const name = a.account_name || 'Unknown';
+					if (!map[broker]) map[broker] = { equity: 0, names: {} };
+					if (!map[broker].names[name]) map[broker].names[name] = { equity: 0, accounts: [] };
+					map[broker].equity += a.latest_equity;
+					map[broker].names[name].equity += a.latest_equity;
+					map[broker].names[name].accounts.push({ number: a.account_number, equity: a.latest_equity });
+				}
+				return Object.entries(map).sort((a, b) => b[1].equity - a[1].equity);
+			})()}
+			<div class="bg-indigo-50/60 rounded-2xl border border-indigo-200/60 shadow-sm px-4 py-3">
+				<div class="flex items-center justify-between">
+					<div class="flex flex-col">
+						<span class="text-xs font-medium text-indigo-400 uppercase tracking-wider">Total</span>
+						{#if initialCapital > 0}
+							<span class="text-[10px] text-gray-400 mt-0.5">Capital: {formatNumber(initialCapital)}</span>
+						{/if}
+					</div>
+					<div class="flex items-center gap-2">
+						<span class="text-lg font-bold text-gray-800">
+							{formatNumber(unitStats.reduce((sum, s) => sum + s.totalBalance, 0))}
+						</span>
+						{#if unitStats.some((s) => Math.abs(s.profitLoss) >= 0.01)}
+							<button on:click={adjustAllGroupsPL} disabled={adjustingAllPL} class="text-[10px] px-2 py-0.5 rounded-md font-medium bg-amber-50 hover:bg-amber-100 text-amber-600 disabled:opacity-50 transition-colors">
+								{adjustingAllPL ? '...' : 'Zero All'}
+							</button>
+						{/if}
+						{#if Object.values(unitGroups).some((accs) => isGroupNotNetted(accs))}
+							<button on:click={consolidateAllGroupsWDDP} disabled={consolidatingAll} class="text-[10px] px-2 py-0.5 rounded-md font-medium bg-cyan-50 hover:bg-cyan-100 text-cyan-600 disabled:opacity-50 transition-colors">
+								{consolidatingAll ? '...' : 'Net All'}
+							</button>
+						{/if}
 					</div>
 				</div>
-			{/if}
+				{#if brokerTree.length > 0}
+					<div class="flex flex-col gap-1.5 mt-2.5">
+						{#each brokerTree as [broker, brokerData]}
+							<div>
+								<!-- Level 1: Broker -->
+								<button
+									on:click={() => {
+										if (expandedBrokers.has(broker)) {
+											expandedBrokers.delete(broker);
+										} else {
+											expandedBrokers.add(broker);
+										}
+										expandedBrokers = expandedBrokers;
+									}}
+									class="w-full flex items-center justify-between text-xs text-gray-500 bg-gray-50 hover:bg-gray-100 rounded-lg px-2.5 py-1.5 transition-colors"
+								>
+									<span class="flex items-center gap-1.5">
+										<svg class="w-3 h-3 text-gray-400 transition-transform {expandedBrokers.has(broker) ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+										{broker}
+										<span class="text-[10px] text-gray-400">({Object.keys(brokerData.names).length})</span>
+									</span>
+									<span class="font-semibold text-gray-700">{formatNumber(brokerData.equity)}</span>
+								</button>
+								{#if expandedBrokers.has(broker)}
+									<div class="ml-5 mt-1 flex flex-col gap-1">
+										{#each Object.entries(brokerData.names).sort((a, b) => b[1].equity - a[1].equity) as [name, nameData]}
+											{@const nameKey = `${broker}::${name}`}
+											<div>
+												<!-- Level 2: Account Name -->
+												{#if nameData.accounts.length > 1}
+													<button
+														on:click={() => {
+															if (expandedBrokerNames.has(nameKey)) {
+																expandedBrokerNames.delete(nameKey);
+															} else {
+																expandedBrokerNames.add(nameKey);
+															}
+															expandedBrokerNames = expandedBrokerNames;
+														}}
+														class="w-full flex items-center justify-between text-[11px] text-gray-500 hover:bg-gray-50 rounded-md px-2.5 py-1 transition-colors"
+													>
+														<span class="flex items-center gap-1.5">
+															<svg class="w-2.5 h-2.5 text-gray-300 transition-transform {expandedBrokerNames.has(nameKey) ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+															<span class="truncate">{name}</span>
+															<span class="text-[10px] text-gray-400">({nameData.accounts.length})</span>
+														</span>
+														<span class="font-medium text-gray-600 whitespace-nowrap">{formatNumber(nameData.equity)}</span>
+													</button>
+													{#if expandedBrokerNames.has(nameKey)}
+														<div class="ml-5 mt-0.5 space-y-0.5">
+															{#each nameData.accounts.sort((a, b) => b.equity - a.equity) as acct}
+																<div class="flex items-center justify-between text-[10px] px-2.5 py-0.5 rounded bg-gray-50/60">
+																	<span class="text-gray-400 tabular-nums">{acct.number}</span>
+																	<span class="font-medium text-gray-500 whitespace-nowrap">{formatNumber(acct.equity)}</span>
+																</div>
+															{/each}
+														</div>
+													{/if}
+												{:else}
+													<!-- Single account under this name — show inline -->
+													<div class="flex items-center justify-between text-[11px] text-gray-500 px-2.5 py-1 rounded-md">
+														<span class="flex items-center gap-1.5">
+															<span class="w-2.5"></span>
+															<span class="truncate">{name}</span>
+															<span class="text-[10px] text-gray-400">{nameData.accounts[0].number}</span>
+														</span>
+														<span class="font-medium text-gray-600 whitespace-nowrap">{formatNumber(nameData.equity)}</span>
+													</div>
+												{/if}
+											</div>
+										{/each}
+									</div>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
+
+		{#if summaries.length === 0}
+			<div class="bg-white border border-gray-100 rounded-2xl shadow-sm p-12 text-center">
+				<svg class="mx-auto h-10 w-10 text-gray-200 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+				</svg>
+				<h3 class="text-base font-medium text-gray-700 mb-1">No Data Available</h3>
+				<p class="text-sm text-gray-400">Waiting for EA to send account data...</p>
+			</div>
+		{/if}
+
 		{/if}
 	</div>
 </div>
@@ -2091,7 +1705,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 <!-- Settings Modal -->
 {#if showSettingsModal}
 	<div
-		class="fixed inset-0 bg-black bg-opacity-70 z-50 overflow-y-auto flex items-center justify-center p-6"
+		class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 overflow-y-auto flex items-center justify-center p-6"
 		on:click={() => (showSettingsModal = false)}
 		on:keydown={(e) => e.key === 'Escape' && (showSettingsModal = false)}
 		role="dialog"
@@ -2100,17 +1714,17 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 		tabindex="-1"
 	>
 		<div
-			class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl w-full max-w-7xl mx-4 my-8 flex flex-col max-h-[85vh]"
+			class="bg-white rounded-2xl shadow-xl w-full max-w-7xl mx-4 my-8 flex flex-col max-h-[85vh] border border-gray-100"
 			role="document"
 			on:click|stopPropagation
 			on:keydown|stopPropagation
 			on:mousedown|stopPropagation
 		>
 			<div class="flex justify-between items-center p-6 pb-4">
-				<h2 id="settings-title" class="text-xl font-semibold text-white">Settings</h2>
+				<h2 id="settings-title" class="text-xl font-semibold text-gray-900">Settings</h2>
 				<button
 					on:click={() => (showSettingsModal = false)}
-					class="text-gray-400 hover:text-gray-200 transition-colors"
+					class="text-gray-400 hover:text-gray-600 transition-colors"
 					aria-label="Close Settings"
 				>
 					<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2127,12 +1741,12 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                 <!-- Unit Settings: Initial Capital & Warning % per unit -->
                 <div>
                     <fieldset>
-                        <legend class="block text-sm font-medium text-gray-300 mb-2">Unit Settings</legend>
+                        <legend class="block text-sm font-medium text-gray-700 mb-2">Unit Settings</legend>
                         <div class="space-y-2 mb-3">
                             {#each unitList as unit}
-                                <div class="flex items-center justify-between bg-gray-700 border border-gray-600 rounded-md px-3 py-2">
+                                <div class="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-xl px-3 py-2">
                                     <div class="flex items-center space-x-2">
-                                        <span class="text-sm font-medium text-gray-300">Unit {unit}:</span>
+                                        <span class="text-sm font-medium text-gray-600">Unit {unit}:</span>
                                         <input
                                             type="number"
                                             min="0"
@@ -2142,10 +1756,10 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                                                 const v = parseFloat((e.target as HTMLInputElement).value);
                                                 unitInitialCapitals = { ...unitInitialCapitals, [unit]: isNaN(v) || v < 0 ? 0 : v };
                                             }}
-        class="w-32 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+        class="w-32 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
                                         />
-                                        <span class="text-sm text-gray-400">USD</span>
-                                        <span class="text-sm text-gray-400">/ Warn %</span>
+                                        <span class="text-sm text-gray-500">USD</span>
+                                        <span class="text-sm text-gray-500">/ Warn %</span>
                                         <input
                                             type="number"
                                             min="1"
@@ -2157,20 +1771,19 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                                                 const pct = isNaN(v) || v < 1 || v > 100 ? 30 : v;
                                                 unitWarningEquityPercentages = { ...unitWarningEquityPercentages, [unit]: pct };
                                             }}
-        class="w-20 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+        class="w-20 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
                                         />
-                                        <span class="text-sm text-gray-400">%</span>
+                                        <span class="text-sm text-gray-500">%</span>
                                     </div>
                                     <button
                                         on:click={() => {
                                             const nextCap = { ...unitInitialCapitals }; delete nextCap[unit]; unitInitialCapitals = nextCap;
                                             const nextWarn = { ...unitWarningEquityPercentages }; delete nextWarn[unit]; unitWarningEquityPercentages = nextWarn;
-                                            // also remove mapping to fully remove this unit from settings
                                             if (unitMappings && unitMappings[unit] !== undefined) {
                                                 const nextMap = { ...unitMappings }; delete nextMap[unit]; unitMappings = nextMap;
                                             }
                                         }}
-                                        class="text-red-400 hover:text-red-300 transition-colors"
+                                        class="text-red-400 hover:text-red-500 transition-colors"
                                         aria-label={`Remove unit settings for unit ${unit}`}
                                     >
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2183,20 +1796,20 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 
                         <!-- Add new unit setting -->
                         <div class="flex items-center space-x-2">
-                            <input type="number" bind:value={newUnitSettingNumber} placeholder="Unit #" min="1" class="w-20 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-center focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
-                            <input type="number" bind:value={newUnitSettingCap} placeholder="Initial Capital" min="0" step="100" class="w-32 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
-                            <span class="text-gray-400">USD</span>
-                            <span class="text-gray-400">/ Warn %</span>
-                            <input type="number" bind:value={newUnitSettingWarn} placeholder="%" min="1" max="100" step="1" class="w-20 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
+                            <input type="number" bind:value={newUnitSettingNumber} placeholder="Unit #" min="1" class="w-20 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-center focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400" />
+                            <input type="number" bind:value={newUnitSettingCap} placeholder="Initial Capital" min="0" step="100" class="w-32 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400" />
+                            <span class="text-gray-500">USD</span>
+                            <span class="text-gray-500">/ Warn %</span>
+                            <input type="number" bind:value={newUnitSettingWarn} placeholder="%" min="1" max="100" step="1" class="w-20 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400" />
                             <button
                                 on:click={addUnitSetting}
-                                class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md text-sm transition-colors"
+                                class="bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-1 rounded-lg text-sm transition-colors"
                                 disabled={!newUnitSettingNumber || newUnitSettingCap === '' || newUnitSettingWarn === ''}
                             >
                                 Add
                             </button>
                         </div>
-                        <p class="text-xs text-gray-500 mt-1">Initial capital and warning threshold are set per unit. Total Initial Capital is the sum of all units.</p>
+                        <p class="text-xs text-gray-400 mt-1">Initial capital and warning threshold are set per unit. Total Initial Capital is the sum of all units.</p>
                     </fieldset>
                 </div>
 
@@ -2205,16 +1818,16 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				<!-- Unit Mappings Setting -->
 				<div>
 					<fieldset>
-						<legend class="block text-sm font-medium text-gray-300 mb-2"> Unit Mappings </legend>
+						<legend class="block text-sm font-medium text-gray-700 mb-2"> Unit Mappings </legend>
 
 						<!-- Existing mappings -->
 						<div class="space-y-2 mb-3">
 							{#each Object.entries(unitMappings) as [unit, name]}
 								<div
-									class="flex items-center justify-between bg-gray-700 border border-gray-600 rounded-md px-3 py-2"
+									class="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-xl px-3 py-2"
 								>
 									<div class="flex items-center space-x-2">
-										<span class="text-sm font-medium text-gray-300">Unit {unit}:</span>
+										<span class="text-sm font-medium text-gray-600">Unit {unit}:</span>
 										<input
 											type="text"
 											value={name}
@@ -2224,12 +1837,12 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												unitMappings = { ...unitMappings, [u]: v };
 												updateUnitMappings();
 											}}
-											class="border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+											class="border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
 										/>
 									</div>
 									<button
 										on:click={() => removeUnitMapping(parseInt(unit))}
-										class="text-red-400 hover:text-red-300 transition-colors"
+										class="text-red-400 hover:text-red-500 transition-colors"
 										aria-label={`Remove mapping for unit ${unit}`}
 									>
 										<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2251,7 +1864,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								type="number"
 								bind:value={newUnitNumber}
 								placeholder="Unit #"
-								class="w-20 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-center focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+								class="w-20 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-center focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
 								min="1"
 							/>
 							<span class="text-gray-400">→</span>
@@ -2259,17 +1872,17 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								type="text"
 								bind:value={newUnitName}
 								placeholder="Unit name"
-								class="flex-1 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+								class="flex-1 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
 							/>
 							<button
 								on:click={addUnitMapping}
-								class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md text-sm transition-colors"
+								class="bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-1 rounded-lg text-sm transition-colors"
 								disabled={!newUnitNumber || !newUnitName.trim()}
 							>
 								Add
 							</button>
 						</div>
-						<p class="text-xs text-gray-500 mt-1">
+						<p class="text-xs text-gray-400 mt-1">
 							Map unit numbers to descriptive names (e.g., 1 → "xs-sell")
 						</p>
 					</fieldset>
@@ -2278,18 +1891,18 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				<!-- Unit-Specific Broker Min Margin Settings -->
 				<div>
 					<fieldset>
-						<legend class="block text-sm font-medium text-gray-300 mb-2">
+						<legend class="block text-sm font-medium text-gray-700 mb-2">
 							Unit-Specific Broker Min Margin
 						</legend>
 						<div class="space-y-3 mb-3">
 							{#each Object.entries(unitBrokerMinMargins) as [unitStr, brokerMargins]}
 								{@const unit = parseInt(unitStr)}
-								<div class="bg-gray-700 border border-gray-600 rounded-md">
-									<div class="px-3 py-2 border-b border-gray-600 flex items-center justify-between">
-										<span class="text-sm text-gray-300">Unit {unit} ({getUnitDisplayName(unit)})</span>
+								<div class="bg-gray-50 border border-gray-200 rounded-xl">
+									<div class="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
+										<span class="text-sm text-gray-700">Unit {unit} ({getUnitDisplayName(unit)})</span>
 										<span class="text-xs text-gray-400">{Object.keys(brokerMargins).length} brokers</span>
 									</div>
-									<div class="divide-y divide-gray-600">
+									<div class="divide-y divide-gray-200">
 										{#each Object.entries(brokerMargins) as [brokerName, margin]}
 											<div class="flex items-center justify-between px-3 py-2">
 												<div class="flex items-center space-x-2 flex-1">
@@ -2302,7 +1915,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 																updateUnitBrokerMargin(unit, brokerName, newName, margin);
 															}
 														}}
-														class="bg-gray-600 border border-gray-500 text-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 min-w-0 flex-1"
+														class="bg-white border border-gray-200 text-gray-700 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400 min-w-0 flex-1"
 													/>
 													<span class="text-gray-400">=</span>
 													<input
@@ -2315,13 +1928,13 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 															const value = isNaN(parsed) || parsed < 0 ? 0 : parsed;
 															updateUnitBrokerMargin(unit, brokerName, brokerName, value);
 														}}
-														class="w-24 border border-gray-600 bg-gray-700 text-white rounded px-2 py-1 text-right text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+														class="w-24 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-right text-sm focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400"
 													/>
-													<span class="text-xs text-gray-300">USD</span>
+													<span class="text-xs text-gray-500">USD</span>
 												</div>
 												<button
 													on:click={() => removeUnitBrokerMinMargin(unit, brokerName)}
-													class="text-red-400 hover:text-red-300 transition-colors ml-2"
+													class="text-red-400 hover:text-red-500 transition-colors ml-2"
 													aria-label={`Remove broker ${brokerName} from unit ${unit}`}
 												>
 													<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2339,7 +1952,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								</div>
 							{/each}
 							{#if Object.keys(unitBrokerMinMargins).length === 0}
-								<div class="text-xs text-gray-500">No unit-specific broker margins configured.</div>
+								<div class="text-xs text-gray-400">No unit-specific broker margins configured.</div>
 							{/if}
 						</div>
 						<div class="flex items-center space-x-2">
@@ -2348,14 +1961,14 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								bind:value={newUnitBrokerUnit}
 								placeholder="Unit #"
 								min="1"
-								class="w-20 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-center focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+								class="w-20 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-center focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
 							/>
 							<span class="text-gray-400">→</span>
 							<input
 								type="text"
 								bind:value={newUnitBrokerName}
 								placeholder="Broker name"
-								class="flex-1 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+								class="flex-1 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
 							/>
 							<span class="text-gray-400">=</span>
 							<input
@@ -2364,17 +1977,17 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								placeholder="Min margin"
 								min="0"
 								step="100"
-								class="w-32 border border-gray-600 bg-gray-700 text-white rounded-md px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+								class="w-32 border border-gray-200 bg-white text-gray-800 rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
 							/>
 							<button
 								on:click={addUnitBrokerMinMargin}
 								disabled={!newUnitBrokerUnit || !newUnitBrokerName.trim() || !newUnitBrokerMargin}
-								class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md text-sm transition-colors"
+								class="bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-1 rounded-lg text-sm transition-colors"
 							>
 								Add
 							</button>
 						</div>
-						<p class="text-xs text-gray-500 mt-1">
+						<p class="text-xs text-gray-400 mt-1">
 							Set minimum margin per broker per unit. Broker names are case-insensitive. You can edit broker names directly by clicking on them.
 						</p>
 					</fieldset>
@@ -2384,26 +1997,26 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				<!-- WD Notes Setting (per account) -->
 				<div>
 					<fieldset>
-						<legend class="block text-sm font-medium text-gray-300 mb-2"> WD Notes </legend>
-						<p class="text-xs text-gray-500 mb-2">
+						<legend class="block text-sm font-medium text-gray-700 mb-2"> WD Notes </legend>
+						<p class="text-xs text-gray-400 mb-2">
 							Set waiting withdrawal per account. Clearing the input saves as 0.
 						</p>
 						<div class="space-y-3 max-h-64 overflow-y-auto pr-1">
 							{#each Object.entries(wdByUnit || {}) as [uStr, entries]}
 								{@const u = parseInt(uStr)}
-								<div class="bg-gray-700 border border-gray-600 rounded-md">
-									<div class="px-3 py-2 border-b border-gray-600 flex items-center justify-between">
-										<span class="text-sm text-gray-300">Unit {u === 0 ? 'Unknown' : u}</span>
+								<div class="bg-gray-50 border border-gray-200 rounded-xl">
+									<div class="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
+										<span class="text-sm text-gray-700">Unit {u === 0 ? 'Unknown' : u}</span>
 										<span class="text-xs text-gray-400"
 											>WD Total: {formatNumber(
 												(entries || []).reduce((s, e) => s + (e.amount ?? 0), 0)
 											)}</span
 										>
 									</div>
-									<div class="divide-y divide-gray-600">
+									<div class="divide-y divide-gray-100">
 										{#each entries as e}
 											<div class="flex items-center justify-between px-3 py-2">
-												<div class="text-xs text-gray-300 truncate mr-2">
+												<div class="text-xs text-gray-600 truncate mr-2">
 													<span class="font-mono">{e.account_number}</span>
 													{#if accountByNumber[e.account_number]}
 														<span class="text-gray-400">
@@ -2412,10 +2025,10 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 													{/if}
 												</div>
 												<div class="flex items-center gap-2">
-													<span class="text-xs text-gray-300">{formatNumber(e.amount)}</span>
+													<span class="text-xs text-gray-600">{formatNumber(e.amount)}</span>
 													<button
 														on:click={() => removeAccountWithdrawal(e.account_number)}
-														class="text-red-400 hover:text-red-300 transition-colors"
+														class="text-red-400 hover:text-red-500 transition-colors"
 														aria-label={`Remove WD for ${e.account_number}`}
 													>
 														<svg
@@ -2439,10 +2052,10 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								</div>
 							{/each}
 							{#if Object.keys(wdByUnit || {}).length === 0}
-								<div class="text-xs text-gray-500">No non-zero WD notes.</div>
+								<div class="text-xs text-gray-400">No non-zero WD notes.</div>
 							{/if}
 						</div>
-						<p class="text-xs text-gray-500 mt-1">
+						<p class="text-xs text-gray-400 mt-1">
 							Stored as mapping: account_number → amount (grouped by unit for display).
 						</p>
 					</fieldset>
@@ -2451,26 +2064,26 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				<!-- DP Notes Setting (per account) -->
 				<div>
 					<fieldset>
-						<legend class="block text-sm font-medium text-gray-300 mb-2"> DP Notes </legend>
-						<p class="text-xs text-gray-500 mb-2">
+						<legend class="block text-sm font-medium text-gray-700 mb-2"> DP Notes </legend>
+						<p class="text-xs text-gray-400 mb-2">
 							Set deposit adjustment per account. This will reduce P/L calculation.
 						</p>
 						<div class="space-y-3 max-h-64 overflow-y-auto pr-1">
 							{#each Object.entries(dpByUnit || {}) as [uStr, entries]}
 								{@const u = parseInt(uStr)}
-								<div class="bg-gray-700 border border-gray-600 rounded-md">
-									<div class="px-3 py-2 border-b border-gray-600 flex items-center justify-between">
-										<span class="text-sm text-gray-300">Unit {u === 0 ? 'Unknown' : u}</span>
+								<div class="bg-gray-50 border border-gray-200 rounded-xl">
+									<div class="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
+										<span class="text-sm text-gray-700">Unit {u === 0 ? 'Unknown' : u}</span>
 										<span class="text-xs text-gray-400"
 											>DP Total: {formatNumber(
 												(entries || []).reduce((s, e) => s + (e.amount ?? 0), 0)
 											)}</span
 										>
 									</div>
-									<div class="divide-y divide-gray-600">
+									<div class="divide-y divide-gray-100">
 										{#each entries as e}
 											<div class="flex items-center justify-between px-3 py-2">
-												<div class="text-xs text-gray-300 truncate mr-2">
+												<div class="text-xs text-gray-600 truncate mr-2">
 													<span class="font-mono">{e.account_number}</span>
 													{#if accountByNumber[e.account_number]}
 														<span class="text-gray-400">
@@ -2479,10 +2092,10 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 													{/if}
 												</div>
 												<div class="flex items-center gap-2">
-													<span class="text-xs text-gray-300">{formatNumber(e.amount)}</span>
+													<span class="text-xs text-gray-600">{formatNumber(e.amount)}</span>
 													<button
 														on:click={() => removeAccountDeposit(e.account_number)}
-														class="text-red-400 hover:text-red-300 transition-colors"
+														class="text-red-400 hover:text-red-500 transition-colors"
 														aria-label="Remove DP for {e.account_number}"
 													>
 														<svg
@@ -2506,34 +2119,34 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								</div>
 							{/each}
 							{#if Object.keys(dpByUnit || {}).length === 0}
-								<div class="text-xs text-gray-500">No non-zero DP notes.</div>
+								<div class="text-xs text-gray-400">No non-zero DP notes.</div>
 							{/if}
 						</div>
-						<p class="text-xs text-gray-500 mt-1">
+						<p class="text-xs text-gray-400 mt-1">
 							Stored as mapping: account_number → amount (grouped by unit for display).
 						</p>
 					</fieldset>
 				</div>
 
 				<!-- Delete Account Data Section -->
-				<div class="border-t border-gray-700 pt-6">
+				<div class="border-t border-gray-200 pt-6">
 					<fieldset>
-						<legend class="block text-sm font-medium text-red-400 mb-2">
+						<legend class="block text-sm font-medium text-red-600 mb-2">
 							Danger Zone
 						</legend>
-						<div class="bg-red-900/20 border border-red-700 rounded-md p-4">
+						<div class="bg-red-50 border border-red-200 rounded-xl p-4">
 							<div class="flex items-start space-x-3">
-								<svg class="w-5 h-5 text-red-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<svg class="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
 								</svg>
 								<div class="flex-1">
-									<h4 class="text-sm font-medium text-red-300 mb-1">ลบข้อมูลบัญชีทั้งหมด</h4>
-									<p class="text-xs text-red-200 mb-3">
+									<h4 class="text-sm font-medium text-red-700 mb-1">ลบข้อมูลบัญชีทั้งหมด</h4>
+									<p class="text-xs text-red-600 mb-3">
 										การดำเนินการนี้จะลบข้อมูลบัญชีทั้งหมดจาก Supabase แต่จะไม่ลบการตั้งค่าอื่นๆ เช่น Initial Capital, Unit Mappings เป็นต้น
 									</p>
 									<button
 										on:click={() => (showDeleteConfirmModal = true)}
-										class="px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors"
+										class="px-3 py-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors"
 									>
 										ลบข้อมูลบัญชีทั้งหมด
 									</button>
@@ -2545,18 +2158,18 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			</div>
 
 			<div
-				class="px-6 py-4 border-t border-gray-700 bg-gray-800 flex items-center justify-end gap-3"
+				class="px-6 py-4 border-t border-gray-100 bg-gray-50 rounded-b-2xl flex items-center justify-end gap-3"
 			>
 				<button
 					on:click={() => (showSettingsModal = false)}
-					class="px-4 py-2 rounded-md bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors"
+					class="px-4 py-2 rounded-xl bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
 				>
 					Cancel
 				</button>
 				<button
 					on:click={saveSettings}
 					disabled={savingSettings}
-					class="px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
+					class="px-4 py-2 rounded-xl bg-indigo-500 text-white hover:bg-indigo-600 disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
 				>
 					{savingSettings ? 'Saving...' : 'Save'}
 				</button>
@@ -2568,7 +2181,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 <!-- Delete Confirmation Modal -->
 {#if showDeleteConfirmModal}
 	<div
-		class="fixed inset-0 bg-black bg-opacity-80 z-60 flex items-center justify-center p-6"
+		class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-60 flex items-center justify-center p-6"
 		on:click={() => (showDeleteConfirmModal = false)}
 		on:keydown={(e) => e.key === 'Escape' && (showDeleteConfirmModal = false)}
 		role="dialog"
@@ -2577,7 +2190,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 		tabindex="-1"
 	>
 		<div
-			class="bg-gray-800 border border-red-600 rounded-lg shadow-2xl w-full max-w-md mx-4"
+			class="bg-white border border-red-200 rounded-2xl shadow-xl w-full max-w-md mx-4"
 			role="document"
 			on:click|stopPropagation
 			on:keydown|stopPropagation
@@ -2585,23 +2198,23 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 		>
 			<div class="p-6">
 				<div class="flex items-center mb-4">
-					<div class="w-12 h-12 bg-red-600 rounded-full flex items-center justify-center mr-4">
+					<div class="w-12 h-12 bg-red-500 rounded-2xl flex items-center justify-center mr-4 shadow-lg shadow-red-500/20">
 						<svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
 						</svg>
 					</div>
 					<div>
-						<h3 id="delete-confirm-title" class="text-lg font-semibold text-white">ยืนยันการลบข้อมูล</h3>
-						<p class="text-sm text-gray-400">การดำเนินการนี้ไม่สามารถย้อนกลับได้</p>
+						<h3 id="delete-confirm-title" class="text-lg font-semibold text-gray-900">ยืนยันการลบข้อมูล</h3>
+						<p class="text-sm text-gray-500">การดำเนินการนี้ไม่สามารถย้อนกลับได้</p>
 					</div>
 				</div>
 
 				<div class="mb-6">
-					<p class="text-sm text-gray-300 mb-3">
+					<p class="text-sm text-gray-600 mb-3">
 						คุณแน่ใจหรือไม่ที่จะลบข้อมูลบัญชีทั้งหมดจาก Supabase?
 					</p>
-					<div class="bg-red-900/20 border border-red-700 rounded-md p-3">
-						<p class="text-xs text-red-200">
+					<div class="bg-red-50 border border-red-200 rounded-xl p-3">
+						<p class="text-xs text-red-600">
 							<strong>หมายเหตุ:</strong> การดำเนินการนี้จะลบเฉพาะข้อมูลบัญชีที่เข้ามาจาก EA เท่านั้น 
 							การตั้งค่าอื่นๆ เช่น Initial Capital, Unit Mappings, WD Notes, DP Notes จะไม่ถูกลบ
 						</p>
@@ -2611,7 +2224,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				<div class="flex items-center justify-end gap-3">
 					<button
 						on:click={() => (showDeleteConfirmModal = false)}
-						class="px-4 py-2 rounded-md bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors"
+						class="px-4 py-2 rounded-xl bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
 						disabled={deletingData}
 					>
 						ยกเลิก
@@ -2619,7 +2232,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					<button
 						on:click={clearAllAccountData}
 						disabled={deletingData}
-						class="px-4 py-2 rounded-md bg-red-600 text-white hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+						class="px-4 py-2 rounded-xl bg-red-500 text-white hover:bg-red-600 disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
 					>
 						{#if deletingData}
 							<svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
