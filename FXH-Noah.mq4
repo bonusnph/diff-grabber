@@ -6,7 +6,7 @@
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
 
-#define EA_VERSION "1.24"
+#define EA_VERSION "1.25"
 #property version EA_VERSION
 #property strict
 
@@ -194,6 +194,16 @@ bool   input_tp_active_diff_close_l2_enabled = true; // Scope: Master — L2 Ena
 input int    input_tp_active_diff_close_l2_points = 1000;    // Scope: Master — L2 TP points threshold for instant diff close
 bool   input_sl_active_diff_close_l2_enabled = true;  // Scope: Master — L2 Enable SL for instant diff close
 input int    input_sl_active_diff_close_l2_points = 1000;     // Scope: Master — L2 SL points threshold for instant diff close
+
+// ========================================
+// Trailing Loss Cut (Master only)
+// Activates when PnL drops to trigger, then force-closes when PnL recovers by recovery_points.
+// If PnL drops further by step_points, trailing level moves down.
+// ========================================
+input bool   input_trailing_loss_enabled            = false;  // Scope: Master — enable trailing loss cut
+input int    input_trailing_loss_trigger_points      = -500;  // Scope: Master — PnL trigger in points to activate (must be < 0, e.g. -500 points)
+input int    input_trailing_loss_recovery_points     = 50;    // Scope: Master — PnL recovery in points from trailing level to force close (must be > 0, e.g. 50 points)
+input int    input_trailing_loss_step_points         = -100;  // Scope: Master — PnL step in points to move trailing level deeper (must be < 0, e.g. -100 points)
 
 // -----------------------------
 // Globals
@@ -390,6 +400,12 @@ bool g_diff_close_blocked_by_tp = false;
 bool g_diff_close_blocked_by_sl = false;
 bool g_diff_close_blocked_by_tp_l2 = false;
 bool g_diff_close_blocked_by_sl_l2 = false;
+
+// ========================================
+// Trailing Loss Cut State
+// ========================================
+bool   g_trailing_loss_active = false;
+double g_trailing_loss_level  = 0.0;
 
 // Averaging state (EMA + optional Median pre-filter)
 double g_ema_open = 0.0; bool g_ema_open_init = false;
@@ -1491,6 +1507,113 @@ void UpdateDiffCloseBlockStateL2()
    
    g_diff_close_blocked_by_tp_l2 = input_tp_active_diff_close_l2_enabled && !tp_condition_met;
    g_diff_close_blocked_by_sl_l2 = input_sl_active_diff_close_l2_enabled && !sl_condition_met;
+}
+
+//+------------------------------------------------------------------+
+//| Trailing Loss Cut Functions                                       |
+//+------------------------------------------------------------------+
+
+void TrailingLossReset()
+{
+   g_trailing_loss_active = false;
+   g_trailing_loss_level  = 0.0;
+}
+
+void TrailingLossReDerive(double pnl_points)
+{
+   if (pnl_points > input_trailing_loss_trigger_points)
+   {
+      TrailingLossReset();
+      return;
+   }
+   g_trailing_loss_active = true;
+   double depth = input_trailing_loss_trigger_points - pnl_points;
+   double abs_step = MathAbs((double)input_trailing_loss_step_points);
+   if (abs_step < 1) abs_step = 1;
+   int steps_passed = (int)MathFloor(depth / abs_step);
+   g_trailing_loss_level = input_trailing_loss_trigger_points + steps_passed * input_trailing_loss_step_points;
+}
+
+void CheckTrailingLossCut()
+{
+   if (input_role != ROLE_MASTER) return;
+   if (!input_trailing_loss_enabled) return;
+   if (CountOpenPairs() <= 0)
+   {
+      if (g_trailing_loss_active) TrailingLossReset();
+      return;
+   }
+
+   double pnl_points = CalculateMasterOrderPnLPoints();
+
+   if (!g_trailing_loss_active)
+   {
+      if (pnl_points <= input_trailing_loss_trigger_points)
+      {
+         TrailingLossReDerive(pnl_points);
+         LogEvent("TRAILING_LOSS_ACTIVATED", StringFormat("pnl=%.1f;trigger=%d;level=%.0f",
+                  pnl_points, input_trailing_loss_trigger_points, g_trailing_loss_level));
+      }
+      return;
+   }
+
+   double cut_level = g_trailing_loss_level + input_trailing_loss_recovery_points;
+   if (pnl_points >= cut_level)
+   {
+      LogEvent("TRAILING_LOSS_CUT", StringFormat("pnl=%.1f;level=%.0f;cut=%.0f",
+               pnl_points, g_trailing_loss_level, cut_level));
+      ForceCloseTrailingLoss();
+      TrailingLossReset();
+      return;
+   }
+
+   double next_step_level = g_trailing_loss_level + input_trailing_loss_step_points;
+   if (pnl_points <= next_step_level)
+   {
+      double old_level = g_trailing_loss_level;
+      TrailingLossReDerive(pnl_points);
+      if (g_trailing_loss_level != old_level)
+      {
+         LogEvent("TRAILING_LOSS_STEP", StringFormat("pnl=%.1f;old_level=%.0f;new_level=%.0f;cut=%.0f",
+                  pnl_points, old_level, g_trailing_loss_level, g_trailing_loss_level + input_trailing_loss_recovery_points));
+      }
+   }
+}
+
+void ForceCloseTrailingLoss()
+{
+   string cmd_id = NewCmdId();
+   ulong created_ms = NowMs();
+   int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0) ? DryOverrideExpireMs() : input_cmd_expire_ms;
+   if (expire_ms <= 0) expire_ms = 60000;
+
+   if (DryEnabled())
+   {
+      if (DryMode() == DRY_WRITE_CMD_AND_FAKE_ACK)
+      {
+         string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
+         FileWriteAllAtomic(PathCloseCmd(), line);
+         string ackSelf = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0);
+         FileWriteAll(PathCloseAckSelf(), ackSelf);
+      }
+   }
+   else
+   {
+      bool ok = CloseAllByMagic();
+      CompactPairMapSelf();
+      WritePositions();
+      string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:GetLastError());
+      FileWriteAll(PathCloseAckSelf(), ack);
+      if (ok)
+      {
+         string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
+         FileWriteAllAtomic(PathCloseCmd(), line);
+      }
+      else
+      {
+         LogEvent("CLOSE_LOCAL_FAIL", StringFormat("reason=TRAILING_LOSS_CUT;err=%d", GetLastError()));
+      }
+   }
 }
 
 // -----------------------------
@@ -4820,8 +4943,21 @@ void DisplayUpdate()
          DisplaySetLine(line++, StringFormat("lot(M/S)=%.2f/%.2f", g_last_cmd_lot_master, g_last_cmd_lot_slave));
       }
    }
-   
-   
+
+   // Trailing Loss Cut status (Master only)
+   if (input_role == ROLE_MASTER && input_trailing_loss_enabled)
+   {
+      if (g_trailing_loss_active)
+      {
+         double cut_at = g_trailing_loss_level + input_trailing_loss_recovery_points;
+         DisplaySetLine(line++, StringFormat("TrailingLoss: ACTIVE level=%.0f cut=%.0f", g_trailing_loss_level, cut_at));
+      }
+      else
+      {
+         DisplaySetLine(line++, StringFormat("TrailingLoss: WAITING (trigger=%d)", input_trailing_loss_trigger_points));
+      }
+   }
+
    DisplayTrimLines(line);
 
    // Resize background to cover lines
@@ -5221,8 +5357,28 @@ int OnInit()
       return(INIT_FAILED);
    }
 
+   // Validate Trailing Loss Cut parameters
+   if (input_trailing_loss_enabled)
+   {
+      if (input_trailing_loss_trigger_points >= 0)
+      {
+         Alert("Trailing Loss Cut: trigger_points must be < 0 (got ", input_trailing_loss_trigger_points, ")");
+         return(INIT_FAILED);
+      }
+      if (input_trailing_loss_recovery_points <= 0)
+      {
+         Alert("Trailing Loss Cut: recovery_points must be > 0 (got ", input_trailing_loss_recovery_points, ")");
+         return(INIT_FAILED);
+      }
+      if (input_trailing_loss_step_points >= 0)
+      {
+         Alert("Trailing Loss Cut: step_points must be < 0 (got ", input_trailing_loss_step_points, ")");
+         return(INIT_FAILED);
+      }
+   }
+
    FolderEnsure();
-   
+
    // Initialize API system
    if (IsAPIEnabled())
    {
@@ -5431,6 +5587,9 @@ void OnTick()
       UpdateDiffCloseBlockState();
       UpdateDiffCloseBlockStateL2();
    }
+   
+   // Trailing Loss Cut check (Master only, every tick)
+   CheckTrailingLossCut();
    
    // === ZONE STABILITY CHECK - ทำทุก tick สำหรับ Master ===
    if(input_role==ROLE_MASTER && input_zone_stability_enabled)
