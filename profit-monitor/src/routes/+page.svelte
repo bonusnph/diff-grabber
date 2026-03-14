@@ -1151,16 +1151,12 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				<span class="inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-900/40 border border-amber-700/50 text-amber-400 mb-2">Partial Data</span>
 			{/if}
 			<p
-				class="text-5xl md:text-7xl font-black tracking-tight leading-none {!isDataComplete ? 'opacity-60' : ''}"
-				class:text-emerald-500={adjustedProfitLoss >= 0}
-				class:text-red-500={adjustedProfitLoss < 0}
+				class="text-5xl md:text-7xl font-black tracking-tight leading-none {!isDataComplete ? 'opacity-60' : ''} {Math.abs(adjustedProfitLoss) < 0.005 ? 'text-stone-400' : adjustedProfitLoss >= 0 ? 'text-emerald-500' : 'text-red-500'}"
 			>
 				{adjustedProfitLoss >= 0 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
 			</p>
 			<p
-				class="text-xl md:text-2xl font-semibold mt-1 tracking-tight"
-				class:text-emerald-400={adjustedProfitLossPercent >= 0}
-				class:text-red-400={adjustedProfitLossPercent < 0}
+				class="text-xl md:text-2xl font-semibold mt-1 tracking-tight {Math.abs(adjustedProfitLossPercent) < 0.005 ? 'text-stone-500' : adjustedProfitLossPercent >= 0 ? 'text-emerald-400' : 'text-red-400'}"
 			>
 				{adjustedProfitLossPercent >= 0 ? '+' : ''}{formatPercent(adjustedProfitLossPercent)}
 			</p>
@@ -1434,9 +1430,17 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												<span>DP: -{formatNumber((unitGroups[unit] || []).reduce((s, a) => s + (accountDeposits[a.account_number] ?? 0), 0))}</span>
 											{/if}
 										</div>
-										<span class="text-xs font-semibold flex-shrink-0 ml-3" class:text-emerald-400={unitStat.profitLoss >= 0} class:text-red-400={unitStat.profitLoss < 0}>
-											{unitStat.profitLoss >= 0 ? '+' : ''}{formatNumber(unitStat.profitLoss)}{#if unitInitialCapitals[unit] && unitInitialCapitals[unit] > 0} <span class="font-normal text-stone-500">({((unitStat.profitLoss / unitInitialCapitals[unit]) * 100).toFixed(1)}%)</span>{/if}
-										</span>
+										<div class="flex flex-col items-end flex-shrink-0 ml-3 leading-tight">
+											<span class="text-xs font-semibold {Math.abs(unitStat.profitLoss) < 0.005 ? 'text-stone-400' : unitStat.profitLoss >= 0 ? 'text-emerald-400' : 'text-red-400'}">
+												{unitStat.profitLoss >= 0 ? '+' : ''}{formatNumber(unitStat.profitLoss)}
+											</span>
+											{#if unitInitialCapitals[unit] && unitInitialCapitals[unit] > 0}
+												{@const pct = (unitStat.profitLoss / unitInitialCapitals[unit]) * 100}
+												<span class="text-[10px] {Math.abs(pct) < 0.005 ? 'text-stone-500' : pct >= 0 ? 'text-emerald-400/70' : 'text-red-400/70'}">
+													{pct >= 0 ? '+' : ''}{pct.toFixed(1)}%
+												</span>
+											{/if}
+										</div>
 									</div>
 								{/if}
 
