@@ -960,19 +960,19 @@
 	}
 
 	function formatNumber(num: number): string {
-		return new Intl.NumberFormat('th-TH', {
+		const result = new Intl.NumberFormat('th-TH', {
 			minimumFractionDigits: 2,
 			maximumFractionDigits: 2
 		}).format(num);
+		return result === '-0.00' ? '0.00' : result;
 	}
 
 	function formatPercent(num: number): string {
-		return (
-			new Intl.NumberFormat('th-TH', {
-				minimumFractionDigits: 2,
-				maximumFractionDigits: 2
-			}).format(num) + '%'
-		);
+		const result = new Intl.NumberFormat('th-TH', {
+			minimumFractionDigits: 2,
+			maximumFractionDigits: 2
+		}).format(num);
+		return (result === '-0.00' ? '0.00' : result) + '%';
 	}
 
 	function formatDateTime(dateStr: string): string {
@@ -1153,12 +1153,12 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			<p
 				class="text-5xl md:text-7xl font-black tracking-tight leading-none {!isDataComplete ? 'opacity-60' : ''} {Math.abs(adjustedProfitLoss) < 0.005 ? 'text-stone-400' : adjustedProfitLoss >= 0 ? 'text-emerald-500' : 'text-red-500'}"
 			>
-				{adjustedProfitLoss >= 0 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
+				{adjustedProfitLoss >= 0.005 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
 			</p>
 			<p
 				class="text-xl md:text-2xl font-semibold mt-1 tracking-tight {Math.abs(adjustedProfitLossPercent) < 0.005 ? 'text-stone-500' : adjustedProfitLossPercent >= 0 ? 'text-emerald-400' : 'text-red-400'}"
 			>
-				{adjustedProfitLossPercent >= 0 ? '+' : ''}{formatPercent(adjustedProfitLossPercent)}
+				{adjustedProfitLossPercent >= 0.005 ? '+' : ''}{formatPercent(adjustedProfitLossPercent)}
 			</p>
 
 			{#if totalWaitingWD !== 0 || totalDeposits !== 0}
@@ -1432,12 +1432,13 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										</div>
 										<div class="flex flex-col items-end flex-shrink-0 ml-3 leading-tight">
 											<span class="text-xs font-semibold {Math.abs(unitStat.profitLoss) < 0.005 ? 'text-stone-400' : unitStat.profitLoss >= 0 ? 'text-emerald-400' : 'text-red-400'}">
-												{unitStat.profitLoss >= 0 ? '+' : ''}{formatNumber(unitStat.profitLoss)}
+												{unitStat.profitLoss >= 0.005 ? '+' : ''}{formatNumber(unitStat.profitLoss)}
 											</span>
 											{#if unitInitialCapitals[unit] && unitInitialCapitals[unit] > 0}
 												{@const pct = (unitStat.profitLoss / unitInitialCapitals[unit]) * 100}
+												{@const pctStr = pct.toFixed(1) === '-0.0' ? '0.0' : pct.toFixed(1)}
 												<span class="text-[10px] {Math.abs(pct) < 0.005 ? 'text-stone-500' : pct >= 0 ? 'text-emerald-400/70' : 'text-red-400/70'}">
-													{pct >= 0 ? '+' : ''}{pct.toFixed(1)}%
+													{pct >= 0.005 ? '+' : ''}{pctStr}%
 												</span>
 											{/if}
 										</div>
