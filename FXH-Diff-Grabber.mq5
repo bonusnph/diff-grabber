@@ -177,7 +177,7 @@ double input_api_signal_min_confidence = 0.0;      // Scope: Master — Minimum 
 bool   input_api_signal_auto_detect_side = true;   // Scope: Master — Auto-detect master side from existing orders on init
 
 // Fast Polling (Signal only — auth stays at original interval)
-input bool   input_api_fast_polling = false;              // Scope: Master — Enable fast signal polling
+input bool   input_api_fast_polling = true;              // Scope: Master — Enable fast signal polling
 int    input_api_fast_polling_interval_seconds = 60;// Scope: Master — Fast polling interval (seconds, default 60)
 
 
