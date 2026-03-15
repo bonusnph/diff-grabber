@@ -891,13 +891,13 @@ function createScheduledSignalTriggers() {
   
   ScriptApp.newTrigger('scrapeAndUpdateSignal')
     .timeBased()
-    .everyMinutes(30)
+    .everyMinutes(WEB_SCRAPE_INTERVAL_MINUTES)
     .create();
   
   Logger.log('=== Scheduled Triggers (Web Scraping Mode) ===');
-  Logger.log('Trigger: every 30 minutes');
-  Logger.log('01:00-20:00 UTC: Scrape/External every 30 min');
-  Logger.log('20:00-01:00 UTC: Force SELL every 30 min');
+  Logger.log('Trigger: every ' + WEB_SCRAPE_INTERVAL_MINUTES + ' minutes');
+  Logger.log('01:00-20:00 UTC: Scrape/External every ' + WEB_SCRAPE_INTERVAL_MINUTES + ' min');
+  Logger.log('20:00-01:00 UTC: Force SELL every ' + WEB_SCRAPE_INTERVAL_MINUTES + ' min');
 }
 
 // ========================================
