@@ -1399,11 +1399,6 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											<span class="w-1.5 h-1.5 rounded-full bg-orange-400 flex-shrink-0" title="Stale data"></span>
 										{/if}
 										{#if unitStat}
-											{#if Math.abs(unitStat.profitLoss) >= 0.01}
-												<button on:click|stopPropagation={() => adjustUnitPLToZero(unit)} disabled={adjustingPLUnits.has(unit)} class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-900/40 hover:bg-amber-900/60 text-amber-400 disabled:opacity-50 transition-colors">
-													{adjustingPLUnits.has(unit) ? '...' : 'Set P/L Zero'}
-												</button>
-											{/if}
 											{#if isGroupNotNetted(unitGroups[unit] || [])}
 												<button on:click|stopPropagation={() => consolidateGroupWDDP(unit)} disabled={consolidatingUnits.has(unit)} class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-cyan-900/40 hover:bg-cyan-900/60 text-cyan-400 disabled:opacity-50 transition-colors">
 													{consolidatingUnits.has(unit) ? '...' : 'Simplify WD/DP'}
@@ -1488,6 +1483,13 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							</div>
 							
 							{#if unitVisibility[unit] !== false}
+							{#if unitStat && Math.abs(unitStat.profitLoss) >= 0.01}
+								<div class="px-4 py-1.5 border-t border-stone-700/50 flex items-center justify-end">
+									<button on:click={() => adjustUnitPLToZero(unit)} disabled={adjustingPLUnits.has(unit)} class="text-[10px] px-2 py-0.5 rounded font-medium bg-amber-900/40 hover:bg-amber-900/60 text-amber-400 disabled:opacity-50 transition-colors">
+										{adjustingPLUnits.has(unit) ? '...' : 'Set P/L Zero'}
+									</button>
+								</div>
+							{/if}
 							<!-- Compact Table View -->
 							<div class="overflow-x-auto px-1">
 								<table class="w-full text-xs">
