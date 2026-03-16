@@ -278,8 +278,8 @@
 		return { unit, delta, tradingCount };
 	});
 
-	$: positivePairs = unitDeltaSummaries.filter((d) => d.delta !== null && (d.delta as number) >= 0);
-	$: negativePairs = unitDeltaSummaries.filter((d) => d.delta !== null && (d.delta as number) < 0);
+	$: positivePairs = unitDeltaSummaries.filter((d) => d.delta !== null && (d.delta as number) >= 0).sort((a, b) => (b.delta as number) - (a.delta as number));
+	$: negativePairs = unitDeltaSummaries.filter((d) => d.delta !== null && (d.delta as number) < 0).sort((a, b) => (b.delta as number) - (a.delta as number));
 	$: positivePairsCount = positivePairs.length;
 	$: negativePairsCount = negativePairs.length;
 	$: positiveTradingAccountsCount = positivePairs.reduce((sum, d) => sum + d.tradingCount, 0);
@@ -288,6 +288,7 @@
 	// Count accounts with low equity warning
 	$: lowEquityWarningAccounts = summaries.filter(isLowEquityWarning);
 	$: lowEquityWarningCount = lowEquityWarningAccounts.length;
+	$: lowEquityUnits = [...new Set(lowEquityWarningAccounts.map(a => a.unit))].sort((a, b) => a - b);
 
 	// Function to check if unit has stale data
 	function hasUnitStaleData(accounts: AccountSummary[]): boolean {
@@ -1217,9 +1218,21 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			</div>
 
 			<!-- Low Equity Warning -->
-			<div class="rounded-2xl border shadow-sm p-3 {lowEquityWarningCount > 0 ? 'bg-red-900/30 border-red-800/50' : 'bg-stone-800 border-stone-700/50'}">
-				<div class="text-xs font-medium uppercase tracking-wider {lowEquityWarningCount > 0 ? 'text-red-400' : 'text-stone-500'}">Low Equity</div>
-				<div class="text-2xl font-bold mt-0.5 {lowEquityWarningCount > 0 ? 'text-red-400' : 'text-stone-200'}">{lowEquityWarningCount}</div>
+			<div class="rounded-2xl border shadow-sm p-3 {lowEquityUnits.length > 0 ? 'bg-red-900/30 border-red-800/50' : 'bg-stone-800 border-stone-700/50'}">
+				<div class="text-xs font-medium uppercase tracking-wider {lowEquityUnits.length > 0 ? 'text-red-400' : 'text-stone-500'}">Low Equity</div>
+				<div class="mt-1">
+					{#if lowEquityUnits.length > 0}
+						<div class="flex flex-wrap gap-1">
+							{#each lowEquityUnits as u}
+								<span class="inline-flex items-center justify-center h-6 px-1.5 rounded-lg text-xs font-bold bg-red-900/40 text-red-400 border border-red-800/50">
+									#{u} {getUnitDisplayName(u)}
+								</span>
+							{/each}
+						</div>
+					{:else}
+						<span class="text-xs text-stone-600">--</span>
+					{/if}
+				</div>
 			</div>
 		</div>
 
@@ -1347,7 +1360,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						
 						{#if visibleAccounts.length > 0}
 						<div
-							class="bg-stone-800 rounded-2xl border shadow-sm overflow-hidden {groupIsTrading ? 'border-indigo-700/50' : 'border-stone-700/50'}"
+							class="rounded-2xl border shadow-sm overflow-hidden {groupIsTrading ? 'bg-stone-800 border-indigo-500/60 border-l-4 border-l-indigo-500' : 'bg-stone-800 border-stone-700/50'}"
 						>
 							<!-- Unit Header Row 1: Name + badges -->
 							<div 
