@@ -6,7 +6,7 @@
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
 
-#define EA_VERSION "1.25"
+#define EA_VERSION "1.26"
 #property version EA_VERSION
 
 // =============================
@@ -178,7 +178,7 @@ bool   input_api_signal_auto_detect_side = true;   // Scope: Master — Auto-det
 
 // Fast Polling (Signal only — auth stays at original interval)
 input bool   input_api_fast_polling = true;              // Scope: Master — Enable fast signal polling
-int    input_api_fast_polling_interval_seconds = 60;// Scope: Master — Fast polling interval (seconds, default 60)
+input int    input_api_fast_polling_interval_seconds = 60;// Scope: Master — Fast polling interval (seconds, default 60)
 
 
 // ========================================
@@ -387,6 +387,8 @@ string g_api_signal_error = "";
 MasterSide g_api_signal_pending_side = SIDE_BUY;
 bool g_api_signal_pending_change = false;
 double g_api_signal_pending_confidence = 0.0;
+bool g_api_signal_pending_logged = false;
+string g_api_signal_last_logged_direction = "";
 
 // Effective master side (can be changed by API signal, initialized from input_master_side)
 MasterSide g_effective_master_side = SIDE_SELL;
@@ -1143,10 +1145,13 @@ bool FetchTradingSignal()
    g_api_signal_valid = true;
    g_api_signal_error = "";
    
-   if (input_verbose_journal_logs)
-      Print("[API-SIGNAL] Fetched signal: ", g_api_signal_current, 
+   if (input_verbose_journal_logs && g_api_signal_current != g_api_signal_last_logged_direction)
+   {
+      Print("[API-SIGNAL] Fetched signal: ", g_api_signal_current,
             " (confidence: ", DoubleToString(g_api_signal_confidence, 2), ")");
-   
+      g_api_signal_last_logged_direction = g_api_signal_current;
+   }
+
    return true;
 }
 
@@ -1221,15 +1226,19 @@ bool ApplySignalToMasterSide()
    int self_pairs = CountOpenPairs();
    if (self_pairs > 0)
    {
+      bool side_changed = (g_api_signal_pending_side != new_side);
       g_api_signal_pending_side = new_side;
       g_api_signal_pending_change = true;
       g_api_signal_pending_confidence = g_api_signal_confidence;
-      
-      if (input_verbose_journal_logs)
-         Print("[API-SIGNAL] Signal saved as pending (", g_api_signal_current, 
+
+      if (input_verbose_journal_logs && (!g_api_signal_pending_logged || side_changed))
+      {
+         Print("[API-SIGNAL] Signal saved as pending (", g_api_signal_current,
                ", confidence: ", DoubleToString(g_api_signal_confidence, 2),
                ") - waiting for positions to close");
-      
+         g_api_signal_pending_logged = true;
+      }
+
       return false;
    }
    
@@ -1293,6 +1302,7 @@ void CheckPendingSignalChange()
    }
    
    g_api_signal_pending_change = false;
+   g_api_signal_pending_logged = false;
 }
 
 // Get effective open cooldown (init phase → init value, API override, otherwise input value)
