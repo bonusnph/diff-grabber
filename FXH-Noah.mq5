@@ -6,7 +6,7 @@
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
 
-#define EA_VERSION "1.26"
+#define EA_VERSION "1.27"
 #property version EA_VERSION
 
 // =============================
@@ -200,14 +200,22 @@ bool   input_sl_active_diff_close_l2_enabled = true;  // Scope: Master — L2 En
 input int    input_sl_active_diff_close_l2_points = 1000;     // Scope: Master — L2 SL points threshold for instant diff close
 
 // ========================================
+// TP Cut Level-3 (Master only)
+// Immediate profit cut — closes all when avg PnL reaches threshold.
+// Independent of L1/L2 diff close logic.
+// ========================================
+input bool   input_tp_cut_l3_enabled = false; // Scope: Master — L3 Enable TP cut (immediate close on profit)
+input int    input_tp_cut_l3_points  = 2000;   // Scope: Master — L3 TP points threshold for immediate close (must be > 0)
+
+// ========================================
 // Trailing Loss Cut (Master only)
 // Activates when PnL drops to trigger, then force-closes when PnL recovers by recovery_points.
 // If PnL drops further by step_points, trailing level moves down.
 // ========================================
 input bool   input_trailing_loss_enabled            = false;  // Scope: Master — enable trailing loss cut
-input int    input_trailing_loss_trigger_points      = -500;  // Scope: Master — PnL trigger in points to activate (must be < 0, e.g. -500 points)
-input int    input_trailing_loss_recovery_points     = 50;    // Scope: Master — PnL recovery in points from trailing level to force close (must be > 0, e.g. 50 points)
-input int    input_trailing_loss_step_points         = -100;  // Scope: Master — PnL step in points to move trailing level deeper (must be < 0, e.g. -100 points)
+input int    input_trailing_loss_trigger_points      = -2000;  // Scope: Master — PnL trigger in points to activate (must be < 0, e.g. -500 points)
+input int    input_trailing_loss_recovery_points     = 500;    // Scope: Master — PnL recovery in points from trailing level to force close (must be > 0, e.g. 50 points)
+input int    input_trailing_loss_step_points         = -1000;  // Scope: Master — PnL step in points to move trailing level deeper (must be < 0, e.g. -100 points)
 
 // -----------------------------
 // Globals
@@ -1674,6 +1682,61 @@ void ForceCloseTrailingLoss()
       else
       {
          LogEvent("CLOSE_LOCAL_FAIL", StringFormat("reason=TRAILING_LOSS_CUT;err=%d", (int)GetLastError()));
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| TP Cut Level-3 Functions                                          |
+//+------------------------------------------------------------------+
+
+void CheckTPCutL3()
+{
+   if (input_role != ROLE_MASTER) return;
+   if (!input_tp_cut_l3_enabled) return;
+   if (CountOpenPairs() <= 0) return;
+
+   double pnl_points = CalculateMasterOrderPnLPoints();
+
+   if (pnl_points >= input_tp_cut_l3_points)
+   {
+      LogEvent("TP_CUT_L3_TRIGGERED", StringFormat("pnl=%.1f;threshold=%d", pnl_points, input_tp_cut_l3_points));
+      ForceCloseTPCutL3();
+   }
+}
+
+void ForceCloseTPCutL3()
+{
+   string cmd_id = NewCmdId();
+   ulong created_ms = NowMs();
+   int expire_ms = (DryEnabled() && DryOverrideExpireMs()>0) ? DryOverrideExpireMs() : input_cmd_expire_ms;
+   if (expire_ms <= 0) expire_ms = 60000;
+
+   if (DryEnabled())
+   {
+      if (DryMode() == DRY_WRITE_CMD_AND_FAKE_ACK)
+      {
+         string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
+         FileWriteAllAtomic(PathCloseCmd(), line);
+         string ackSelf = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0);
+         FileWriteAll(PathCloseAckSelf(), ackSelf);
+      }
+   }
+   else
+   {
+      bool ok = CloseAllByMagic();
+      CompactPairMapSelf();
+      WritePositions();
+      string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:(int)GetLastError());
+      FileWriteAll(PathCloseAckSelf(), ack);
+      if (ok)
+      {
+         string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
+         FileWriteAllAtomic(PathCloseCmd(), line);
+      }
+      else
+      {
+         LogEvent("CLOSE_LOCAL_FAIL", StringFormat("reason=TP_CUT_L3;err=%d", (int)GetLastError()));
       }
    }
 }
@@ -4787,6 +4850,12 @@ void DisplayUpdate()
          DisplaySetLine(line++, StringFormat("TrailingLoss: WAITING (trigger=%d)", input_trailing_loss_trigger_points));
       }
    }
+   
+   // TP Cut L3 status
+   if (input_role == ROLE_MASTER && input_tp_cut_l3_enabled)
+   {
+      DisplaySetLine(line++, StringFormat("TP Cut L3: ON (threshold=%d pts)", input_tp_cut_l3_points));
+   }
 
    DisplayTrimLines(line);
 
@@ -5186,6 +5255,16 @@ int OnInit()
       }
    }
 
+   // Validate TP Cut L3 parameters
+   if (input_tp_cut_l3_enabled)
+   {
+      if (input_tp_cut_l3_points <= 0)
+      {
+         Alert("TP Cut L3: points must be > 0 (got ", input_tp_cut_l3_points, ")");
+         return(INIT_FAILED);
+      }
+   }
+
    FolderEnsure();
 
    // Initialize API system
@@ -5538,6 +5617,9 @@ void OnTick()
    
    // Trailing Loss Cut check (Master only, every tick)
    CheckTrailingLossCut();
+   
+   // TP Cut L3 check (Master only, every tick)
+   CheckTPCutL3();
    
    // === ZONE STABILITY CHECK - ทำทุก tick สำหรับ Master ===
    if(input_role==ROLE_MASTER && input_zone_stability_enabled)
