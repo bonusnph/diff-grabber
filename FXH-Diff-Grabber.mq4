@@ -8,7 +8,7 @@
 #property strict
 
 // EA Version constant (single source of truth)
-#define EA_VERSION "1.27"
+#define EA_VERSION "1.28"
 #property version EA_VERSION
 
 // =============================
@@ -27,7 +27,7 @@
 enum Role { ROLE_MASTER = 0, ROLE_SLAVE = 1 };
 enum ReconcileMode { RECONCILE_CLOSE = 0, RECONCILE_REOPEN = 1 };
 enum DryRunHandshakeMode { DRY_NONE = 0, DRY_WRITE_CMD_ONLY = 1, DRY_WRITE_CMD_AND_FAKE_ACK = 2 };
-enum MasterSide { SIDE_BUY = 0, SIDE_SELL = 1 };
+enum MasterSide { SIDE_BUY = 0, SIDE_SELL = 1, SIDE_AUTO = 2 };
 input Role   input_role                     = ROLE_MASTER;   // Scope: Both — select EA role (ROLE_MASTER or ROLE_SLAVE)
 input string input_channel_id               = "A01";         // Scope: Both — channel identifier (must match across peers)
 string input_shared_dir               = "";            // Scope: Both — legacy (unused); Common Files is used by default
@@ -401,8 +401,10 @@ double g_api_signal_pending_confidence = 0.0;
 bool g_api_signal_pending_logged = false;
 string g_api_signal_last_logged_direction = "";
 
-// Effective master side (can be changed by API signal, initialized from input_master_side)
+// Effective master side (can be changed by API signal or SIDE_AUTO, initialized from input_master_side)
 MasterSide g_effective_master_side = SIDE_SELL;
+bool g_auto_side_locked = false;
+bool g_auto_ever_opened = false;
 
 // ========================================
 // TP/SL Active Diff Close State
@@ -1170,6 +1172,7 @@ bool ParseSignalData(const string csv_data)
 // Apply signal to master_side with safety checks
 bool ApplySignalToMasterSide()
 {
+   if(input_master_side == SIDE_AUTO) return true;
    if (!IsSignalAPIEnabled() || !input_api_signal_auto_apply)
       return true;
    
@@ -1228,6 +1231,11 @@ bool ApplySignalToMasterSide()
 // Check and apply pending signal change
 void CheckPendingSignalChange()
 {
+   if(input_master_side == SIDE_AUTO)
+   {
+      g_api_signal_pending_change = false;
+      return;
+   }
    if (!g_api_signal_pending_change)
       return;
    
@@ -3078,9 +3086,14 @@ void WriteMasterConfig()
    // version,symbol,master_side,lot_master,lot_slave,open_th,close_th,cooldown,max_pairs,updated_ms,dry_enabled,dry_mode,dry_delay_ms,dry_drop,dry_override_expire_ms,dry_suppress_hb,
    // max_spread_self,max_spread_peer,quotes_fresh_ms,file_poll_ms,retry_on_requote,max_retries,cmd_expire_ms,ack_timeout_ms,heartbeat_timeout_ms,reconcile_mode,reconcile_interval_ms,close_cooldown_seconds,min_balance_master_usd,min_balance_slave_usd
    ulong updated_ms = NowMs();
+   string side_str;
+   if(input_master_side == SIDE_AUTO && !g_auto_side_locked)
+      side_str = "AUTO";
+   else
+      side_str = (g_effective_master_side==SIDE_BUY) ? "BUY" : "SELL";
    string line = StringFormat("1,%s,%s,%.2f,%.2f,%d,%d,%d,%d,%I64u,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.2f,%.2f\n",
       g_symbol,
-      ((g_effective_master_side==SIDE_BUY)?"BUY":"SELL"),
+      side_str,
       input_lot_master,
       input_lot_slave,
       input_open_threshold_points,
@@ -3432,24 +3445,39 @@ bool ReadPeerBalanceFresh(double &bal_out, ulong &ts_out)
    return true;
 }
 
-double DiffOpenPoints()
+double DiffOpenPointsFor(bool masterBuy)
 {
-   // Always compute in Master orientation
-   bool masterBuy = IsMasterSideBuyEffective();
    double m_bid,m_ask,s_bid,s_ask; GetMasterSlaveQuotes(m_bid,m_ask,s_bid,s_ask);
    double diff = masterBuy ? (s_bid - m_ask) : (m_bid - s_ask);
    double pt = EffectivePoint(); if(pt <= 0.0) pt = g_point;
    return diff / pt;
 }
 
-double DiffClosePoints()
+double DiffOpenPoints()
 {
-   // Always compute in Master orientation
-   bool masterBuy = IsMasterSideBuyEffective();
+   return DiffOpenPointsFor(IsMasterSideBuyEffective());
+}
+
+void ResetSmoothingBuffersOpen()
+{
+   g_ema_open = 0.0; g_ema_open_init = false;
+   g_med_open_count = 0; g_med_open_idx = 0;
+   ArrayInitialize(g_med_buf_open, 0.0);
+   g_open_pending = false; g_open_ok_count = 0;
+   g_raw_open_pending = false; g_raw_open_stable_count = 0;
+}
+
+double DiffClosePointsFor(bool masterBuy)
+{
    double m_bid,m_ask,s_bid,s_ask; GetMasterSlaveQuotes(m_bid,m_ask,s_bid,s_ask);
    double diff = masterBuy ? (m_bid - s_ask) : (s_bid - m_ask);
    double pt = EffectivePoint(); if(pt <= 0.0) pt = g_point;
    return diff / pt;
+}
+
+double DiffClosePoints()
+{
+   return DiffClosePointsFor(IsMasterSideBuyEffective());
 }
 
 // -----------------------------
@@ -3637,6 +3665,42 @@ void MaybeOpenPair()
       if(input_min_balance_slave_usd > 0.0)
       {
          if(!s_ok || s_bal < input_min_balance_slave_usd) return;
+      }
+   }
+
+   // === SIDE_AUTO: evaluate both sides when no orders and not yet locked ===
+   if(input_master_side == SIDE_AUTO && !g_auto_side_locked)
+   {
+      double diffBuy  = DiffOpenPointsFor(true);
+      double diffSell = DiffOpenPointsFor(false);
+      int threshold   = GetOpenThresholdPoints();
+
+      bool buyReady  = (diffBuy  >= threshold);
+      bool sellReady = (diffSell >= threshold);
+
+      if(!buyReady && !sellReady) return;
+
+      if(buyReady && sellReady)
+         g_effective_master_side = (diffBuy >= diffSell) ? SIDE_BUY : SIDE_SELL;
+      else if(buyReady)
+         g_effective_master_side = SIDE_BUY;
+      else
+         g_effective_master_side = SIDE_SELL;
+
+      g_auto_side_locked = true;
+      ResetSmoothingBuffersOpen();
+      WriteMasterConfig();
+      LogEvent("AUTO_SIDE_LOCKED", StringFormat("side=%s;diffBuy=%.1f;diffSell=%.1f;threshold=%d",
+               (g_effective_master_side==SIDE_BUY?"BUY":"SELL"), diffBuy, diffSell, threshold));
+   }
+
+   // Safety: SIDE_AUTO must resolve to BUY or SELL before opening
+   if(input_master_side == SIDE_AUTO)
+   {
+      if(!g_auto_side_locked || (g_effective_master_side != SIDE_BUY && g_effective_master_side != SIDE_SELL))
+      {
+         LogEvent("AUTO_SAFETY_BLOCK", "effective_side_not_resolved");
+         return;
       }
    }
 
@@ -4447,6 +4511,14 @@ void SlaveProcessOpenCmd()
    g_pending_order_comment = ""; // do not expose pairing in comment
    g_pending_pair_id = pair_id;
    int ticket=-1; double price=0.0;
+   // Safety: reject if master side field is not BUY/SELL
+   if(mside != "BUY" && mside != "SELL")
+   {
+      string ackBad2 = StringFormat("1,%s,%I64d,%s,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", "0.0", 0, 462);
+      FileWriteAllAtomic(PathOpenAckSelf(), ackBad2);
+      LogEvent("OPEN_REJECT_INVALID_SIDE", StringFormat("cmd_id=%s;mside=%s", cmd_id, mside));
+      return;
+   }
    bool slaveBuy = (mside=="BUY")?false:true;  // Slave trades opposite direction
    bool ok = PlaceOrderMaster(slaveBuy, lot_slave, ticket, price);
    g_pending_pair_id = "";
@@ -4764,7 +4836,7 @@ void DisplayInit()
       string dopen_value = OBJ_PREFIX + "DIFF_OPEN_VALUE";
       ObjectCreate(0, dopen_value, OBJ_LABEL, 0, 0, 0);
       ObjectSet(dopen_value, OBJPROP_CORNER, 0);
-      ObjectSet(dopen_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 110);
+      ObjectSet(dopen_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 70);
       ObjectSet(dopen_value, OBJPROP_YDISTANCE, diff_base_y);
       ObjectSetText(dopen_value, "0.0", 12, "Arial Bold", clrBlack);
 
@@ -4778,7 +4850,7 @@ void DisplayInit()
       string dclose_value = OBJ_PREFIX + "DIFF_CLOSE_VALUE";
       ObjectCreate(0, dclose_value, OBJ_LABEL, 0, 0, 0);
       ObjectSet(dclose_value, OBJPROP_CORNER, 0);
-      ObjectSet(dclose_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 110);
+      ObjectSet(dclose_value, OBJPROP_XDISTANCE, CLOSE_ONLY_BTN_X + 70);
       ObjectSet(dclose_value, OBJPROP_YDISTANCE, diff_base_y + 20);
       ObjectSetText(dclose_value, "0.0", 12, "Arial Bold", clrBlack);
    }
@@ -5038,13 +5110,27 @@ void UpdateProfitDisplay()
 void UpdateDiffDisplay()
 {
    if(!input_debug_buttons_enabled || input_role!=ROLE_MASTER) return;
-   
-   double dOpen = DiffOpenPoints();
-   double dClose = DiffClosePoints();
-   
-   // Update realtime diffOpen/diffClose values with color coding
+
    string dopen_value = OBJ_PREFIX + "DIFF_OPEN_VALUE";
    string dclose_value = OBJ_PREFIX + "DIFF_CLOSE_VALUE";
+
+   if(input_master_side == SIDE_AUTO && !g_auto_side_locked)
+   {
+      double dOpenBuy  = DiffOpenPointsFor(true);
+      double dOpenSell = DiffOpenPointsFor(false);
+      double dCloseBuy  = DiffClosePointsFor(true);
+      double dCloseSell = DiffClosePointsFor(false);
+      color cOpenBuy  = (dOpenBuy>0.0? clrDarkGreen : (dOpenBuy<0.0? clrRed : clrBlack));
+      color cOpenSell = (dOpenSell>0.0? clrDarkGreen : (dOpenSell<0.0? clrRed : clrBlack));
+      if(ObjectFind(0, dopen_value) != -1)
+         ObjectSetText(dopen_value, StringFormat("B:%.1f S:%.1f", dOpenBuy, dOpenSell), 10, "Arial Bold", (dOpenBuy>=dOpenSell?cOpenBuy:cOpenSell));
+      if(ObjectFind(0, dclose_value) != -1)
+         ObjectSetText(dclose_value, StringFormat("B:%.1f S:%.1f", dCloseBuy, dCloseSell), 10, "Arial Bold", clrGray);
+      return;
+   }
+
+   double dOpen = DiffOpenPoints();
+   double dClose = DiffClosePoints();
    color dOpenColor = (dOpen>0.0? clrDarkGreen : (dOpen<0.0? clrRed : clrBlack));
    color dCloseColor = (dClose>0.0? clrDarkGreen : (dClose<0.0? clrRed : clrBlack));
    if(ObjectFind(0, dopen_value) != -1)
@@ -5057,6 +5143,15 @@ void DisplayUpdate()
 {
    string role = (input_role==ROLE_MASTER)?"MASTER":"SLAVE";
    int spread = SpreadPointsSelf();
+   double dOpenBuy=0, dOpenSell=0, dCloseBuy=0, dCloseSell=0;
+   bool autoSearching = (input_master_side == SIDE_AUTO && !g_auto_side_locked);
+   if(autoSearching)
+   {
+      dOpenBuy  = DiffOpenPointsFor(true);
+      dOpenSell = DiffOpenPointsFor(false);
+      dCloseBuy  = DiffClosePointsFor(true);
+      dCloseSell = DiffClosePointsFor(false);
+   }
    double dOpen = DiffOpenPoints();
    double dClose = DiffClosePoints();
    double aOpen = input_avg_filter_enabled ? SmoothedOpenDiff(dOpen) : dOpen;
@@ -5101,7 +5196,12 @@ void DisplayUpdate()
    line = DisplaySetWrappedLines(line, StringFormat("sync_path=%s", PathChannelRootAbs()));
    if(input_role==ROLE_MASTER)
    {
-      DisplaySetLine(line++, StringFormat("lot(m/s)=%.2f/%.2f  side(M)=%s", input_lot_master, input_lot_slave, ((g_effective_master_side==SIDE_BUY)?"BUY":"SELL")));
+      string masterSideStr;
+      if(input_master_side == SIDE_AUTO)
+         masterSideStr = g_auto_side_locked ? StringFormat("AUTO(%s)", (g_effective_master_side==SIDE_BUY?"BUY":"SELL")) : "AUTO(SEARCHING)";
+      else
+         masterSideStr = (g_effective_master_side==SIDE_BUY) ? "BUY" : "SELL";
+      DisplaySetLine(line++, StringFormat("lot(m/s)=%.2f/%.2f  side(M)=%s", input_lot_master, input_lot_slave, masterSideStr));
       DisplaySetLine(line++, StringFormat("open_th(init)=%d  open_th(cur)=%d  close_th(init)=%d  close_th(cur)=%d  spread=%d", input_open_threshold_points, GetOpenThresholdPoints(), input_close_threshold_points, GetCloseThresholdPoints(), spread));
    }
    else
@@ -5109,8 +5209,13 @@ void DisplayUpdate()
       if(!g_have_master_cmd) ReadMasterConfigForSlave();
       if(g_have_master_cmd)
       {
-         string sideS = (g_last_cmd_side=="BUY")?"SELL":"BUY";
-         DisplaySetLine(line++, StringFormat("lot(M/S)=%.2f/%.2f  side(S)=%s", g_last_cmd_lot_master, g_last_cmd_lot_slave, sideS));
+         if(g_last_cmd_side == "AUTO")
+            DisplaySetLine(line++, StringFormat("lot(M/S)=%.2f/%.2f  side=AUTO(SEARCHING)", g_last_cmd_lot_master, g_last_cmd_lot_slave));
+         else
+         {
+            string sideS = (g_last_cmd_side=="BUY")?"SELL":"BUY";
+            DisplaySetLine(line++, StringFormat("lot(M/S)=%.2f/%.2f  side(S)=%s", g_last_cmd_lot_master, g_last_cmd_lot_slave, sideS));
+         }
          if(g_have_master_th)
             DisplaySetLine(line++, StringFormat("th(M): open=%d close=%d", g_last_cmd_open_th, g_last_cmd_close_th));
       }
@@ -5152,7 +5257,12 @@ void DisplayUpdate()
       }
       
       // Enhanced status display with detailed info
-      if(input_avg_filter_enabled)
+      if(autoSearching)
+      {
+         DisplaySetLine(line++, StringFormat("Open(B):%.1f  Open(S):%.1f  Thr=%d", dOpenBuy, dOpenSell, GetOpenThresholdPoints()));
+         DisplaySetLine(line++, StringFormat("Close(B):%.1f  Close(S):%.1f  Thr=%d", dCloseBuy, dCloseSell, GetCloseThresholdPoints()));
+      }
+      else if(input_avg_filter_enabled)
       {
          double thrOpenEff = (double)(GetOpenThresholdPoints() + input_diff_hysteresis_points);
          double thrCloseEff = (double)(GetCloseThresholdPoints() + input_diff_hysteresis_points);
@@ -5259,7 +5369,10 @@ void DisplayUpdate()
    }
    else
    {
-      DisplaySetLine(line++, StringFormat("diffOpen=%.1f  diffClose=%.1f  fresh=%s", dOpen, dClose, (QuotesFresh()?"OK":"STALE")));
+      if(autoSearching)
+         DisplaySetLine(line++, StringFormat("diffOpen B:%.1f S:%.1f  diffClose B:%.1f S:%.1f  fresh=%s", dOpenBuy, dOpenSell, dCloseBuy, dCloseSell, (QuotesFresh()?"OK":"STALE")));
+      else
+         DisplaySetLine(line++, StringFormat("diffOpen=%.1f  diffClose=%.1f  fresh=%s", dOpen, dClose, (QuotesFresh()?"OK":"STALE")));
    }
    if(g_role_conflict) DisplaySetLine(line++, "role_conflict=YES (single-instance per channel)");
    if(input_role==ROLE_MASTER)
@@ -5724,9 +5837,20 @@ int OnInit()
    g_point  = MarketInfo(g_symbol, MODE_POINT);
    g_magic  = input_magic_number_base + (int)StringGetCharacter(input_channel_id, 0);
    // Initialize effective master side from input
-   g_effective_master_side = input_master_side;
+   if(input_master_side == SIDE_AUTO)
+   {
+      g_effective_master_side = SIDE_SELL;
+      g_auto_side_locked = false;
+      g_auto_ever_opened = false;
+   }
+   else
+   {
+      g_effective_master_side = input_master_side;
+      g_auto_side_locked = true;
+      g_auto_ever_opened = false;
+   }
 
-   if (input_role == ROLE_MASTER && input_api_signal_auto_detect_side)
+   if (input_role == ROLE_MASTER && (input_api_signal_auto_detect_side || input_master_side == SIDE_AUTO))
    {
       int buy_count = 0, sell_count = 0;
       for (int i = OrdersTotal() - 1; i >= 0; --i)
@@ -5739,12 +5863,14 @@ int OnInit()
       if (buy_count > 0 && sell_count == 0)
       {
          g_effective_master_side = SIDE_BUY;
+         if (input_master_side == SIDE_AUTO) { g_auto_side_locked = true; g_auto_ever_opened = true; }
          if (input_verbose_journal_logs)
             Print("[INIT] Auto-detected master side: BUY (", buy_count, " orders)");
       }
       else if (sell_count > 0 && buy_count == 0)
       {
          g_effective_master_side = SIDE_SELL;
+         if (input_master_side == SIDE_AUTO) { g_auto_side_locked = true; g_auto_ever_opened = true; }
          if (input_verbose_journal_logs)
             Print("[INIT] Auto-detected master side: SELL (", sell_count, " orders)");
       }
@@ -6031,6 +6157,34 @@ void OnTick()
       }
    }
    
+   // SIDE_AUTO: detect open orders once (covers normal flow + EA restart with existing orders)
+   if(input_role==ROLE_MASTER && input_master_side == SIDE_AUTO && g_auto_side_locked && !g_auto_ever_opened && CountOpenPairs() > 0)
+      g_auto_ever_opened = true;
+
+   // SIDE_AUTO: unlock if locked side diff turned negative before any order opened (opportunity passed)
+   if(input_role==ROLE_MASTER && input_master_side == SIDE_AUTO && g_auto_side_locked && !g_auto_ever_opened)
+   {
+      double lockedDiff = DiffOpenPointsFor(g_effective_master_side == SIDE_BUY);
+      if(lockedDiff < 0.0)
+      {
+         LogEvent("AUTO_SIDE_UNLOCKED", StringFormat("reason=negative_diff;side=%s;diff=%.1f",
+                  (g_effective_master_side==SIDE_BUY?"BUY":"SELL"), lockedDiff));
+         g_auto_side_locked = false;
+         ResetSmoothingBuffersOpen();
+         WriteMasterConfig();
+      }
+   }
+
+   // SIDE_AUTO: unlock side when all orders closed (only if orders were actually opened)
+   if(input_role==ROLE_MASTER && input_master_side == SIDE_AUTO && g_auto_side_locked && g_auto_ever_opened && CountOpenPairs() <= 0)
+   {
+      g_auto_side_locked = false;
+      g_auto_ever_opened = false;
+      ResetSmoothingBuffersOpen();
+      WriteMasterConfig();
+      LogEvent("AUTO_SIDE_UNLOCKED", "orders_closed=true;searching_both_sides=true");
+   }
+
    if(input_role==ROLE_MASTER)
    {
       MaybeOpenPair();
