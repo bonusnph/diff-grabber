@@ -63,10 +63,10 @@ input double input_swap_trading_lots    = 0.01;      // Scope: Master — lots f
 #define input_lot_slave  input_lot
 input int    input_open_threshold_points    = 30;            // Scope: Master — open threshold (points)
 input int    input_close_threshold_points   = 30;            // Scope: Master — close threshold (points)
-int    input_init_open_cooldown_seconds  = 300;            // Scope: Master — init open cooldown on EA start
-int    input_init_close_cooldown_seconds = 300;             // Scope: Master — init close cooldown on EA start
+int    input_init_open_cooldown_seconds  = 900;            // Scope: Master — init open cooldown on EA start
+int    input_init_close_cooldown_seconds = 600;             // Scope: Master — init close cooldown on EA start
 int    input_open_cooldown_seconds    = 7200;           // Scope: Master — open cooldown after an open
-int    input_close_cooldown_seconds   = 300;            // Scope: Master — close cooldown after both sides opened
+int    input_close_cooldown_seconds   = 600;            // Scope: Master — close cooldown after both sides opened
 int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
 
 // Raw stability check (alternative to averaging - Master only)
