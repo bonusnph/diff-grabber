@@ -137,8 +137,8 @@ string input_close_only_end_time          = "06:00";   // Scope: Master — end 
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
 bool   input_sat_close_only_enabled       = true;           // Scope: Master — enable weekend close-only (Sat start -> Mon end)
-string input_sat_close_only_start_time    = "00:00";   // Scope: Master — Saturday start time (HH:mm)
-string input_mon_close_only_end_time      = "06:00";   // Scope: Master — Monday end time (HH:mm)
+input string input_sat_close_only_start_time    = "02:00";   // Scope: Master — Saturday start time (HH:mm)
+input string input_mon_close_only_end_time      = "08:00";   // Scope: Master — Monday end time (HH:mm)
 
 // Close Threshold Scheduler (Master only)
 bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes
@@ -162,7 +162,7 @@ string input_force_close_time             = "02:30";  // Scope: Master — time 
 // ========================================
 
 // Master API Switch
-input bool   input_api_enabled = true;                  // Scope: Both — Enable/Disable ALL API features
+bool   input_api_enabled = false;                  // Scope: Both — Enable/Disable ALL API features
 
 // Authorization API
 bool   input_api_auth_enabled = false;              // Scope: Both — Enable account authorization via API
@@ -170,7 +170,7 @@ string input_api_auth_url = "https://script.google.com/macros/s/AKfycbzyxxyRp3xJ
 int    input_api_auth_interval_hours = 12;         // Scope: Both — Authorization check interval (hours)
 
 // Signal API (Master only)
-input bool   input_api_signal_enabled = true;           // Scope: Master — Enable signal fetching via API
+bool   input_api_signal_enabled = false;           // Scope: Master — Enable signal fetching via API
 string input_api_signal_url = "https://script.google.com/macros/s/AKfycbzyxxyRp3xJSe501Cd4BrW-ZbAIJegZ8O5OG-AMKiz4bx3RA5A4ursYIPVKJYok--zS/exec?action=signal";                  // Scope: Master — Signal API endpoint URL
 int    input_api_signal_interval_hours = 1;        // Scope: Master — Signal fetch interval (hours)
 bool   input_api_signal_auto_apply = true;         // Scope: Master — Auto-apply signal to master_side
@@ -178,45 +178,45 @@ double input_api_signal_min_confidence = 0.0;      // Scope: Master — Minimum 
 bool   input_api_signal_auto_detect_side = true;   // Scope: Master — Auto-detect master side from existing orders on init
 
 // Fast Polling (Signal only — auth stays at original interval)
-input bool   input_api_fast_polling = true;              // Scope: Master — Enable fast signal polling
-input int    input_api_fast_polling_interval_seconds = 300;// Scope: Master — Fast polling interval (seconds, default 60)
+bool   input_api_fast_polling = false;              // Scope: Master — Enable fast signal polling
+int    input_api_fast_polling_interval_seconds = 300;// Scope: Master — Fast polling interval (seconds, default 60)
 
 
 // ========================================
 // TP/SL Active Diff Close Level-1 (Master only)
 // Uses averaging/stability confirmation before closing
 // ========================================
-input bool   input_tp_active_diff_close_enabled = false; // Scope: Master — L1 Enable TP for active diff close
-input int    input_tp_active_diff_close_points = 50;     // Scope: Master — L1 TP points threshold to activate diff close
-input bool   input_sl_active_diff_close_enabled = false; // Scope: Master — L1 Enable SL for active diff close
-input int    input_sl_active_diff_close_points = 30;     // Scope: Master — L1 SL points threshold to activate diff close
+bool   input_tp_active_diff_close_enabled = false; // Scope: Master — L1 Enable TP for active diff close
+int    input_tp_active_diff_close_points = 50;     // Scope: Master — L1 TP points threshold to activate diff close
+bool   input_sl_active_diff_close_enabled = false; // Scope: Master — L1 Enable SL for active diff close
+int    input_sl_active_diff_close_points = 30;     // Scope: Master — L1 SL points threshold to activate diff close
 
 // ========================================
 // TP/SL Active Diff Close Level-2 (Master only)
 // Instant close — no averaging/stability, no zone check
 // ========================================
-input bool   input_tp_active_diff_close_l2_enabled = false; // Scope: Master — L2 Enable TP for instant diff close
-input int    input_tp_active_diff_close_l2_points = 100;    // Scope: Master — L2 TP points threshold for instant diff close
-input bool   input_sl_active_diff_close_l2_enabled = false;  // Scope: Master — L2 Enable SL for instant diff close
-input int    input_sl_active_diff_close_l2_points = 100;     // Scope: Master — L2 SL points threshold for instant diff close
+bool   input_tp_active_diff_close_l2_enabled = false; // Scope: Master — L2 Enable TP for instant diff close
+int    input_tp_active_diff_close_l2_points = 100;    // Scope: Master — L2 TP points threshold for instant diff close
+bool   input_sl_active_diff_close_l2_enabled = false;  // Scope: Master — L2 Enable SL for instant diff close
+int    input_sl_active_diff_close_l2_points = 100;     // Scope: Master — L2 SL points threshold for instant diff close
 
 // ========================================
 // TP Cut Level-3 (Master only)
 // Immediate profit cut — closes all when avg PnL reaches threshold.
 // Independent of L1/L2 diff close logic.
 // ========================================
-input bool   input_tp_cut_l3_enabled = false; // Scope: Master — L3 Enable TP cut (immediate close on profit)
-input int    input_tp_cut_l3_points  = 2000;   // Scope: Master — L3 TP points threshold for immediate close (must be > 0)
+bool   input_tp_cut_l3_enabled = false; // Scope: Master — L3 Enable TP cut (immediate close on profit)
+int    input_tp_cut_l3_points  = 2000;   // Scope: Master — L3 TP points threshold for immediate close (must be > 0)
 
 // ========================================
 // Trailing Loss Cut (Master only)
 // Activates when PnL drops to trigger, then force-closes when PnL recovers by recovery_points.
 // If PnL drops further by step_points, trailing level moves down.
 // ========================================
-input bool   input_trailing_loss_enabled            = false;  // Scope: Master — enable trailing loss cut
-input int    input_trailing_loss_trigger_points      = -2000;  // Scope: Master — PnL trigger in points to activate (must be < 0, e.g. -500 points)
-input int    input_trailing_loss_recovery_points     = 500;    // Scope: Master — PnL recovery in points from trailing level to force close (must be > 0, e.g. 50 points)
-input int    input_trailing_loss_step_points         = -1000;  // Scope: Master — PnL step in points to move trailing level deeper (must be < 0, e.g. -100 points)
+bool   input_trailing_loss_enabled            = false;  // Scope: Master — enable trailing loss cut
+int    input_trailing_loss_trigger_points      = -2000;  // Scope: Master — PnL trigger in points to activate (must be < 0, e.g. -500 points)
+int    input_trailing_loss_recovery_points     = 500;    // Scope: Master — PnL recovery in points from trailing level to force close (must be > 0, e.g. 50 points)
+int    input_trailing_loss_step_points         = -1000;  // Scope: Master — PnL step in points to move trailing level deeper (must be < 0, e.g. -100 points)
 
 // -----------------------------
 // Globals
