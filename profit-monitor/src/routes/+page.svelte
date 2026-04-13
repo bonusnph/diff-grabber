@@ -1416,10 +1416,16 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										{#if true}
 											{@const accountWithPosition = visibleAccounts.find(a => (a.lastSize || 0) > 0)}
 											{@const positionLots = accountWithPosition?.lastSize || 0}
+											{@const positionSide = accountWithPosition?.lastPositionSide}
 											{#if positionLots > 0}
 												<span class="text-xs px-1.5 py-0.5 rounded-md font-semibold bg-violet-900/40 text-violet-400">
 													{positionLots.toFixed(2)}L
 												</span>
+												{#if positionSide === 'BUY' || positionSide === 'SELL'}
+													<span class="text-xs px-1.5 py-0.5 rounded-md font-bold {positionSide === 'BUY' ? 'bg-sky-900/40 text-sky-400' : 'bg-orange-900/40 text-orange-400'}">
+														{positionSide}
+													</span>
+												{/if}
 											{/if}
 										{/if}
 									</div>
