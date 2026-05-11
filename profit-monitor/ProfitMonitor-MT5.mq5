@@ -4,7 +4,7 @@
 //|                                                                   |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Profit Monitor"
-#property version   "1.01"
+#property version   "1.03"
 
 // Input parameters
 input string API_URL = "https://bonusnph.vercel.app/api/webhook"; // API endpoint URL
@@ -75,38 +75,60 @@ void SendAccountData()
     double balance = AccountInfoDouble(ACCOUNT_BALANCE);
     double equity = AccountInfoDouble(ACCOUNT_EQUITY);
     
-    // Determine latest open position side, entry price, and size (BUY/SELL only)
+    // Determine broker time -> UTC offset so all open times are normalized
+    int brokerOffsetSeconds = (int)(TimeCurrent() - TimeGMT());
+
+    // Build open orders JSON array and track latest position for backward compatibility
     string lastSide = "UNKNOWN";
     double lastPrice = 0.0;
     double lastSize = 0.0;
     long latestTime = 0;
-    int symCount = SymbolsTotal(true);
-    for(int s = 0; s < symCount; s++)
+    string ordersJson = "[";
+    int orderCount = 0;
+    int posTotal = PositionsTotal();
+    for(int i = 0; i < posTotal; i++)
     {
-        string sym = SymbolName(s, true);
-        if(PositionSelect(sym))
+        ulong ticket = PositionGetTicket(i);
+        if(ticket == 0) continue;
+        long pType = (long)PositionGetInteger(POSITION_TYPE);
+        if(pType != POSITION_TYPE_BUY && pType != POSITION_TYPE_SELL) continue;
+        string sym = PositionGetString(POSITION_SYMBOL);
+        string side = (pType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+        double price = PositionGetDouble(POSITION_PRICE_OPEN);
+        double lots = PositionGetDouble(POSITION_VOLUME);
+        long openTime = (long)PositionGetInteger(POSITION_TIME);
+        long openTimeUtc = openTime - brokerOffsetSeconds;
+        int symDigits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+        if(symDigits <= 0) symDigits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+        string openTimeStr = CreateGMT7Timestamp((datetime)openTimeUtc);
+
+        if(orderCount > 0) ordersJson += ",";
+        ordersJson += "{";
+        ordersJson += "\"symbol\":\"" + EscapeJSON(sym) + "\",";
+        ordersJson += "\"side\":\"" + side + "\",";
+        ordersJson += "\"price\":" + DoubleToString(price, symDigits) + ",";
+        ordersJson += "\"lots\":" + DoubleToString(lots, 2) + ",";
+        ordersJson += "\"magic\":" + IntegerToString((long)PositionGetInteger(POSITION_MAGIC)) + ",";
+        ordersJson += "\"openTime\":\"" + openTimeStr + "\"";
+        ordersJson += "}";
+        orderCount++;
+
+        if(openTime >= latestTime)
         {
-            long pType = (long)PositionGetInteger(POSITION_TYPE);
-            if(pType == POSITION_TYPE_BUY || pType == POSITION_TYPE_SELL)
-            {
-                long openTime = (long)PositionGetInteger(POSITION_TIME);
-                if(openTime >= latestTime)
-                {
-                    latestTime = openTime;
-                    lastSide = (pType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
-                    lastPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-                    lastSize = PositionGetDouble(POSITION_VOLUME);
-                }
-            }
+            latestTime = openTime;
+            lastSide = side;
+            lastPrice = price;
+            lastSize = lots;
         }
     }
+    ordersJson += "]";
     
     // Create GMT+7 timestamp using local time for consistency
     datetime localTime = TimeLocal();
     string timestamp = CreateGMT7Timestamp(localTime);
     
     // Create JSON payload
-    string jsonData = CreateJSONPayload(accountNumber, accountName, brokerName, balance, equity, timestamp, Unit, lastSide, lastPrice, lastSize);
+    string jsonData = CreateJSONPayload(accountNumber, accountName, brokerName, balance, equity, timestamp, Unit, lastSide, lastPrice, lastSize, ordersJson);
     
     if(EnableLogging) {
         Print("Sending account data:");
@@ -125,7 +147,7 @@ void SendAccountData()
 //+------------------------------------------------------------------+
 //| Create JSON payload                                              |
 //+------------------------------------------------------------------+
-string CreateJSONPayload(string accountNum, string accountName, string broker, double balance, double equity, string timestamp, int unit, string lastSide, double lastPrice, double lastSize)
+string CreateJSONPayload(string accountNum, string accountName, string broker, double balance, double equity, string timestamp, int unit, string lastSide, double lastPrice, double lastSize, string ordersJson)
 {
     string json = "{";
     json += "\"account_number\":\"" + accountNum + "\",";
@@ -137,7 +159,8 @@ string CreateJSONPayload(string accountNum, string accountName, string broker, d
     json += "\"timestamp\":\"" + timestamp + "\",";
     json += "\"lastPositionSide\":\"" + lastSide + "\",";
     json += "\"lastPositionEntryPrice\":" + DoubleToString(lastPrice, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)) + ",";
-    json += "\"lastSize\":" + DoubleToString(lastSize, 2);
+    json += "\"lastSize\":" + DoubleToString(lastSize, 2) + ",";
+    json += "\"orders\":" + ordersJson;
     json += "}";
     
     return json;

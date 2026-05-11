@@ -29,6 +29,7 @@ CREATE TABLE accounts (
     position_side VARCHAR(10) DEFAULT 'UNKNOWN',
     position_price DECIMAL(15,5) DEFAULT 0,
     position_size DECIMAL(15,2) DEFAULT 0,
+    position_orders JSONB DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -73,6 +74,9 @@ ON CONFLICT (setting_key) DO NOTHING;
 ```sql
 -- เพิ่ม position_size column (สำหรับ DB เดิม)
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS position_size DECIMAL(15,2) DEFAULT 0;
+
+-- เพิ่ม position_orders column รองรับ open order list ทั้งหมดต่อบัญชี
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS position_orders JSONB DEFAULT '[]'::jsonb;
 ```
 
 **หมายเหตุ:**

@@ -1,3 +1,13 @@
+export interface OrderInfo {
+	symbol: string;
+	side: 'BUY' | 'SELL';
+	price: number;
+	lots: number;
+	openTime: string;
+	/** Same magic on BUY and SELL legs identifies one hedge pair across accounts. */
+	magic?: number;
+}
+
 export interface AccountData {
 	account_number: string;
 	account_name: string;
@@ -9,6 +19,7 @@ export interface AccountData {
 	lastPositionSide?: 'BUY' | 'SELL' | 'UNKNOWN';
 	lastPositionEntryPrice?: number;
 	lastSize?: number;
+	orders?: OrderInfo[];
 }
 
 export interface AccountSummary {
@@ -22,6 +33,7 @@ export interface AccountSummary {
 	lastPositionSide?: 'BUY' | 'SELL' | 'UNKNOWN';
 	lastPositionEntryPrice?: number;
 	lastSize?: number;
+	orders?: OrderInfo[];
 }
 
 export interface DashboardStats {

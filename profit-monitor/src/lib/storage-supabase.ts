@@ -73,41 +73,90 @@ class SupabaseStorage {
 	}
 
 	async addAccountData(data: AccountData): Promise<void> {
+		const payload: Record<string, any> = {
+			account_number: data.account_number,
+			account_name: data.account_name,
+			broker_name: data.broker_name,
+			balance: data.balance,
+			equity: data.equity,
+			unit: data.unit,
+			timestamp: data.timestamp,
+			position_side: data.lastPositionSide ?? 'UNKNOWN',
+			position_price: data.lastPositionEntryPrice ?? 0,
+			position_size: data.lastSize ?? 0,
+			position_orders: Array.isArray(data.orders) ? data.orders : []
+		};
+
 		const { error } = await supabase
 			.from('accounts')
-			.upsert({
-				account_number: data.account_number,
-				account_name: data.account_name,
-				broker_name: data.broker_name,
-				balance: data.balance,
-				equity: data.equity,
-				unit: data.unit,
-				timestamp: data.timestamp,
-				position_side: data.lastPositionSide ?? 'UNKNOWN',
-				position_price: data.lastPositionEntryPrice ?? 0,
-				position_size: data.lastSize ?? 0
-			}, {
-				onConflict: 'account_number'
-			});
+			.upsert(payload, { onConflict: 'account_number' });
 
 		if (error) {
+			// Fallback: if position_orders column does not exist yet, retry without it
+			const message = (error as any)?.message || '';
+			if (typeof message === 'string' && message.toLowerCase().includes('position_orders')) {
+				delete payload.position_orders;
+				const { error: retryError } = await supabase
+					.from('accounts')
+					.upsert(payload, { onConflict: 'account_number' });
+				if (retryError) {
+					console.error('Error adding account data (retry):', retryError);
+					throw retryError;
+				}
+				return;
+			}
 			console.error('Error adding account data:', error);
 			throw error;
 		}
 	}
 
-	async getAllAccountData(): Promise<AccountData[]> {
-		const { data, error } = await supabase
+	private async selectAccountRows(): Promise<any[]> {
+		const fullColumns = 'account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price, position_size, position_orders';
+		const fallbackColumns = 'account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price, position_size';
+
+		let { data, error } = await supabase
 			.from('accounts')
-			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price, position_size')
+			.select(fullColumns)
 			.order('timestamp', { ascending: false });
 
 		if (error) {
-			console.error('Error getting all account data:', error);
+			const message = (error as any)?.message || '';
+			if (typeof message === 'string' && message.toLowerCase().includes('position_orders')) {
+				const retry = await supabase
+					.from('accounts')
+					.select(fallbackColumns)
+					.order('timestamp', { ascending: false });
+				if (retry.error) {
+					console.error('Error selecting accounts:', retry.error);
+					throw retry.error;
+				}
+				return retry.data || [];
+			}
+			console.error('Error selecting accounts:', error);
 			throw error;
 		}
 
-		return (data || []).map(record => ({
+		return data || [];
+	}
+
+	private parseOrders(raw: any): any[] {
+		if (!raw) return [];
+		if (Array.isArray(raw)) return raw;
+		if (typeof raw === 'string') {
+			try {
+				const parsed = JSON.parse(raw);
+				return Array.isArray(parsed) ? parsed : [];
+			} catch {
+				return [];
+			}
+		}
+		return [];
+	}
+
+	async getAllAccountData(): Promise<AccountData[]> {
+		const rows = await this.selectAccountRows();
+
+		return rows.map(record => ({
 			account_number: record.account_number,
 			account_name: record.account_name,
 			broker_name: record.broker_name,
@@ -117,23 +166,16 @@ class SupabaseStorage {
 			timestamp: record.timestamp,
 			lastPositionSide: record.position_side ?? 'UNKNOWN',
 			lastPositionEntryPrice: record.position_price ?? 0,
-			lastSize: record.position_size ?? 0
+			lastSize: record.position_size ?? 0,
+			orders: this.parseOrders(record.position_orders)
 		}));
 	}
 
 	async getAccountSummaries(): Promise<AccountSummary[]> {
-		const { data, error } = await supabase
-			.from('accounts')
-			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price, position_size')
-			.order('timestamp', { ascending: false });
-
-		if (error) {
-			console.error('Error getting account summaries:', error);
-			throw error;
-		}
+		const rows = await this.selectAccountRows();
 
 		// Transform data to match AccountSummary interface
-		return (data || []).map(record => ({
+		return rows.map(record => ({
 			account_number: record.account_number,
 			account_name: record.account_name,
 			broker_name: record.broker_name,
@@ -143,7 +185,8 @@ class SupabaseStorage {
 			last_update: record.timestamp,
 			lastPositionSide: record.position_side ?? 'UNKNOWN',
 			lastPositionEntryPrice: record.position_price ?? 0,
-			lastSize: record.position_size ?? 0
+			lastSize: record.position_size ?? 0,
+			orders: this.parseOrders(record.position_orders)
 		}));
 	}
 
@@ -480,19 +523,33 @@ class SupabaseStorage {
 	}
 
 	async getAccountHistory(accountNumber: string, limit: number = 100): Promise<AccountData[]> {
-		const { data, error } = await supabase
+		const fullColumns = 'account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price, position_size, position_orders';
+		const fallbackColumns = 'account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price, position_size';
+
+		let response = await supabase
 			.from('accounts')
-			.select('account_number, account_name, broker_name, balance, equity, unit, timestamp, position_side, position_price, position_size')
+			.select(fullColumns)
 			.eq('account_number', accountNumber)
 			.order('timestamp', { ascending: false })
 			.limit(limit);
 
-		if (error) {
-			console.error('Error getting account history:', error);
-			throw error;
+		if (response.error) {
+			const message = (response.error as any)?.message || '';
+			if (typeof message === 'string' && message.toLowerCase().includes('position_orders')) {
+				response = await supabase
+					.from('accounts')
+					.select(fallbackColumns)
+					.eq('account_number', accountNumber)
+					.order('timestamp', { ascending: false })
+					.limit(limit);
+			}
+			if (response.error) {
+				console.error('Error getting account history:', response.error);
+				throw response.error;
+			}
 		}
 
-		return (data || []).map(record => ({
+		return (response.data || []).map(record => ({
 			account_number: record.account_number,
 			account_name: record.account_name,
 			broker_name: record.broker_name,
@@ -502,7 +559,8 @@ class SupabaseStorage {
 			timestamp: record.timestamp,
 			lastPositionSide: record.position_side ?? 'UNKNOWN',
 			lastPositionEntryPrice: record.position_price ?? 0,
-			lastSize: record.position_size ?? 0
+			lastSize: record.position_size ?? 0,
+			orders: this.parseOrders((record as any).position_orders)
 		}));
 	}
 
