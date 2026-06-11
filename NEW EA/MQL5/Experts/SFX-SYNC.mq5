@@ -3,7 +3,7 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.10"
+#define SFX_SYNC_EA_VERSION "1.13"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -59,6 +59,15 @@ string          I_MASTER_IP = "127.0.0.1";   // Slave only: master host or VPN I
 string          I_SECRET = "Password on this channel"; // Channel password (must match peer)
 input ENUM_SIDE I_MASTER_SIDE = SIDE_AUTO;     // Side master trades; slave mirrors opposite
 input double    I_LOT = 0.01;                 // Lot per synced order side
+input bool      I_DYN_LOT_ENABLED = false;         // Dynamic lot: enable adaptive lot sizing
+input double    I_DYN_LOT_MIN = 0.01;              // Dynamic lot: lower bound (inclusive)
+input double    I_DYN_LOT_MAX = 1.00;              // Dynamic lot: upper bound (inclusive)
+input double    I_DYN_LOT_STEP_UP = 0.01;          // Dynamic lot: increment on profit streak
+input double    I_DYN_LOT_STEP_DOWN = 0.01;        // Dynamic lot: decrement on loss streak
+input int       I_DYN_LOT_PROFIT_STREAK_N = 3;     // Dynamic lot: consecutive profit rounds to increase
+input int       I_DYN_LOT_LOSS_STREAK_M = 3;       // Dynamic lot: consecutive loss rounds to decrease
+input int       I_DYN_LOT_STABLE_LOOP_Y = 3;       // Dynamic lot: inc->dec oscillations before Stable-Lock
+input bool      I_DYN_LOT_COUNT_SCHEDULED = false; // Dynamic lot: count weekend/schedule closes in streak
 int             I_SLIPPAGE = 30;              // Max slippage (points) for sync orders
 input ENUM_OPEN_MODE I_OPEN_MODE = OPEN_BALANCED;   // How to sequence master/slave opens
 input ENUM_CLOSE_MODE I_CLOSE_MODE = CLOSE_BALANCED; // How to sequence closes (and rescue)
@@ -224,6 +233,9 @@ bool   G_CLOSE_MASTER_OK = false;
 bool   G_CLOSE_SLAVE_OK = false;
 int    G_CLOSE_LAST_ERROR_MASTER = 0;
 int    G_CLOSE_LAST_ERROR_SLAVE = 0;
+double G_CLOSE_SLAVE_BALANCE = 0.0;
+double G_DYN_BAL_PREV_SUM     = 0.0;
+bool   G_DYN_BAL_PREV_VALID   = false;
 string G_OPEN_LOCK_KEY = "";
 double G_OPEN_LOCK_TOKEN = 0.0;
 string G_CLOSE_LOCK_KEY = "";
@@ -243,6 +255,7 @@ string G_SLAVE_LAST_OPEN_TXID = "";
 int    G_SLAVE_LAST_OPEN_OK = -1; // -1 unknown, 0 fail, 1 success
 int    G_SLAVE_LAST_OPEN_TICKET = -1;
 int    G_SLAVE_LAST_OPEN_ERR = 0;
+ulong  G_SLAVE_LAST_OPEN_STARTED_MS = 0;
 string G_SLAVE_PAIR_KEY = "";
 int    G_SLAVE_PAIR_TICKET = -1;
 
@@ -326,6 +339,19 @@ int    G_WEEKEND_FLAT_LAST_KEY = 0;
 ulong  G_LAST_ORPHAN_RECOVERY_MS = 0;
 int    G_ORPHAN_DETECT_STREAK = 0;
 ulong  G_LAST_PAIR_CLOSE_MS = 0;
+
+// Dynamic lot state (master side)
+double G_DYN_LOT              = 0.0;
+int    G_DYN_PROFIT_STREAK    = 0;
+int    G_DYN_LOSS_STREAK      = 0;
+int    G_DYN_LOOP_COUNT       = 0;
+double G_DYN_STABLE_LOT       = 0.0;
+bool   G_DYN_STABLE_LOCK      = false;
+int    G_DYN_LAST_ADJ_DIR     = 0;
+double G_DYN_LAST_ADJ_FROM    = 0.0;
+bool   G_DYN_LAST_CLOSE_SCHEDULED = false;
+double G_SLAVE_BALANCE_REPORT = 0.0;
+bool   G_SLAVE_BALANCE_VALID  = false;
 
 string SyncPortTag()
 {
@@ -448,7 +474,7 @@ void RefreshChartComment()
       {
          lines += "Status: CONNECTED — slave handshake OK.\n\n";
          if(G_DEGRADED)
-            lines += "PAIR: degraded (close/rescue state).\n";
+            lines += "PAIR: DEGRADED — auto-clears after schedule edge, or press CLEAR DEGRADED button.\n";
          else if(G_PAIR_ACTIVE)
             lines += StringFormat("PAIR: active (master ticket %d)\n", G_PAIR_MASTER_TICKET);
          else if(G_OPEN_TX_ACTIVE)
@@ -491,6 +517,7 @@ void RefreshChartComment()
 
          lines += "\n";
          lines += LockHudMasterCommentLine();
+         lines += DynHudLine();
          lines += DiffHudMasterCommentTail();
          lines += DiffHudSignalOpenProgressBlock();
          lines += DiffHudSignalCloseProgressBlock();
@@ -533,6 +560,7 @@ void RefreshChartComment()
       RefreshDiffHud();
       CloseOnlyRefreshButton();
       DoNotDisturbRefreshButton();
+      ClearDegradedRefreshButton();
    }
 
    Comment(lines);
@@ -616,8 +644,236 @@ bool PairWithinSettleGrace()
    return (NowMs() - G_PAIR_OPEN_INTENT_MS) < (ulong)MathMax(1000, I_PAIR_SETTLE_GRACE_MS);
 }
 
+double DynBrokerLotStep()
+{
+   double bs = SymbolInfoDouble(G_SYMBOL, SYMBOL_VOLUME_STEP);
+   if(bs <= 0.0)
+      bs = 0.01;
+   return bs;
+}
+
+double DynEffectiveStep()
+{
+   return MathMax(0.01, DynBrokerLotStep());
+}
+
+double DynNormalizeLot(const double x)
+{
+   const double step = DynEffectiveStep();
+   double snapped = MathRound(x / step) * step;
+   snapped = NormalizeDouble(snapped, 2);
+
+   double lo = NormalizeDouble(I_DYN_LOT_MIN, 2);
+   double hi = NormalizeDouble(I_DYN_LOT_MAX, 2);
+   const double broker_min = SymbolInfoDouble(G_SYMBOL, SYMBOL_VOLUME_MIN);
+   const double broker_max = SymbolInfoDouble(G_SYMBOL, SYMBOL_VOLUME_MAX);
+   if(broker_min > 0.0 && broker_min > lo) lo = NormalizeDouble(broker_min, 2);
+   if(broker_max > 0.0 && broker_max < hi) hi = NormalizeDouble(broker_max, 2);
+   if(hi < lo) hi = lo;
+
+   if(snapped < lo) snapped = lo;
+   if(snapped > hi) snapped = hi;
+   return NormalizeDouble(snapped, 2);
+}
+
+bool DynLotEqual(const double a, const double b)
+{
+   return MathAbs(a - b) < 0.0000001;
+}
+
+double DynActiveLot()
+{
+   if(!I_DYN_LOT_ENABLED)
+      return I_LOT;
+   return G_DYN_LOT;
+}
+
+void DynResetState()
+{
+   G_DYN_LOT             = DynNormalizeLot(I_LOT);
+   G_DYN_BAL_PREV_VALID  = false;
+   G_DYN_BAL_PREV_SUM    = 0.0;
+   G_DYN_PROFIT_STREAK   = 0;
+   G_DYN_LOSS_STREAK     = 0;
+   G_DYN_LOOP_COUNT      = 0;
+   G_DYN_STABLE_LOCK     = false;
+   G_DYN_STABLE_LOT      = 0.0;
+   G_DYN_LAST_ADJ_DIR    = 0;
+   G_DYN_LAST_ADJ_FROM   = 0.0;
+   G_DYN_LAST_CLOSE_SCHEDULED = false;
+}
+
+void DynInitOnAttach()
+{
+   DynResetState();
+   if(I_DYN_LOT_ENABLED)
+   {
+      const double step = DynEffectiveStep();
+      if(I_DYN_LOT_STEP_UP < step || I_DYN_LOT_STEP_DOWN < step)
+      {
+         SyncLog(StringFormat(
+            "[DYNLOT] warning: input step (up=%.2f dn=%.2f) below broker/effective step=%.2f — will snap",
+            I_DYN_LOT_STEP_UP, I_DYN_LOT_STEP_DOWN, step));
+      }
+      SyncLog(StringFormat("[DYNLOT] init enabled lot=%.2f min=%.2f max=%.2f step_up=%.2f step_dn=%.2f n=%d m=%d y=%d step_eff=%.2f",
+         G_DYN_LOT, I_DYN_LOT_MIN, I_DYN_LOT_MAX,
+         I_DYN_LOT_STEP_UP, I_DYN_LOT_STEP_DOWN,
+         I_DYN_LOT_PROFIT_STREAK_N, I_DYN_LOT_LOSS_STREAK_M, I_DYN_LOT_STABLE_LOOP_Y,
+         step));
+   }
+}
+
+void DynTryIncrease()
+{
+   if(G_DYN_STABLE_LOCK)
+   {
+      SyncLog(StringFormat("[DYNLOT] increase blocked: stable-lock at %.2f (current=%.2f)",
+                           G_DYN_STABLE_LOT, G_DYN_LOT));
+      return;
+   }
+   const double prev = G_DYN_LOT;
+   const double next = DynNormalizeLot(prev + I_DYN_LOT_STEP_UP);
+   if(DynLotEqual(next, prev))
+   {
+      SyncLog(StringFormat("[DYNLOT] increase clamped at max=%.2f (no change)", prev));
+      return;
+   }
+   G_DYN_LAST_ADJ_FROM = prev;
+   G_DYN_LAST_ADJ_DIR  = 1;
+   G_DYN_LOT = next;
+   SyncLog(StringFormat("[DYNLOT] inc %.2f -> %.2f", prev, next));
+}
+
+void DynTryDecrease()
+{
+   const double prev = G_DYN_LOT;
+   const double next = DynNormalizeLot(prev - I_DYN_LOT_STEP_DOWN);
+
+   if(G_DYN_LAST_ADJ_DIR == 1 && DynLotEqual(next, G_DYN_LAST_ADJ_FROM))
+   {
+      G_DYN_LOOP_COUNT++;
+      if(!G_DYN_STABLE_LOCK && G_DYN_LOOP_COUNT >= MathMax(1, I_DYN_LOT_STABLE_LOOP_Y))
+      {
+         G_DYN_STABLE_LOCK = true;
+         G_DYN_STABLE_LOT  = next;
+         SyncLog(StringFormat("[DYNLOT] STABLE-LOCK engaged at %.2f (loops=%d)",
+                              G_DYN_STABLE_LOT, G_DYN_LOOP_COUNT));
+      }
+   }
+
+   if(G_DYN_STABLE_LOCK && next < G_DYN_STABLE_LOT - 0.0000001)
+   {
+      SyncLog(StringFormat("[DYNLOT] STABLE-LOCK released: dec %.2f below stable=%.2f",
+                           next, G_DYN_STABLE_LOT));
+      G_DYN_STABLE_LOCK = false;
+      G_DYN_LOOP_COUNT  = 0;
+   }
+
+   if(DynLotEqual(next, prev))
+   {
+      SyncLog(StringFormat("[DYNLOT] decrease clamped at min=%.2f (no change)", prev));
+      return;
+   }
+   G_DYN_LAST_ADJ_FROM = prev;
+   G_DYN_LAST_ADJ_DIR  = -1;
+   G_DYN_LOT = next;
+   SyncLog(StringFormat("[DYNLOT] dec %.2f -> %.2f", prev, next));
+}
+
+void DynOnPairClosed(const bool scheduled)
+{
+   if(!I_DYN_LOT_ENABLED) return;
+
+   const double masterBal = AccountInfoDouble(ACCOUNT_BALANCE);
+   const bool haveSlave   = (G_CLOSE_SLAVE_BALANCE > 0.0 || G_SLAVE_BALANCE_VALID);
+   const double slaveBal  = (G_CLOSE_SLAVE_BALANCE > 0.0) ? G_CLOSE_SLAVE_BALANCE : (G_SLAVE_BALANCE_VALID ? G_SLAVE_BALANCE_REPORT : 0.0);
+   const double sumNow    = masterBal + slaveBal;
+
+   if(scheduled && !I_DYN_LOT_COUNT_SCHEDULED)
+   {
+      G_DYN_BAL_PREV_SUM   = sumNow;
+      G_DYN_BAL_PREV_VALID = haveSlave;
+      SyncLog(StringFormat("[DYNLOT] scheduled close — baseline refresh sum=%.2f (slave_valid=%s)",
+                           sumNow, haveSlave ? "true" : "false"));
+      return;
+   }
+
+   if(!G_DYN_BAL_PREV_VALID || !haveSlave)
+   {
+      G_DYN_BAL_PREV_SUM   = sumNow;
+      G_DYN_BAL_PREV_VALID = haveSlave;
+      SyncLog(StringFormat("[DYNLOT] baseline set sum=%.2f (slave_valid=%s)",
+                           sumNow, haveSlave ? "true" : "false"));
+      return;
+   }
+
+   const double delta = sumNow - G_DYN_BAL_PREV_SUM;
+   if(delta > 0.0)
+   {
+      G_DYN_PROFIT_STREAK++;
+      G_DYN_LOSS_STREAK = 0;
+      SyncLog(StringFormat("[DYNLOT] round PROFIT delta=%.2f streak=%d/%d sum=%.2f prev_sum=%.2f",
+                           delta, G_DYN_PROFIT_STREAK, I_DYN_LOT_PROFIT_STREAK_N, sumNow, G_DYN_BAL_PREV_SUM));
+      if(G_DYN_PROFIT_STREAK >= MathMax(1, I_DYN_LOT_PROFIT_STREAK_N))
+      {
+         DynTryIncrease();
+         G_DYN_PROFIT_STREAK = 0;
+      }
+   }
+   else if(delta < 0.0)
+   {
+      G_DYN_LOSS_STREAK++;
+      G_DYN_PROFIT_STREAK = 0;
+      SyncLog(StringFormat("[DYNLOT] round LOSS delta=%.2f streak=%d/%d sum=%.2f prev_sum=%.2f",
+                           delta, G_DYN_LOSS_STREAK, I_DYN_LOT_LOSS_STREAK_M, sumNow, G_DYN_BAL_PREV_SUM));
+      if(G_DYN_LOSS_STREAK >= MathMax(1, I_DYN_LOT_LOSS_STREAK_M))
+      {
+         DynTryDecrease();
+         G_DYN_LOSS_STREAK = 0;
+      }
+   }
+   else
+   {
+      SyncLog(StringFormat("[DYNLOT] round FLAT delta=0 sum=%.2f prev_sum=%.2f", sumNow, G_DYN_BAL_PREV_SUM));
+   }
+
+   G_DYN_BAL_PREV_SUM = sumNow;
+}
+
+bool DynCloseReasonIsScheduled(const string reason)
+{
+   if(reason == "WEEKEND_FLATTEN") return true;
+   if(reason == "SCHEDULE")        return true;
+   if(reason == "DISCONNECT")      return true;
+   if(reason == "PAIR_BROKEN")     return true;
+   if(reason == "PAIR_STATUS_STALE") return true;
+   if(reason == "CLOSE_PATH_RECONCILE") return true;
+   if(reason == "SLAVE_ORPHAN_RECONCILE") return true;
+   return false;
+}
+
+string DynHudLine()
+{
+   if(!I_DYN_LOT_ENABLED)
+      return StringFormat("DynLot: OFF (fixed=%.2f)\n", I_LOT);
+   string stable_tail = "";
+   if(G_DYN_STABLE_LOCK)
+      stable_tail = StringFormat(" STABLE-LOCK@%.2f (inc-blocked)", G_DYN_STABLE_LOT);
+   return StringFormat(
+      "DynLot: ON cur=%.2f [min=%.2f max=%.2f step+=%.2f step-=%.2f] up=%d/%d dn=%d/%d loop=%d/%d%s\n",
+      G_DYN_LOT, I_DYN_LOT_MIN, I_DYN_LOT_MAX,
+      I_DYN_LOT_STEP_UP, I_DYN_LOT_STEP_DOWN,
+      G_DYN_PROFIT_STREAK, I_DYN_LOT_PROFIT_STREAK_N,
+      G_DYN_LOSS_STREAK,   I_DYN_LOT_LOSS_STREAK_M,
+      G_DYN_LOOP_COUNT,    I_DYN_LOT_STABLE_LOOP_Y,
+      stable_tail);
+}
+
 void CloseOnlyRefreshButton();
 void DoNotDisturbRefreshButton();
+void ClearDegradedRefreshButton();
+bool TryClearDegraded(const string reason);
+bool MasterHasAnyLiveEaLeg();
 
 string NewTxId()
 {
@@ -918,21 +1174,30 @@ int OpenOrder(const ENUM_ORDER_TYPE type, const double lots, int &err_out)
       return -1;
    }
 
-   // MT5 close logic works with position ticket, not order ticket.
-   if(res.deal > 0 && HistoryDealSelect(res.deal))
+   // Broker may finalize the position asynchronously after DONE; loop until visible
+   // so we never report fail while the order is actually filled (MT5 close uses position ticket).
    {
-      const long pos_id = (long)HistoryDealGetInteger(res.deal, DEAL_POSITION_ID);
-      if(pos_id > 0)
-         return (int)pos_id;
+      const ENUM_SIDE side = (type == ORDER_TYPE_BUY) ? SIDE_BUY : SIDE_SELL;
+      const ulong wait_ms = (ulong)MathMax(200, I_SLAVE_OPEN_TIMEOUT_MS);
+      const ulong until_ms = NowMs() + wait_ms;
+      int recovered_ticket = -1;
+      while(true)
+      {
+         if(res.deal > 0 && HistoryDealSelect(res.deal))
+         {
+            const long pos_id = (long)HistoryDealGetInteger(res.deal, DEAL_POSITION_ID);
+            if(pos_id > 0 && PositionSelectByTicket((ulong)pos_id))
+               return (int)pos_id;
+         }
+         if(res.order > 0 && PositionSelectByTicket((ulong)res.order))
+            return (int)res.order;
+         if(RecoverMasterOpenTicketMt5(side, opened_after_ms, recovered_ticket))
+            return recovered_ticket;
+         if(NowMs() >= until_ms)
+            break;
+         Sleep(40);
+      }
    }
-
-   if(res.order > 0 && PositionSelectByTicket((ulong)res.order))
-      return (int)res.order;
-
-   const ENUM_SIDE side = (type == ORDER_TYPE_BUY) ? SIDE_BUY : SIDE_SELL;
-   int recovered_ticket = -1;
-   if(RecoverMasterOpenTicketMt5(side, opened_after_ms, recovered_ticket))
-      return recovered_ticket;
 
    err_out = (int)res.retcode;
    return -1;
@@ -1260,6 +1525,10 @@ void CloseOnlyUpdateSchedule()
    {
       G_CLOSE_ONLY_SCHEDULE_ACTIVE_PREV = G_CLOSE_ONLY_SCHEDULE_ACTIVE;
       SyncLog(StringFormat("[SFX-SYNC] close_only schedule (local) -> %s", G_CLOSE_ONLY_SCHEDULE_ACTIVE ? "ACTIVE" : "inactive"));
+      // Auto-clear DEGRADED on schedule end edge. Safe guards inside TryClearDegraded prevent
+      // accidental reset while transactions or live legs remain.
+      if(!G_CLOSE_ONLY_SCHEDULE_ACTIVE && G_DEGRADED)
+         TryClearDegraded("CLOSE_ONLY_SCHEDULE_ENDED");
    }
 }
 
@@ -1536,6 +1805,37 @@ void CloseOnlyRefreshButton()
    ObjectSetString(0, "SFX_CLOSE_ONLY", OBJPROP_TOOLTIP, tip);
 }
 
+void ClearDegradedRefreshButton()
+{
+   if(I_ROLE != ROLE_SOURCE_MASTER)
+      return;
+   if(ObjectFind(0, "SFX_CLEAR_DEGRADED") < 0)
+      return;
+   color bg, fg, border;
+   string txt, tip;
+   if(G_DEGRADED)
+   {
+      bg = C'255,140,40';
+      fg = clrWhite;
+      border = C'200,110,30';
+      txt = "CLEAR DEGRADED";
+      tip = "Manually clear DEGRADED lock. Allowed only when no transaction and no live EA position remain.";
+   }
+   else
+   {
+      bg = C'225,225,225';
+      fg = C'130,130,130';
+      border = C'200,200,200';
+      txt = "DEGRADED: OK";
+      tip = "No degraded state. Button is informational only.";
+   }
+   ObjectSetString(0, "SFX_CLEAR_DEGRADED", OBJPROP_TEXT, txt);
+   ObjectSetInteger(0, "SFX_CLEAR_DEGRADED", OBJPROP_BGCOLOR, bg);
+   ObjectSetInteger(0, "SFX_CLEAR_DEGRADED", OBJPROP_COLOR, fg);
+   ObjectSetInteger(0, "SFX_CLEAR_DEGRADED", OBJPROP_BORDER_COLOR, border);
+   ObjectSetString(0, "SFX_CLEAR_DEGRADED", OBJPROP_TOOLTIP, tip);
+}
+
 #include <SumoFx/FXH-SYNC-HEADER-MQL5.mqh>
 
 void ResetOpenTxState()
@@ -1570,6 +1870,7 @@ void ResetCloseTxState()
    G_CLOSE_SLAVE_OK = false;
    G_CLOSE_LAST_ERROR_MASTER = 0;
    G_CLOSE_LAST_ERROR_SLAVE = 0;
+   G_CLOSE_SLAVE_BALANCE = 0.0;
 }
 
 void CloseOnlyCloseAllMasterOrders()
@@ -1699,6 +2000,7 @@ void SlaveWeekendReset()
    G_SLAVE_LAST_OPEN_OK = -1;
    G_SLAVE_LAST_OPEN_TICKET = -1;
    G_SLAVE_LAST_OPEN_ERR = 0;
+   G_SLAVE_LAST_OPEN_STARTED_MS = 0;
 }
 
 void SlaveCheckPendingOpenTimeout()
@@ -1872,13 +2174,14 @@ void MonitorForceFlatState()
 
 string BuildOpenIntent()
 {
+   const double lot_now = DynActiveLot();
    return StringFormat(
       "OPEN_INTENT;%s;%s;%s;%.2f;%.2f;%d;%d",
       G_OPEN_TX_ID,
       G_SYMBOL,
       G_OPEN_SIDE,
-      I_LOT,
-      I_LOT,
+      lot_now,
+      lot_now,
       I_SLIPPAGE,
       I_OPEN_ROLLBACK_TIMEOUT_MS
    );
@@ -1902,9 +2205,10 @@ string DiffCloseParenLabel()
 void PrintLogMasterOpenIntent(const string tag)
 {
    const string intent_label = (tag == "DIFF_OPEN") ? DiffOpenParenLabel() : tag;
+   const double lot_now = DynActiveLot();
    string line = StringFormat(
       "[SFX-SYNC] OPEN_INTENT_OUT %s tx_id=%s symbol=%s side_master=%s lot_m=%.2f lot_s=%.2f open_mode=%d",
-      intent_label, G_OPEN_TX_ID, G_SYMBOL, G_OPEN_SIDE, I_LOT, I_LOT, (int)I_OPEN_MODE
+      intent_label, G_OPEN_TX_ID, G_SYMBOL, G_OPEN_SIDE, lot_now, lot_now, (int)I_OPEN_MODE
    );
    ExpertPrintLn(line);
    SyncLog(line);
@@ -1937,6 +2241,61 @@ void MarkDegraded(const string reason)
    SyncLog(StringFormat("[SFX-SYNC] DEGRADED: %s", reason));
 }
 
+// Scan local terminal for any live EA position (same magic + symbol).
+// Used as a safety guard before clearing degraded state.
+bool MasterHasAnyLiveEaLeg()
+{
+   const long magic = (long)OrderMagic();
+   const string sym = G_SYMBOL;
+   for(int i = (int)PositionsTotal() - 1; i >= 0; i--)
+   {
+      const ulong pt = PositionGetTicket(i);
+      if(pt == 0)
+         continue;
+      if(!PositionSelectByTicket(pt))
+         continue;
+      if(PositionGetString(POSITION_SYMBOL) != sym)
+         continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != magic)
+         continue;
+      return true;
+   }
+   return false;
+}
+
+// Attempt to clear DEGRADED only when the system is in a safe steady state:
+// no in-flight transactions, no force-flat, and no live local EA position.
+// Returns true if cleared, false if any guard blocked the action (with log).
+bool TryClearDegraded(const string reason)
+{
+   if(!G_DEGRADED)
+      return false;
+   string block = "";
+   if(G_OPEN_TX_ACTIVE)         block = "OPEN_TX_ACTIVE";
+   else if(G_CLOSE_TX_ACTIVE)   block = "CLOSE_TX_ACTIVE";
+   else if(G_FORCE_FLAT_ACTIVE) block = "FORCE_FLAT_ACTIVE";
+   else if(MasterHasAnyLiveEaLeg()) block = "LIVE_EA_LEG_FOUND";
+   if(StringLen(block) > 0)
+   {
+      SyncLog(StringFormat("[SFX-SYNC] DEGRADED clear skipped reason=%s blocker=%s", reason, block));
+      return false;
+   }
+   G_DEGRADED = false;
+   G_PAIR_ACTIVE = false;
+   G_PAIR_KEY = "";
+   G_PAIR_MASTER_TICKET = -1;
+   G_PAIR_SLAVE_TICKET = -1;
+   G_SLAVE_PAIR_OPEN_REPORT = false;
+   G_LAST_SLAVE_PAIR_STATUS_MS = 0;
+   G_PAIR_OPENED_MS = 0;
+   G_PAIR_OPEN_INTENT_MS = 0;
+   G_RESCUE_ATTEMPTS_USED = 0;
+   if(DiffIsMasterAuto())
+      DiffAutoUnlockSearching();
+   SyncLog(StringFormat("[SFX-SYNC] DEGRADED cleared reason=%s", reason));
+   return true;
+}
+
 bool TryRescueHedge()
 {
    if(I_CLOSE_MODE != CLOSE_MASTER_FIRST_WITH_RESCUE) return false;
@@ -1951,7 +2310,7 @@ bool TryRescueHedge()
    G_RESCUE_ATTEMPTS_USED++;
    int err = 0;
    ENUM_ORDER_TYPE type = SideToOrderType(DiffEffectiveMasterSide());
-   int rescue_ticket = OpenOrder(type, I_LOT, err);
+   int rescue_ticket = OpenOrder(type, DynActiveLot(), err);
    if(rescue_ticket > 0)
    {
       G_PAIR_MASTER_TICKET = rescue_ticket;
@@ -2038,6 +2397,8 @@ void CompleteCloseSuccess()
    if(DiffIsMasterAuto())
       DiffAutoUnlockSearching();
    ArmPostCloseOpenGuard("PAIR_CLOSE_SUCCESS");
+   DynOnPairClosed(G_DYN_LAST_CLOSE_SCHEDULED);
+   G_DYN_LAST_CLOSE_SCHEDULED = false;
    ResetCloseTxState();
 }
 
@@ -2116,7 +2477,7 @@ void StartOpenTransaction()
    G_OPEN_LAST_ERROR_MASTER = 0;
    G_OPEN_LAST_ERROR_SLAVE = 0;
    G_OPEN_SIDE = SideToString(exec_side);
-   G_OPEN_LOT_SLAVE = I_LOT;
+   G_OPEN_LOT_SLAVE = DynActiveLot();
 
    int err = 0;
    const string master_open_diff_snap = (open_tag == "DIFF_OPEN") ? (" " + DiffOpenParenLabel()) : "";
@@ -2129,7 +2490,7 @@ void StartOpenTransaction()
       const ulong open_started_ms = NowMs();
       for(int attempt = 1; attempt <= max_attempts; attempt++)
       {
-         G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), I_LOT, err);
+         G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), DynActiveLot(), err);
          G_OPEN_MASTER_OK = (G_OPEN_MASTER_TICKET > 0);
          if(!G_OPEN_MASTER_OK)
          {
@@ -2168,7 +2529,7 @@ void StartOpenTransaction()
    }
    else
    {
-      G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), I_LOT, err);
+      G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), DynActiveLot(), err);
       G_OPEN_MASTER_OK = (G_OPEN_MASTER_TICKET > 0);
       G_OPEN_LAST_ERROR_MASTER = err;
       SyncLog(StringFormat("[SFX-SYNC] OPEN_MASTER_FIRST master result tx_id=%s ok=%s ticket=%d err=%d%s", G_OPEN_TX_ID, G_OPEN_MASTER_OK ? "true" : "false", G_OPEN_MASTER_TICKET, err, master_open_diff_snap));
@@ -2213,6 +2574,7 @@ void StartCloseTransaction(const string reason)
 
    if(reason == "DIFF_CLOSE")
       G_DIFF_LAST_CLOSE_SIGNAL_MS = NowMs();
+   G_DYN_LAST_CLOSE_SCHEDULED = DynCloseReasonIsScheduled(reason);
 
    G_CLOSE_TX_ID = NewTxId();
    G_CLOSE_REASON = reason;
@@ -2270,10 +2632,27 @@ void HandleMasterIncomingPacket(const string msg)
          CloseClient(G_PEER);
          return;
       }
+      const string peer_version = (ArraySize(p) >= 4) ? p[3] : "";
+      if(peer_version != SFX_SYNC_EA_VERSION)
+      {
+         const string ln = StringFormat(
+            "[SFX-SYNC] HELLO version mismatch local=%s peer=%s — rejecting and detaching",
+            SFX_SYNC_EA_VERSION,
+            StringLen(peer_version) > 0 ? peer_version : "<unknown>");
+         SyncLog(ln);
+         ExpertPrintLn(ln);
+         Alert(StringFormat("[SFX-SYNC] Version mismatch local=%s peer=%s — EA detaching",
+                            SFX_SYNC_EA_VERSION,
+                            StringLen(peer_version) > 0 ? peer_version : "<unknown>"));
+         SendMsg(G_PEER, StringFormat("HELLO_ACK;VERSION_MISMATCH;%s", SFX_SYNC_EA_VERSION));
+         CloseClient(G_PEER);
+         ExpertRemove();
+         return;
+      }
       G_HANDSHAKE_OK = true;
-      SendMsg(G_PEER, "HELLO_ACK;YES");
-      ExpertPrintLn(StringFormat("Handshake OK slave_account=%s", p[2]));
-      SyncLog(StringFormat("[SFX-SYNC] Slave handshake success account=%s", p[2]));
+      SendMsg(G_PEER, StringFormat("HELLO_ACK;YES;%s", SFX_SYNC_EA_VERSION));
+      ExpertPrintLn(StringFormat("Handshake OK slave_account=%s ver=%s", p[2], peer_version));
+      SyncLog(StringFormat("[SFX-SYNC] Slave handshake success account=%s ver=%s", p[2], peer_version));
       return;
    }
 
@@ -2314,15 +2693,17 @@ void HandleMasterIncomingPacket(const string msg)
 
    if(p[0] == "SLAVE")
    {
-      if(ArraySize(p) < 8)
+      if(ArraySize(p) < 9)
          return;
       const ulong prev_s = G_DIFF_SLAVE_MS;
       const ulong nowm = NowMs();
       G_DIFF_SLAVE_BID = DiffNormQuotePrice(StringToDouble(p[1]));
       G_DIFF_SLAVE_ASK = DiffNormQuotePrice(StringToDouble(p[2]));
-      G_DIFF_SLAVE_STREAM_PROFIT = StringToDouble(p[4]);
-      G_DIFF_SLAVE_QUOTE_MSC = (ulong)StringToDouble(p[5]);
-      G_DIFF_SLAVE_TRADE_MODE = (int)StringToInteger(p[6]);
+      G_DIFF_SLAVE_QUOTE_MSC = (ulong)StringToDouble(p[4]);
+      G_DIFF_SLAVE_TRADE_MODE = (int)StringToInteger(p[5]);
+      G_DIFF_SLAVE_STREAM_PROFIT = StringToDouble(p[7]);
+      G_SLAVE_BALANCE_REPORT = StringToDouble(p[8]);
+      G_SLAVE_BALANCE_VALID = true;
       G_DIFF_SLAVE_MS = nowm;
       G_DIFF_SLAVE_QUOTE_OK =
          (G_DIFF_SLAVE_BID > 0.0 && G_DIFF_SLAVE_ASK > 0.0 && G_DIFF_SLAVE_ASK >= G_DIFF_SLAVE_BID);
@@ -2372,6 +2753,7 @@ void HandleMasterIncomingPacket(const string msg)
       if(p[1] != G_CLOSE_TX_ID) return;
       G_CLOSE_SLAVE_OK = ((int)StringToInteger(p[2]) == 1);
       G_CLOSE_LAST_ERROR_SLAVE = (int)StringToInteger(p[4]);
+      G_CLOSE_SLAVE_BALANCE = (ArraySize(p) >= 6) ? StringToDouble(p[5]) : 0.0;
       if(G_CLOSE_MASTER_OK && G_CLOSE_SLAVE_OK) CompleteCloseSuccess();
       else HandleCloseFailure("SLAVE_CLOSE_FAIL");
       return;
@@ -2386,8 +2768,9 @@ void HandleMasterIncomingPacket(const string msg)
       const bool ok = ((int)StringToInteger(p[2]) == 1);
       const int remain = MathMax(0, (int)StringToInteger(p[3]));
       const int closed = MathMax(0, (int)StringToInteger(p[4]));
-      SyncLog(StringFormat("[SFX-SYNC] FORCE_FLAT result tx_id=%s ok=%s remain=%d closed=%d",
-                           G_FORCE_FLAT_TX_ID, ok ? "true" : "false", remain, closed));
+      const double force_slave_bal = (ArraySize(p) >= 6) ? StringToDouble(p[5]) : 0.0;
+      SyncLog(StringFormat("[SFX-SYNC] FORCE_FLAT result tx_id=%s ok=%s remain=%d closed=%d bal=%.2f",
+                           G_FORCE_FLAT_TX_ID, ok ? "true" : "false", remain, closed, force_slave_bal));
       if(ok && remain == 0)
       {
          G_SLAVE_PAIR_OPEN_REPORT = false;
@@ -2431,11 +2814,27 @@ void HandleSlaveIncomingPacket(const string msg)
 
    if(p[0] == "HELLO_ACK" && ArraySize(p) >= 2)
    {
+      if(p[1] == "VERSION_MISMATCH")
+      {
+         const string peer_v = (ArraySize(p) >= 3) ? p[2] : "<unknown>";
+         const string ln = StringFormat(
+            "[SFX-SYNC] HELLO_ACK VERSION_MISMATCH local=%s master=%s — detaching",
+            SFX_SYNC_EA_VERSION, peer_v);
+         SyncLog(ln);
+         ExpertPrintLn(ln);
+         Alert(StringFormat("[SFX-SYNC] Version mismatch local=%s master=%s — EA detaching",
+                            SFX_SYNC_EA_VERSION, peer_v));
+         G_HANDSHAKE_OK = false;
+         CloseClient(G_PEER);
+         ExpertRemove();
+         return;
+      }
       G_HANDSHAKE_OK = (p[1] == "YES");
       if(G_HANDSHAKE_OK)
       {
-         ExpertPrintLn("Handshake OK: connected to source master.");
-         SyncLog("[SFX-SYNC] Connected to source master");
+         const string peer_v = (ArraySize(p) >= 3) ? p[2] : "<unknown>";
+         ExpertPrintLn(StringFormat("Handshake OK: connected to source master ver=%s.", peer_v));
+         SyncLog(StringFormat("[SFX-SYNC] Connected to source master ver=%s", peer_v));
       }
       else
          ExpertPrintLn("Handshake refused: HELLO_ACK NO (check I_SECRET matches master).");
@@ -2460,9 +2859,10 @@ void HandleSlaveIncomingPacket(const string msg)
       const int after_n = CountEaOpenOrdersOnSlaveSymbol();
       const int closed_n = MathMax(0, before_n - after_n);
       const bool ok = (after_n == 0);
-      SendMsg(G_PEER, StringFormat("FORCE_FLAT_RESULT;%s;%d;%d;%d", txid, ok ? 1 : 0, after_n, closed_n));
-      SyncLog(StringFormat("[SFX-SYNC] FORCE_FLAT_IN tx_id=%s reason=%s before=%d after=%d",
-                           txid, why, before_n, after_n));
+      const double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+      SendMsg(G_PEER, StringFormat("FORCE_FLAT_RESULT;%s;%d;%d;%d;%.2f", txid, ok ? 1 : 0, after_n, closed_n, bal));
+      SyncLog(StringFormat("[SFX-SYNC] FORCE_FLAT_IN tx_id=%s reason=%s before=%d after=%d bal=%.2f",
+                           txid, why, before_n, after_n, bal));
       return;
    }
 
@@ -2493,6 +2893,23 @@ void HandleSlaveIncomingPacket(const string msg)
       // Idempotent guard: duplicate OPEN_INTENT with same tx_id must not open another order.
       if(txid == G_SLAVE_LAST_OPEN_TXID && G_SLAVE_LAST_OPEN_OK >= 0)
       {
+         // Recovery on duplicate: if cached result was fail or has no ticket, scan positions/history again.
+         // Covers cases where broker filled the order but EA could not resolve the ticket on first attempt
+         // (works for both hedging and netting accounts since RecoverMasterOpenTicketMt5 walks PositionsTotal()).
+         if(G_SLAVE_LAST_OPEN_OK == 0 || G_SLAVE_LAST_OPEN_TICKET <= 0)
+         {
+            int recovered_ticket = -1;
+            const ENUM_SIDE rec_side = (type == ORDER_TYPE_BUY) ? SIDE_BUY : SIDE_SELL;
+            const ulong since_ms = (G_SLAVE_LAST_OPEN_STARTED_MS > 0) ? G_SLAVE_LAST_OPEN_STARTED_MS : 0;
+            if(RecoverMasterOpenTicketMt5(rec_side, since_ms, recovered_ticket) && recovered_ticket > 0)
+            {
+               G_SLAVE_LAST_OPEN_OK = 1;
+               G_SLAVE_LAST_OPEN_TICKET = recovered_ticket;
+               G_SLAVE_LAST_OPEN_ERR = 0;
+               SyncLog(StringFormat("[SFX-SYNC] OPEN_INTENT duplicate replay recovered tx_id=%s ticket=%d",
+                                    txid, recovered_ticket));
+            }
+         }
          if(G_SLAVE_LAST_OPEN_OK == 1 && G_SLAVE_LAST_OPEN_TICKET > 0)
          {
             G_SLAVE_PENDING_OPEN_TXID = txid;
@@ -2506,6 +2923,7 @@ void HandleSlaveIncomingPacket(const string msg)
          return;
       }
 
+      G_SLAVE_LAST_OPEN_STARTED_MS = NowMs();
       int err = 0;
       int tk = OpenOrder(type, lot_slave, err);
       bool ok = (tk > 0);
@@ -2543,6 +2961,7 @@ void HandleSlaveIncomingPacket(const string msg)
          G_SLAVE_LAST_OPEN_OK = -1;
          G_SLAVE_LAST_OPEN_TICKET = -1;
          G_SLAVE_LAST_OPEN_ERR = 0;
+         G_SLAVE_LAST_OPEN_STARTED_MS = 0;
       }
       return;
    }
@@ -2580,6 +2999,7 @@ void HandleSlaveIncomingPacket(const string msg)
       SyncLog(ln);
       bool ok = false;
       int err = 0;
+      double slave_pnl = 0.0;
       if(StringLen(G_SLAVE_PAIR_KEY) == 0 || G_SLAVE_PAIR_TICKET <= 0)
       {
          err = -9101; // no active pair
@@ -2592,7 +3012,8 @@ void HandleSlaveIncomingPacket(const string msg)
       }
       else
       {
-         ok = CloseTicketIfOpen(G_SLAVE_PAIR_TICKET);
+         const int ticket_to_close = G_SLAVE_PAIR_TICKET;
+         ok = CloseTicketIfOpen(ticket_to_close);
          if(!ok)
             err = GetLastError();
          else
@@ -2601,7 +3022,8 @@ void HandleSlaveIncomingPacket(const string msg)
             G_SLAVE_PAIR_KEY = "";
          }
       }
-      SendMsg(G_PEER, StringFormat("CLOSE_RESULT;%s;%d;%d;%d", txid, ok ? 1 : 0, G_SLAVE_PAIR_TICKET, err));
+      const double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+      SendMsg(G_PEER, StringFormat("CLOSE_RESULT;%s;%d;%d;%d;%.2f", txid, ok ? 1 : 0, G_SLAVE_PAIR_TICKET, err, bal));
       return;
    }
 }
@@ -2803,7 +3225,7 @@ void SlaveLoop()
       G_HANDSHAKE_OK = false;
       if(G_PEER != NULL && G_PEER.IsSocketConnected())
       {
-         SendMsg(G_PEER, StringFormat("HELLO;%s;%I64d", I_SECRET, (long)AccountInfoInteger(ACCOUNT_LOGIN)));
+         SendMsg(G_PEER, StringFormat("HELLO;%s;%I64d;%s", I_SECRET, (long)AccountInfoInteger(ACCOUNT_LOGIN), SFX_SYNC_EA_VERSION));
       }
    }
 
@@ -2844,6 +3266,10 @@ void CreateButtons()
       ObjectCreate(0, "SFX_CLOSE_ONLY", OBJ_BUTTON, 0, 0, 0);
    if(ObjectFind(0, "SFX_DND_MODE") < 0)
       ObjectCreate(0, "SFX_DND_MODE", OBJ_BUTTON, 0, 0, 0);
+   if(ObjectFind(0, "SFX_DYN_LOT_RESET") < 0)
+      ObjectCreate(0, "SFX_DYN_LOT_RESET", OBJ_BUTTON, 0, 0, 0);
+   if(ObjectFind(0, "SFX_CLEAR_DEGRADED") < 0)
+      ObjectCreate(0, "SFX_CLEAR_DEGRADED", OBJ_BUTTON, 0, 0, 0);
 
    // CORNER_RIGHT_UPPER: inset from chart right; extra margin clears price scale on OBJ_BUTTON.
    const int bx = 8 + 126;
@@ -2854,6 +3280,8 @@ void CreateButtons()
    const int y_close = y_open + bh + btn_gap;
    const int y_co = y_close + bh + btn_gap;
    const int y_dnd = y_co + bh + btn_gap;
+   const int y_dyn = y_dnd + bh + btn_gap;
+   const int y_deg = y_dyn + bh + btn_gap;
 
    ObjectSetInteger(0, "SFX_OPEN_NOW", OBJPROP_CORNER, CORNER_RIGHT_UPPER);
    ObjectSetInteger(0, "SFX_OPEN_NOW", OBJPROP_XDISTANCE, bx);
@@ -2907,6 +3335,32 @@ void CreateButtons()
    ObjectSetInteger(0, "SFX_DND_MODE", OBJPROP_BACK, false);
    ObjectSetString(0, "SFX_DND_MODE", OBJPROP_TEXT, "DND MODE");
 
+   ObjectSetInteger(0, "SFX_DYN_LOT_RESET", OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+   ObjectSetInteger(0, "SFX_DYN_LOT_RESET", OBJPROP_XDISTANCE, bx);
+   ObjectSetInteger(0, "SFX_DYN_LOT_RESET", OBJPROP_YDISTANCE, y_dyn);
+   ObjectSetInteger(0, "SFX_DYN_LOT_RESET", OBJPROP_XSIZE, bw);
+   ObjectSetInteger(0, "SFX_DYN_LOT_RESET", OBJPROP_YSIZE, bh);
+   ObjectSetString(0, "SFX_DYN_LOT_RESET", OBJPROP_FONT, "Arial Bold");
+   ObjectSetInteger(0, "SFX_DYN_LOT_RESET", OBJPROP_FONTSIZE, 8);
+   ObjectSetInteger(0, "SFX_DYN_LOT_RESET", OBJPROP_COLOR, clrBlack);
+   ObjectSetInteger(0, "SFX_DYN_LOT_RESET", OBJPROP_BGCOLOR, C'215,205,170');
+   ObjectSetInteger(0, "SFX_DYN_LOT_RESET", OBJPROP_BORDER_COLOR, C'180,170,140');
+   ObjectSetInteger(0, "SFX_DYN_LOT_RESET", OBJPROP_BACK, false);
+   ObjectSetString(0, "SFX_DYN_LOT_RESET", OBJPROP_TEXT, "RESET DYN LOT");
+
+   ObjectSetInteger(0, "SFX_CLEAR_DEGRADED", OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+   ObjectSetInteger(0, "SFX_CLEAR_DEGRADED", OBJPROP_XDISTANCE, bx);
+   ObjectSetInteger(0, "SFX_CLEAR_DEGRADED", OBJPROP_YDISTANCE, y_deg);
+   ObjectSetInteger(0, "SFX_CLEAR_DEGRADED", OBJPROP_XSIZE, bw);
+   ObjectSetInteger(0, "SFX_CLEAR_DEGRADED", OBJPROP_YSIZE, bh);
+   ObjectSetString(0, "SFX_CLEAR_DEGRADED", OBJPROP_FONT, "Arial Bold");
+   ObjectSetInteger(0, "SFX_CLEAR_DEGRADED", OBJPROP_FONTSIZE, 8);
+   ObjectSetInteger(0, "SFX_CLEAR_DEGRADED", OBJPROP_COLOR, C'130,130,130');
+   ObjectSetInteger(0, "SFX_CLEAR_DEGRADED", OBJPROP_BGCOLOR, C'225,225,225');
+   ObjectSetInteger(0, "SFX_CLEAR_DEGRADED", OBJPROP_BORDER_COLOR, C'200,200,200');
+   ObjectSetInteger(0, "SFX_CLEAR_DEGRADED", OBJPROP_BACK, false);
+   ObjectSetString(0, "SFX_CLEAR_DEGRADED", OBJPROP_TEXT, "DEGRADED: OK");
+
    ChartRedraw(0);
 }
 
@@ -2920,6 +3374,10 @@ void DestroyUiButtons()
       ObjectDelete(0, "SFX_CLOSE_ONLY");
    if(ObjectFind(0, "SFX_DND_MODE") >= 0)
       ObjectDelete(0, "SFX_DND_MODE");
+   if(ObjectFind(0, "SFX_DYN_LOT_RESET") >= 0)
+      ObjectDelete(0, "SFX_DYN_LOT_RESET");
+   if(ObjectFind(0, "SFX_CLEAR_DEGRADED") >= 0)
+      ObjectDelete(0, "SFX_CLEAR_DEGRADED");
    DestroyDiffUi();
    ChartRedraw(0);
 }
@@ -2932,6 +3390,7 @@ int OnInit()
    G_SLAVE_DUP_CHANNEL_SHUTDOWN = false;
    DiffQuoteMonitorInit();
    DiffInitRoleDefaults();
+   DynInitOnAttach();
    SyncClearLogFiles();
    CreateButtons();
    SyncLogSessionStart();
@@ -3006,6 +3465,22 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          G_DND_MANUAL_ON = !G_DND_MANUAL_ON;
          SyncLog(StringFormat("[SFX-SYNC] dnd manual -> %s", G_DND_MANUAL_ON ? "ON" : "OFF"));
       }
+      ChartRedraw(0);
+   }
+   if(id == CHARTEVENT_OBJECT_CLICK && sparam == "SFX_DYN_LOT_RESET" && I_ROLE == ROLE_SOURCE_MASTER)
+   {
+      ObjectSetInteger(0, "SFX_DYN_LOT_RESET", OBJPROP_STATE, false);
+      DynResetState();
+      SyncLog(StringFormat("[DYNLOT] reset by HUD button (lot=%.2f)", G_DYN_LOT));
+      ChartRedraw(0);
+   }
+   if(id == CHARTEVENT_OBJECT_CLICK && sparam == "SFX_CLEAR_DEGRADED" && I_ROLE == ROLE_SOURCE_MASTER)
+   {
+      ObjectSetInteger(0, "SFX_CLEAR_DEGRADED", OBJPROP_STATE, false);
+      if(!G_DEGRADED)
+         SyncLog("[SFX-SYNC] DEGRADED clear ignored: not degraded");
+      else
+         TryClearDegraded("UI_BUTTON");
       ChartRedraw(0);
    }
 }

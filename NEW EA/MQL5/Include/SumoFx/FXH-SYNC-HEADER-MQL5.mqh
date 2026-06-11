@@ -1,4 +1,4 @@
-// Slave stream (required): SLAVE;bid;ask;symbol;profit;quote_msc;trade_mode;srv_ms~
+// Slave stream (required): SLAVE;bid;ask;symbol;quote_msc;trade_mode;srv_ms;profit;balance~
 #ifndef __FXH_SYNC_HEADER_MQL5_MQH__
 #define __FXH_SYNC_HEADER_MQL5_MQH__
 
@@ -1501,8 +1501,10 @@ void SlaveSendQuoteStream()
       ResetLastError();
       slave_tm = DiffTerminalTradeAllowedLikeMql4() ? 4 : 0;
    }
+   const double bal = AccountInfoDouble(ACCOUNT_BALANCE);
    SendMsg(G_PEER,
-           StringFormat("SLAVE;%.10f;%.10f;%s;%.5f;%I64u;%d;%I64u", bid, ask, G_SYMBOL, pl, qmsc, slave_tm, NowMs()));
+           StringFormat("SLAVE;%.10f;%.10f;%s;%I64u;%d;%I64u;%.5f;%.2f",
+                        bid, ask, G_SYMBOL, qmsc, slave_tm, NowMs(), pl, bal));
 }
 
 void DiffEnsureLabel(const string name, const int xdist, const int ydist, const int fontPx)
