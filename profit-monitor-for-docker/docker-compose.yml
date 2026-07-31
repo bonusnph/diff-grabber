@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  profit-monitor:
+    # Pulled from Docker Hub — build the image locally with `yarn docker:release`
+    # and push it, don't build on the server (no Dockerfile/source there).
+    image: bonusnph/profit-monitor:latest
+    container_name: profit-monitor-app
+    ports:
+      # Host port 3300 avoids the existing 80 / 8080 / 3306 containers on this server.
+      # Change "3300" on the left if you need a different host port.
+      - "3300:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOST=0.0.0.0
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - profit-monitor-network
+
+  # Cloudflare Tunnel: exposes the app to your domain without opening any port
+  # on the host. Create the tunnel in the Cloudflare Zero Trust dashboard
+  # (Networks > Tunnels), copy its token into CLOUDFLARE_TUNNEL_TOKEN in .env,
+  # and set the tunnel's public hostname to point at service "profit-monitor",
+  # port 3000 (the internal docker network address, not localhost:3300).
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: profit-monitor-cloudflared
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    restart: unless-stopped
+    depends_on:
+      - profit-monitor
+    networks:
+      - profit-monitor-network
+
+networks:
+  profit-monitor-network:
+    driver: bridge
