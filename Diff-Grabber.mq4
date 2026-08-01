@@ -8,7 +8,7 @@
 #property strict
 
 // EA Version constant (single source of truth)
-#define EA_VERSION "1.28"
+#define EA_VERSION "1.29"
 #property version EA_VERSION
 
 // =============================
@@ -81,6 +81,26 @@ int    input_confirm_timeout_ms       = 300;           // Scope: Master — max 
 int    input_diff_hysteresis_points   = 0;             // Scope: Master — hysteresis added to thresholds when averaging is enabled (points)
 int    input_epsilon_diff_points      = 1;             // Scope: Master — small margin for real confirm (points)
 int    input_avg_signal_cooldown_ms   = 400;           // Scope: Master — signal-level cooldown after order (ms)
+
+// Time-Gate Filter (DTG — Master only)
+bool   input_time_gate_enabled            = false;        // Scope: Master — enable Time-Gate: diff must hold above threshold for N ms before fire
+int    input_time_gate_open_ms            = 200;          // Scope: Master — ms diff must persist above open threshold before fire
+int    input_time_gate_close_ms           = 200;          // Scope: Master — ms diff must persist above close threshold before fire
+int    input_time_gate_hysteresis_offset  = 5;            // Scope: Master — pts below threshold that resets the timer
+int    input_time_gate_timeout_ms         = 2000;         // Scope: Master — max ms to wait; resets and restarts if exceeded
+
+// Drift Persistence Monitor (DPM — Master only)
+bool   input_dpm_enabled      = false;  // Scope: Master — enable DPM background observer (independent of signal mode)
+bool   input_dpm_csv_enabled  = false;  // Scope: Master — write DPM events to CSV file
+int    input_dpm_hud_rows     = 5;      // Scope: Master — recent events shown on HUD (0 = stats only)
+bool   input_dpm_track_open   = true;   // Scope: Master — observe open-side persistence
+bool   input_dpm_track_close  = true;   // Scope: Master — observe close-side persistence
+int    input_dpm_open_th1     = 15;     // Scope: Master — open observe threshold level 1 (pts)
+int    input_dpm_open_th2     = 25;     // Scope: Master — open observe threshold level 2 (pts)
+int    input_dpm_open_th3     = 40;     // Scope: Master — open observe threshold level 3 (pts)
+int    input_dpm_close_th1    = 15;     // Scope: Master — close observe threshold level 1 (pts)
+int    input_dpm_close_th2    = 25;     // Scope: Master — close observe threshold level 2 (pts)
+int    input_dpm_close_th3    = 40;     // Scope: Master — close observe threshold level 3 (pts)
 
 // Zone Stability Filter (works with all modes - Master only)
 input  bool   input_zone_stability_enabled    = true;     // Scope: Master — enable zone stability check for all modes
@@ -381,6 +401,66 @@ ulong  g_raw_open_start_ms = 0;
 bool   g_raw_close_pending = false;
 int    g_raw_close_stable_count = 0;
 ulong  g_raw_close_start_ms = 0;
+
+// Time-Gate state (DTG)
+bool   g_tg_open_above    = false;
+ulong  g_tg_open_start_ms = 0;
+bool   g_tg_open_fired    = false;
+bool   g_tg_close_above   = false;
+ulong  g_tg_close_start_ms = 0;
+bool   g_tg_close_fired   = false;
+
+// DPM event record
+struct DpmEvent
+{
+   datetime eventTime;
+   bool     isOpen;
+   int      level;
+   string   masterSide;
+   int      thresholdPts;
+   double   snapPts;
+   double   peakPts;
+   ulong    durationMs;
+   int      fired;
+   int      signalMode;
+   int      spreadMaster;
+   int      spreadSlave;
+   double   avgSnap;
+};
+
+// DPM per-level observation state (3 levels each side)
+bool   g_dpm_open_above[3];
+ulong  g_dpm_open_start_ms[3];
+double g_dpm_open_peak[3];
+double g_dpm_open_snap[3];
+bool   g_dpm_open_fired[3];
+bool   g_dpm_close_above[3];
+ulong  g_dpm_close_start_ms[3];
+double g_dpm_close_peak[3];
+double g_dpm_close_snap[3];
+bool   g_dpm_close_fired[3];
+
+// DPM stats per level
+int    g_dpm_open_evt_count[3];
+ulong  g_dpm_open_evt_last_ms[3];
+ulong  g_dpm_open_evt_min_ms[3];
+ulong  g_dpm_open_evt_max_ms[3];
+double g_dpm_open_evt_sum_ms[3];
+int    g_dpm_close_evt_count[3];
+ulong  g_dpm_close_evt_last_ms[3];
+ulong  g_dpm_close_evt_min_ms[3];
+ulong  g_dpm_close_evt_max_ms[3];
+double g_dpm_close_evt_sum_ms[3];
+
+// DPM ring buffer (50 most recent events)
+DpmEvent g_dpm_ring[50];
+int      g_dpm_ring_head  = 0;
+int      g_dpm_ring_count = 0;
+
+// DPM CSV deferred write
+bool     g_dpm_csv_pending       = false;
+string   g_dpm_csv_buffer        = "";
+bool     g_dpm_csv_header_written = false;
 
 // Zone Stability state (works with all modes)
 bool   g_open_zone_stable = false;
@@ -3612,6 +3692,283 @@ void ResetZoneStability(bool is_open)
    }
 }
 
+// ──────────────────────────────────────────────────────────────
+// Drift Persistence Monitor (DPM)
+// ──────────────────────────────────────────────────────────────
+
+string DpmCsvFileName()
+{
+   return StringFormat("DPM_%d_%s.csv", AccountNumber(), g_symbol);
+}
+
+string DpmResolveMasterSide()
+{
+   if(input_master_side == SIDE_BUY)  return "BUY";
+   if(input_master_side == SIDE_SELL) return "SELL";
+   if(g_auto_side_locked)
+      return (g_effective_master_side == SIDE_BUY) ? "BUY" : "SELL";
+   return "";
+}
+
+int DpmActiveSignalMode()
+{
+   if(input_time_gate_enabled)     return 3;
+   if(input_avg_filter_enabled)    return 2;
+   if(input_raw_stability_enabled) return 1;
+   return 0;
+}
+
+int DpmPeerSpreadPts()
+{
+   return (int)MathRound(PointsFromPriceDiff(MathMax(0.0, g_peer_ask - g_peer_bid)));
+}
+
+void DpmRecordEvent(const bool isOpen, const int lvl, const int thPts,
+                    const double snap, const double peak, const ulong durMs,
+                    const int fired, const string side)
+{
+   DpmEvent ev;
+   ev.isOpen       = isOpen;
+   ev.level        = lvl + 1;
+   ev.thresholdPts = thPts;
+   ev.snapPts      = snap;
+   ev.peakPts      = peak;
+   ev.durationMs   = durMs;
+   ev.fired        = fired;
+   ev.signalMode   = DpmActiveSignalMode();
+   ev.spreadMaster = SpreadPointsSelf();
+   ev.spreadSlave  = DpmPeerSpreadPts();
+   ev.avgSnap      = isOpen ? (g_ema_open_init ? g_ema_open : 0.0) : (g_ema_close_init ? g_ema_close : 0.0);
+   ev.masterSide   = side;
+   ev.eventTime    = TimeCurrent();
+
+   g_dpm_ring[g_dpm_ring_head] = ev;
+   g_dpm_ring_head = (g_dpm_ring_head + 1) % 50;
+   if(g_dpm_ring_count < 50) g_dpm_ring_count++;
+
+   if(isOpen)
+   {
+      g_dpm_open_evt_count[lvl]++;
+      g_dpm_open_evt_last_ms[lvl] = durMs;
+      if(g_dpm_open_evt_count[lvl] == 1 || durMs < g_dpm_open_evt_min_ms[lvl])
+         g_dpm_open_evt_min_ms[lvl] = durMs;
+      if(durMs > g_dpm_open_evt_max_ms[lvl])
+         g_dpm_open_evt_max_ms[lvl] = durMs;
+      g_dpm_open_evt_sum_ms[lvl] += (double)durMs;
+   }
+   else
+   {
+      g_dpm_close_evt_count[lvl]++;
+      g_dpm_close_evt_last_ms[lvl] = durMs;
+      if(g_dpm_close_evt_count[lvl] == 1 || durMs < g_dpm_close_evt_min_ms[lvl])
+         g_dpm_close_evt_min_ms[lvl] = durMs;
+      if(durMs > g_dpm_close_evt_max_ms[lvl])
+         g_dpm_close_evt_max_ms[lvl] = durMs;
+      g_dpm_close_evt_sum_ms[lvl] += (double)durMs;
+   }
+
+   if(input_dpm_csv_enabled)
+   {
+      string ts = StringFormat("%s.%03u",
+                               TimeToString(ev.eventTime, TIME_DATE | TIME_MINUTES | TIME_SECONDS),
+                               (uint)(durMs % 1000));
+      string row = StringFormat("%s,%s,%s,%s,%d,%d,%.4f,%.4f,%u,%d,%d,%d,%d,%.4f\n",
+                                ts, g_symbol,
+                                isOpen ? "OPEN_ABOVE" : "CLOSE_ABOVE",
+                                side,
+                                ev.level, thPts,
+                                snap, peak,
+                                (uint)durMs,
+                                fired,
+                                ev.signalMode,
+                                ev.spreadMaster, ev.spreadSlave,
+                                ev.avgSnap);
+      g_dpm_csv_buffer  += row;
+      g_dpm_csv_pending  = true;
+   }
+}
+
+void DpmObserveLevel(const double diff, const int thPts, const int lvl,
+                     const bool isOpen, const ulong nw, const string side)
+{
+   bool   above   = isOpen ? g_dpm_open_above[lvl]    : g_dpm_close_above[lvl];
+   ulong  startMs = isOpen ? g_dpm_open_start_ms[lvl] : g_dpm_close_start_ms[lvl];
+   double peak    = isOpen ? g_dpm_open_peak[lvl]     : g_dpm_close_peak[lvl];
+   double snap    = isOpen ? g_dpm_open_snap[lvl]     : g_dpm_close_snap[lvl];
+   bool   fired   = isOpen ? g_dpm_open_fired[lvl]    : g_dpm_close_fired[lvl];
+
+   if(diff >= (double)thPts)
+   {
+      if(!above)
+      {
+         above   = true;
+         startMs = nw;
+         snap    = diff;
+         peak    = diff;
+         fired   = false;
+      }
+      else if(diff > peak)
+         peak = diff;
+   }
+   else
+   {
+      if(above)
+      {
+         if(StringLen(side) > 0)
+         {
+            const ulong dur = (nw > startMs) ? (nw - startMs) : 0;
+            DpmRecordEvent(isOpen, lvl, thPts, snap, peak, dur, fired ? 1 : 0, side);
+         }
+         above = false;
+         fired = false;
+      }
+   }
+
+   if(isOpen)
+   {
+      g_dpm_open_above[lvl]    = above;
+      g_dpm_open_start_ms[lvl] = startMs;
+      g_dpm_open_peak[lvl]     = peak;
+      g_dpm_open_snap[lvl]     = snap;
+      g_dpm_open_fired[lvl]    = fired;
+   }
+   else
+   {
+      g_dpm_close_above[lvl]    = above;
+      g_dpm_close_start_ms[lvl] = startMs;
+      g_dpm_close_peak[lvl]     = peak;
+      g_dpm_close_snap[lvl]     = snap;
+      g_dpm_close_fired[lvl]    = fired;
+   }
+}
+
+void DpmMasterTick(const ulong nw)
+{
+   const string side = DpmResolveMasterSide();
+   const double diffO = DiffOpenPoints();
+   const double diffC = DiffClosePoints();
+
+   int openTh[3];
+   openTh[0] = input_dpm_open_th1;
+   openTh[1] = input_dpm_open_th2;
+   openTh[2] = input_dpm_open_th3;
+
+   int closeTh[3];
+   closeTh[0] = input_dpm_close_th1;
+   closeTh[1] = input_dpm_close_th2;
+   closeTh[2] = input_dpm_close_th3;
+
+   for(int i = 0; i < 3; i++)
+   {
+      if(input_dpm_track_open)
+         DpmObserveLevel(diffO, openTh[i], i, true, nw, side);
+      if(input_dpm_track_close)
+         DpmObserveLevel(diffC, closeTh[i], i, false, nw, side);
+   }
+}
+
+void DpmNotifyFired(const bool isOpen)
+{
+   if(!input_dpm_enabled) return;
+   for(int i = 0; i < 3; i++)
+   {
+      if(isOpen  && g_dpm_open_above[i])  g_dpm_open_fired[i]  = true;
+      if(!isOpen && g_dpm_close_above[i]) g_dpm_close_fired[i] = true;
+   }
+}
+
+void DpmEnsureCsvHeader()
+{
+   if(g_dpm_csv_header_written) return;
+   const string fname = DpmCsvFileName();
+   int hCheck = FileOpen(fname, FILE_READ | FILE_SHARE_READ | FILE_ANSI);
+   const bool isEmpty = (hCheck == INVALID_HANDLE || FileSize(hCheck) == 0);
+   if(hCheck != INVALID_HANDLE) FileClose(hCheck);
+   if(isEmpty)
+   {
+      int hw = FileOpen(fname, FILE_WRITE | FILE_SHARE_READ | FILE_ANSI);
+      if(hw != INVALID_HANDLE)
+      {
+         FileWriteString(hw,
+            "event_timestamp,symbol,action,master_side,threshold_level,threshold_pts,"
+            "actual_diff_start_pts,peak_diff_pts,drift_duration_ms,fired_trade,"
+            "signal_mode_active,master_spread_pts,slave_spread_pts,avg_diff_snap\n");
+         FileClose(hw);
+      }
+   }
+   g_dpm_csv_header_written = true;
+}
+
+void DpmFlushCsv()
+{
+   if(!g_dpm_csv_pending || StringLen(g_dpm_csv_buffer) == 0)
+   {
+      g_dpm_csv_pending = false;
+      return;
+   }
+   DpmEnsureCsvHeader();
+   const string fname = DpmCsvFileName();
+   int h = FileOpen(fname, FILE_WRITE | FILE_READ | FILE_SHARE_READ | FILE_ANSI);
+   if(h == INVALID_HANDLE)
+   {
+      g_dpm_csv_pending = false;
+      g_dpm_csv_buffer  = "";
+      return;
+   }
+   FileSeek(h, 0, SEEK_END);
+   FileWriteString(h, g_dpm_csv_buffer);
+   FileClose(h);
+   g_dpm_csv_buffer  = "";
+   g_dpm_csv_pending = false;
+}
+
+string DpmHudStatsLine(const bool isOpen, const int lvl)
+{
+   const int    cnt  = isOpen ? g_dpm_open_evt_count[lvl]   : g_dpm_close_evt_count[lvl];
+   const ulong  last = isOpen ? g_dpm_open_evt_last_ms[lvl] : g_dpm_close_evt_last_ms[lvl];
+   const ulong  mn   = isOpen ? g_dpm_open_evt_min_ms[lvl]  : g_dpm_close_evt_min_ms[lvl];
+   const ulong  mx   = isOpen ? g_dpm_open_evt_max_ms[lvl]  : g_dpm_close_evt_max_ms[lvl];
+   const double sum  = isOpen ? g_dpm_open_evt_sum_ms[lvl]  : g_dpm_close_evt_sum_ms[lvl];
+   const int    th   = isOpen ? (lvl == 0 ? input_dpm_open_th1  : (lvl == 1 ? input_dpm_open_th2  : input_dpm_open_th3))
+                               : (lvl == 0 ? input_dpm_close_th1 : (lvl == 1 ? input_dpm_close_th2 : input_dpm_close_th3));
+   const ulong  avg  = (cnt > 0) ? (ulong)(sum / (double)cnt) : 0;
+   return StringFormat(" lv%d(%dpt): last=%ums avg=%ums min=%ums max=%ums n=%d",
+                       lvl + 1, th, (uint)last, (uint)avg, (uint)mn, (uint)mx, cnt);
+}
+
+void DpmDisplayBlock(int &line)
+{
+   if(!input_dpm_enabled || input_role != ROLE_MASTER) return;
+   DisplaySetLine(line++, "[ DPM ]");
+   if(input_dpm_track_open)
+   {
+      DisplaySetLine(line++, " Open:");
+      for(int i = 0; i < 3; i++) DisplaySetLine(line++, DpmHudStatsLine(true, i));
+   }
+   if(input_dpm_track_close)
+   {
+      DisplaySetLine(line++, " Close:");
+      for(int i = 0; i < 3; i++) DisplaySetLine(line++, DpmHudStatsLine(false, i));
+   }
+   if(input_dpm_hud_rows > 0 && g_dpm_ring_count > 0)
+   {
+      DisplaySetLine(line++, " Recent events:");
+      int show = MathMin(input_dpm_hud_rows, g_dpm_ring_count);
+      for(int r = 0; r < show; r++)
+      {
+         int idx = g_dpm_ring_head - 1 - r;
+         if(idx < 0) idx += 50;
+         DpmEvent ev = g_dpm_ring[idx];
+         DisplaySetLine(line++, StringFormat("  %s | %s lv%d | %s | %.1fpt peak=%.1fpt | %dms | f=%d",
+            TimeToString(ev.eventTime, TIME_MINUTES | TIME_SECONDS),
+            ev.isOpen ? "OPEN " : "CLOSE",
+            ev.level, ev.masterSide,
+            ev.snapPts, ev.peakPts,
+            (int)ev.durationMs, ev.fired));
+      }
+   }
+}
+
 void MaybeOpenPair()
 {
    if(g_role_conflict) return;
@@ -3719,8 +4076,55 @@ void MaybeOpenPair()
       }
    }
    
-   // PRIORITY: Averaging > Raw Stability > Simple
-   if(input_avg_filter_enabled)
+   // PRIORITY: Time-Gate > Averaging > Raw Stability > Simple
+   if(input_time_gate_enabled)
+   {
+      double enterTh = (double)GetOpenThresholdPoints();
+      double resetTh = (double)(GetOpenThresholdPoints() - input_time_gate_hysteresis_offset);
+      if(diffOpen >= enterTh)
+      {
+         if(!g_tg_open_above)
+         {
+            g_tg_open_above    = true;
+            g_tg_open_start_ms = NowMs();
+            g_tg_open_fired    = false;
+            LogEvent("TG_OPEN_START", StringFormat("diff=%.1f;th=%d", diffOpen, GetOpenThresholdPoints()));
+         }
+         ulong held = NowMs() - g_tg_open_start_ms;
+         if(input_time_gate_timeout_ms > 0 && held > (ulong)input_time_gate_timeout_ms)
+         {
+            g_tg_open_above = false;
+            LogEvent("TG_OPEN_TIMEOUT", StringFormat("held=%I64u;th=%d", held, GetOpenThresholdPoints()));
+            return;
+         }
+         if(held >= (ulong)input_time_gate_open_ms)
+         {
+            triggerOpen     = true;
+            g_tg_open_above = false;
+            g_tg_open_fired = true;
+            if(input_zone_stability_enabled) ResetZoneStability(true);
+            LogEvent("TG_OPEN_CONFIRMED", StringFormat("diff=%.1f;held=%I64u;th=%d", diffOpen, held, GetOpenThresholdPoints()));
+         }
+         else
+         {
+            return;
+         }
+      }
+      else if(diffOpen < resetTh)
+      {
+         if(g_tg_open_above)
+         {
+            g_tg_open_above = false;
+            LogEvent("TG_OPEN_RESET", StringFormat("diff=%.1f;below_reset=%.1f", diffOpen, resetTh));
+         }
+         return;
+      }
+      else
+      {
+         return;
+      }
+   }
+   else if(input_avg_filter_enabled)
    {
       // Averaging logic (highest priority)
       if(input_avg_signal_cooldown_ms > 0 && (NowMs() - g_last_avg_open_signal_ms) < (ulong)input_avg_signal_cooldown_ms) return;
@@ -3847,13 +4251,16 @@ void MaybeOpenPair()
 
 
    if(!triggerOpen) return;
+   DpmNotifyFired(true);
+
    // Generate id but DO NOT write open_cmd until master opened successfully
    string cmd_id = NewCmdId();
    g_last_cmd_id = cmd_id;
    
    // Log the trigger source for automatic opens
    string triggerSource = "UNKNOWN";
-   if(input_avg_filter_enabled) triggerSource = "AUTO_AVERAGING";
+   if(input_time_gate_enabled) triggerSource = "AUTO_TIME_GATE";
+   else if(input_avg_filter_enabled) triggerSource = "AUTO_AVERAGING";
    else if(input_raw_stability_enabled) triggerSource = "AUTO_RAW_STABILITY";
    else triggerSource = "AUTO_SIMPLE";
    LogEvent("OPEN_TRIGGER", StringFormat("source=%s;cmd_id=%s;diffOpen=%.1f", triggerSource, cmd_id, DiffOpenPoints()));
@@ -4244,8 +4651,56 @@ void MaybeClosePair()
          }
       }
       
-      // PRIORITY: Averaging > Raw Stability > Simple
-      if(input_avg_filter_enabled)
+      // PRIORITY: Time-Gate > Averaging > Raw Stability > Simple
+      if(input_time_gate_enabled)
+      {
+         double enterTh = (double)GetCloseThresholdPoints();
+         double resetTh = (double)(GetCloseThresholdPoints() - input_time_gate_hysteresis_offset);
+         if(diffClose >= enterTh)
+         {
+            if(!g_tg_close_above)
+            {
+               g_tg_close_above    = true;
+               g_tg_close_start_ms = NowMs();
+               g_tg_close_fired    = false;
+               LogEvent("TG_CLOSE_START", StringFormat("diff=%.1f;th=%d", diffClose, GetCloseThresholdPoints()));
+            }
+            ulong held = NowMs() - g_tg_close_start_ms;
+            if(input_time_gate_timeout_ms > 0 && held > (ulong)input_time_gate_timeout_ms)
+            {
+               g_tg_close_above = false;
+               LogEvent("TG_CLOSE_TIMEOUT", StringFormat("held=%I64u;th=%d", held, GetCloseThresholdPoints()));
+               return;
+            }
+            if(held >= (ulong)input_time_gate_close_ms)
+            {
+               triggerClose      = true;
+               triggerSource     = "AUTO_L1_TIME_GATE";
+               g_tg_close_above  = false;
+               g_tg_close_fired  = true;
+               if(input_zone_stability_enabled) ResetZoneStability(false);
+               LogEvent("TG_CLOSE_CONFIRMED", StringFormat("diff=%.1f;held=%I64u;th=%d", diffClose, held, GetCloseThresholdPoints()));
+            }
+            else
+            {
+               return;
+            }
+         }
+         else if(diffClose < resetTh)
+         {
+            if(g_tg_close_above)
+            {
+               g_tg_close_above = false;
+               LogEvent("TG_CLOSE_RESET", StringFormat("diff=%.1f;below_reset=%.1f", diffClose, resetTh));
+            }
+            return;
+         }
+         else
+         {
+            return;
+         }
+      }
+      else if(input_avg_filter_enabled)
       {
          // Averaging logic for close (highest priority)
          if(input_avg_signal_cooldown_ms > 0 && (NowMs() - g_last_avg_close_signal_ms) < (ulong)input_avg_signal_cooldown_ms) return;
@@ -4368,7 +4823,8 @@ void MaybeClosePair()
    }
 
    if(!triggerClose) return;
-   
+   DpmNotifyFired(false);
+
    // ENHANCED: Add detailed logging for close trigger analysis
    double currentAvgClose = input_avg_filter_enabled ? SmoothedCloseDiff(diffClose) : diffClose;
    LogEvent("CLOSE_TRIGGER_DETAIL", StringFormat("mode=%s;diffClose=%.1f;avgClose=%.1f;threshold=%d;pending=%s;zone_stable=%s", 
@@ -5216,7 +5672,11 @@ void DisplayUpdate()
    if(input_role==ROLE_MASTER)
    {
             string modeStr = "";
-      if(input_avg_filter_enabled)
+      if(input_time_gate_enabled)
+         modeStr = StringFormat("TIME GATE | Open=%dms Close=%dms H=%dpt Timeout=%dms",
+                               input_time_gate_open_ms, input_time_gate_close_ms,
+                               input_time_gate_hysteresis_offset, input_time_gate_timeout_ms);
+      else if(input_avg_filter_enabled)
          modeStr = StringFormat("AVG ON | EMA-%d%s | H=%d E=%d CF=%d CD=%dms",
                                input_avg_period, (input_use_prefilter_median?StringFormat(" + Med-%d", input_prefilter_window):""),
                                input_diff_hysteresis_points, input_epsilon_diff_points, input_confirm_ticks, input_avg_signal_cooldown_ms);
@@ -5472,7 +5932,8 @@ void DisplayUpdate()
          DisplaySetLine(line++, StringFormat("TP Cut L3: ON (threshold=%d pts)", input_tp_cut_l3_points));
       }
    }
-   
+
+   DpmDisplayBlock(line);
    
    DisplayTrimLines(line);
 
@@ -6237,9 +6698,15 @@ void OnTick()
 
    if(input_role==ROLE_MASTER)
    {
+      if(input_dpm_enabled && ReadPeerQuotes() && QuotesFresh())
+         DpmMasterTick(NowMs());
+
       MaybeOpenPair();
       MaybeClosePair();
       MasterWatchdogOpen(); // ย้ายมาจาก OnTimer() เพื่อ check บ่อยขึ้น
+
+      if(input_dpm_enabled && input_dpm_csv_enabled && g_dpm_csv_pending)
+         DpmFlushCsv();
    }
    else
    {

@@ -291,6 +291,10 @@ string DiffHudQuoteMonitorBlock()
    s += StringFormat(
       "  obs.age ms M=%d S=%d  master qmsc=%I64u master.SYMBOL_TRADE_MODE=%d  slave qmsc=%I64u slave.SYMBOL_TRADE_MODE=%d\n",
       ageM, ageS, G_DIFF_SELF_LAST_TICK_MSC, master_tm, G_DIFF_SLAVE_QUOTE_MSC, G_DIFF_SLAVE_TRADE_MODE);
+   const int digs = DiffQuoteNormDigits();
+   s += StringFormat("  price  M bid=%s ask=%s  |  S bid=%s ask=%s\n",
+                     DoubleToString(G_DIFF_SELF_BID, digs), DoubleToString(G_DIFF_SELF_ASK, digs),
+                     DoubleToString(G_DIFF_SLAVE_BID, digs), DoubleToString(G_DIFF_SLAVE_ASK, digs));
    return s;
 }
 
@@ -522,6 +526,7 @@ string DiffHudMasterCommentTail()
                           I_DIFF_AVG_SIGNAL_COOLDOWN_MS);
    }
    out += DiffHudQuoteMonitorBlock();
+   out += DpmHudBlock();
    return out;
 }
 
@@ -586,14 +591,16 @@ string DiffHudSignalOpenProgressBlock()
 {
    if(I_ROLE != ROLE_SOURCE_MASTER)
       return "";
-   if(I_DIFF_SIGNAL_MODE_VAL != DIFF_SIGNAL_AVG && I_DIFF_SIGNAL_MODE_VAL != DIFF_SIGNAL_RAW_STABILITY)
+   if(I_DIFF_SIGNAL_MODE_VAL != DIFF_SIGNAL_AVG && I_DIFF_SIGNAL_MODE_VAL != DIFF_SIGNAL_RAW_STABILITY
+      && I_DIFF_SIGNAL_MODE_VAL != DIFF_SIGNAL_TIME_GATE)
       return "";
    if(G_PAIR_ACTIVE)
       return "";
 
    const bool modeAvg = (I_DIFF_SIGNAL_MODE_VAL == DIFF_SIGNAL_AVG);
+   const bool modeTg  = (I_DIFF_SIGNAL_MODE_VAL == DIFF_SIGNAL_TIME_GATE);
    string lines = "\nOPEN signal (";
-   lines += modeAvg ? "AVG" : "RAW stability";
+   lines += modeAvg ? "AVG" : (modeTg ? "TIME GATE" : "RAW stability");
    lines += ")\n\n";
 
    if(!I_DIFF_SYNC_ENABLED)
@@ -686,6 +693,27 @@ string DiffHudSignalOpenProgressBlock()
          }
       }
    }
+   else if(modeTg)
+   {
+      const double reset = (double)th - (double)I_DIFF_TIME_GATE_HYSTERESIS_OFFSET;
+      double pctIn = (th > 0) ? (100.0 * diffOpen / (double)th) : 0.0;
+      if(pctIn > 100.0) pctIn = 100.0;
+      lines += StringFormat(" raw %.1f / gate %.1f (below %.1f resets)\n\n", diffOpen, (double)th, reset);
+      lines += " toward threshold: ";
+      lines += DiffHudFormatProgressBar(pctIn);
+      lines += "\n\n";
+      if(G_DIFF_TG_OPEN_PEND)
+      {
+         const ulong nwTg = NowMs();
+         const ulong el   = (nwTg > G_DIFF_TG_OPEN_START_MS) ? (nwTg - G_DIFF_TG_OPEN_START_MS) : 0;
+         const int   gate = MathMax(1, I_DIFF_TIME_GATE_OPEN_MS);
+         double pctT = 100.0 * (double)el / (double)gate;
+         if(pctT > 100.0) pctT = 100.0;
+         lines += StringFormat(" held %u / %d ms: ", (uint)el, gate);
+         lines += DiffHudFormatProgressBar(pctT);
+         lines += "\n";
+      }
+   }
    else
    {
       const double enter = (double)th;
@@ -721,14 +749,16 @@ string DiffHudSignalCloseProgressBlock()
 {
    if(I_ROLE != ROLE_SOURCE_MASTER)
       return "";
-   if(I_DIFF_SIGNAL_MODE_VAL != DIFF_SIGNAL_AVG && I_DIFF_SIGNAL_MODE_VAL != DIFF_SIGNAL_RAW_STABILITY)
+   if(I_DIFF_SIGNAL_MODE_VAL != DIFF_SIGNAL_AVG && I_DIFF_SIGNAL_MODE_VAL != DIFF_SIGNAL_RAW_STABILITY
+      && I_DIFF_SIGNAL_MODE_VAL != DIFF_SIGNAL_TIME_GATE)
       return "";
    if(!G_PAIR_ACTIVE)
       return "";
 
    const bool modeAvg = (I_DIFF_SIGNAL_MODE_VAL == DIFF_SIGNAL_AVG);
+   const bool modeTg  = (I_DIFF_SIGNAL_MODE_VAL == DIFF_SIGNAL_TIME_GATE);
    string lines = "\nCLOSE signal (";
-   lines += modeAvg ? "AVG" : "RAW stability";
+   lines += modeAvg ? "AVG" : (modeTg ? "TIME GATE" : "RAW stability");
    lines += ")\n\n";
 
    if(!I_DIFF_SYNC_ENABLED)
@@ -812,6 +842,27 @@ string DiffHudSignalCloseProgressBlock()
             lines += StringFormat(" real-confirm needs raw >= %.1f — now %.1f (%s)\n", needRaw, diffClose,
                                   (diffClose >= needRaw ? "ok" : "hold"));
          }
+      }
+   }
+   else if(modeTg)
+   {
+      const double resetC = (double)thC - (double)I_DIFF_TIME_GATE_HYSTERESIS_OFFSET;
+      double pctIn = (thC > 0) ? (100.0 * diffClose / (double)thC) : 0.0;
+      if(pctIn > 100.0) pctIn = 100.0;
+      lines += StringFormat(" raw %.1f / gate %.1f (below %.1f resets)\n\n", diffClose, (double)thC, resetC);
+      lines += " toward threshold: ";
+      lines += DiffHudFormatProgressBar(pctIn);
+      lines += "\n\n";
+      if(G_DIFF_TG_CLOSE_PEND)
+      {
+         const ulong nwTgC = NowMs();
+         const ulong elC   = (nwTgC > G_DIFF_TG_CLOSE_START_MS) ? (nwTgC - G_DIFF_TG_CLOSE_START_MS) : 0;
+         const int   gateC = MathMax(1, I_DIFF_TIME_GATE_CLOSE_MS);
+         double pctTc = 100.0 * (double)elC / (double)gateC;
+         if(pctTc > 100.0) pctTc = 100.0;
+         lines += StringFormat(" held %u / %d ms: ", (uint)elC, gateC);
+         lines += DiffHudFormatProgressBar(pctTc);
+         lines += "\n";
       }
    }
    else
@@ -1119,14 +1170,295 @@ void DiffAutoLockManualBest()
    DiffResetOpenSmoothing();
 }
 
+// ──────────────────────────────────────────────────────────────
+// Drift Persistence Monitor (DPM)
+// ──────────────────────────────────────────────────────────────
+
+string DpmCsvFileName()
+{
+   return StringFormat("DPM_%d_%s.csv", AccountNumber(), G_SYMBOL);
+}
+
+string DpmResolveMasterSide()
+{
+   if(I_MASTER_SIDE == SIDE_BUY)
+      return "BUY";
+   if(I_MASTER_SIDE == SIDE_SELL)
+      return "SELL";
+   if(G_DIFF_AUTO_SIDE_LOCKED)
+      return (G_DIFF_AUTO_EFF_SIDE == SIDE_BUY) ? "BUY" : "SELL";
+   return "";
+}
+
+void DpmRecordEvent(const bool isOpen, const int lvl, const int thPts,
+                    const double snap, const double peak, const ulong durMs,
+                    const int fired, const string side)
+{
+   DpmEvent ev;
+   ev.isOpen       = isOpen;
+   ev.level        = lvl + 1;
+   ev.thresholdPts = thPts;
+   ev.snapPts      = snap;
+   ev.peakPts      = peak;
+   ev.durationMs   = durMs;
+   ev.fired        = fired;
+   ev.signalMode   = (int)I_DIFF_SIGNAL_MODE_VAL;
+   ev.masterSpread = DiffSpreadPts(G_DIFF_SELF_BID, G_DIFF_SELF_ASK);
+   ev.slaveSpread  = DiffSpreadPts(G_DIFF_SLAVE_BID, G_DIFF_SLAVE_ASK);
+   ev.avgSnap      = isOpen ? G_DIFF_HUD_LAST_AVG_OPEN : G_DIFF_HUD_LAST_AVG_CLOSE;
+   ev.masterSide   = side;
+   ev.eventTime    = TimeCurrent();
+
+   G_DPM_RING[G_DPM_RING_HEAD] = ev;
+   G_DPM_RING_HEAD = (G_DPM_RING_HEAD + 1) % 50;
+   if(G_DPM_RING_COUNT < 50)
+      G_DPM_RING_COUNT++;
+
+   if(isOpen)
+   {
+      G_DPM_OPEN_EVT_COUNT[lvl]++;
+      G_DPM_OPEN_EVT_LAST_MS[lvl] = durMs;
+      if(G_DPM_OPEN_EVT_COUNT[lvl] == 1 || durMs < G_DPM_OPEN_EVT_MIN_MS[lvl])
+         G_DPM_OPEN_EVT_MIN_MS[lvl] = durMs;
+      if(durMs > G_DPM_OPEN_EVT_MAX_MS[lvl])
+         G_DPM_OPEN_EVT_MAX_MS[lvl] = durMs;
+      G_DPM_OPEN_EVT_SUM_MS[lvl] += (double)durMs;
+   }
+   else
+   {
+      G_DPM_CLOSE_EVT_COUNT[lvl]++;
+      G_DPM_CLOSE_EVT_LAST_MS[lvl] = durMs;
+      if(G_DPM_CLOSE_EVT_COUNT[lvl] == 1 || durMs < G_DPM_CLOSE_EVT_MIN_MS[lvl])
+         G_DPM_CLOSE_EVT_MIN_MS[lvl] = durMs;
+      if(durMs > G_DPM_CLOSE_EVT_MAX_MS[lvl])
+         G_DPM_CLOSE_EVT_MAX_MS[lvl] = durMs;
+      G_DPM_CLOSE_EVT_SUM_MS[lvl] += (double)durMs;
+   }
+
+   if(I_DPM_CSV_ENABLED)
+   {
+      const string ts = StringFormat("%s.%03u",
+                                     TimeToString(ev.eventTime, TIME_DATE | TIME_MINUTES | TIME_SECONDS),
+                                     (uint)(durMs % 1000));
+      const string row = StringFormat("%s,%s,%s,%s,%d,%d,%.4f,%.4f,%u,%d,%d,%d,%d,%.4f\n",
+                                      ts, G_SYMBOL,
+                                      isOpen ? "OPEN_ABOVE" : "CLOSE_ABOVE",
+                                      side,
+                                      ev.level, thPts,
+                                      snap, peak,
+                                      (uint)durMs,
+                                      fired,
+                                      ev.signalMode,
+                                      ev.masterSpread, ev.slaveSpread,
+                                      ev.avgSnap);
+      G_DPM_CSV_BUFFER += row;
+      G_DPM_CSV_PENDING = true;
+   }
+}
+
+void DpmObserveLevel(const double diff, const int thPts, const int lvl,
+                     const bool isOpen, const ulong nw, const string side)
+{
+   bool   above   = isOpen ? G_DPM_OPEN_ABOVE[lvl]    : G_DPM_CLOSE_ABOVE[lvl];
+   ulong  startMs = isOpen ? G_DPM_OPEN_START_MS[lvl] : G_DPM_CLOSE_START_MS[lvl];
+   double peak    = isOpen ? G_DPM_OPEN_PEAK[lvl]     : G_DPM_CLOSE_PEAK[lvl];
+   double snap    = isOpen ? G_DPM_OPEN_SNAP[lvl]     : G_DPM_CLOSE_SNAP[lvl];
+   bool   fired   = isOpen ? G_DPM_OPEN_FIRED[lvl]    : G_DPM_CLOSE_FIRED[lvl];
+
+   if(diff >= (double)thPts)
+   {
+      if(!above)
+      {
+         above   = true;
+         startMs = nw;
+         snap    = diff;
+         peak    = diff;
+         fired   = false;
+      }
+      else if(diff > peak)
+         peak = diff;
+   }
+   else
+   {
+      if(above)
+      {
+         if(StringLen(side) > 0)
+         {
+            const ulong dur = (nw > startMs) ? (nw - startMs) : 0;
+            DpmRecordEvent(isOpen, lvl, thPts, snap, peak, dur, fired ? 1 : 0, side);
+         }
+         above = false;
+         fired = false;
+      }
+   }
+
+   if(isOpen)
+   {
+      G_DPM_OPEN_ABOVE[lvl]    = above;
+      G_DPM_OPEN_START_MS[lvl] = startMs;
+      G_DPM_OPEN_PEAK[lvl]     = peak;
+      G_DPM_OPEN_SNAP[lvl]     = snap;
+      G_DPM_OPEN_FIRED[lvl]    = fired;
+   }
+   else
+   {
+      G_DPM_CLOSE_ABOVE[lvl]    = above;
+      G_DPM_CLOSE_START_MS[lvl] = startMs;
+      G_DPM_CLOSE_PEAK[lvl]     = peak;
+      G_DPM_CLOSE_SNAP[lvl]     = snap;
+      G_DPM_CLOSE_FIRED[lvl]    = fired;
+   }
+}
+
+void DpmMasterTick(const ulong nw)
+{
+   const string side = DpmResolveMasterSide();
+
+   const double diffO = DiffOpenPtsFor(DiffMasterBuyEffective());
+   const double diffC = DiffClosePtsFor(DiffMasterBuyEffective());
+
+   int openTh[3];
+   openTh[0] = I_DPM_OPEN_TH1;
+   openTh[1] = I_DPM_OPEN_TH2;
+   openTh[2] = I_DPM_OPEN_TH3;
+
+   int closeTh[3];
+   closeTh[0] = I_DPM_CLOSE_TH1;
+   closeTh[1] = I_DPM_CLOSE_TH2;
+   closeTh[2] = I_DPM_CLOSE_TH3;
+
+   for(int i = 0; i < 3; i++)
+   {
+      if(I_DPM_TRACK_OPEN)
+         DpmObserveLevel(diffO, openTh[i], i, true, nw, side);
+      if(I_DPM_TRACK_CLOSE)
+         DpmObserveLevel(diffC, closeTh[i], i, false, nw, side);
+   }
+}
+
+void DpmNotifyFired(const bool isOpen)
+{
+   if(!I_DPM_ENABLED)
+      return;
+   for(int i = 0; i < 3; i++)
+   {
+      if(isOpen && G_DPM_OPEN_ABOVE[i])
+         G_DPM_OPEN_FIRED[i] = true;
+      if(!isOpen && G_DPM_CLOSE_ABOVE[i])
+         G_DPM_CLOSE_FIRED[i] = true;
+   }
+}
+
+void DpmEnsureCsvHeader()
+{
+   if(G_DPM_CSV_HEADER_WRITTEN)
+      return;
+   const string fname = DpmCsvFileName();
+   int hCheck = FileOpen(fname, FILE_READ | FILE_SHARE_READ | FILE_ANSI);
+   const bool isEmpty = (hCheck == INVALID_HANDLE || FileSize(hCheck) == 0);
+   if(hCheck != INVALID_HANDLE)
+      FileClose(hCheck);
+   if(isEmpty)
+   {
+      int hw = FileOpen(fname, FILE_WRITE | FILE_SHARE_READ | FILE_ANSI);
+      if(hw != INVALID_HANDLE)
+      {
+         FileWriteString(hw,
+            "event_timestamp,symbol,action,master_side,threshold_level,threshold_pts,"
+            "actual_diff_start_pts,peak_diff_pts,drift_duration_ms,fired_trade,"
+            "signal_mode_active,master_spread_pts,slave_spread_pts,avg_diff_snap\n");
+         FileClose(hw);
+      }
+   }
+   G_DPM_CSV_HEADER_WRITTEN = true;
+}
+
+void DpmFlushCsv()
+{
+   if(!G_DPM_CSV_PENDING || StringLen(G_DPM_CSV_BUFFER) == 0)
+   {
+      G_DPM_CSV_PENDING = false;
+      return;
+   }
+   DpmEnsureCsvHeader();
+   const string fname = DpmCsvFileName();
+   int h = FileOpen(fname, FILE_WRITE | FILE_READ | FILE_SHARE_READ | FILE_ANSI);
+   if(h == INVALID_HANDLE)
+   {
+      G_DPM_CSV_PENDING = false;
+      G_DPM_CSV_BUFFER  = "";
+      return;
+   }
+   FileSeek(h, 0, SEEK_END);
+   FileWriteString(h, G_DPM_CSV_BUFFER);
+   FileClose(h);
+   G_DPM_CSV_BUFFER  = "";
+   G_DPM_CSV_PENDING = false;
+}
+
+string DpmHudStatsLine(const bool isOpen, const int lvl)
+{
+   const int   cnt   = isOpen ? G_DPM_OPEN_EVT_COUNT[lvl]   : G_DPM_CLOSE_EVT_COUNT[lvl];
+   const ulong last  = isOpen ? G_DPM_OPEN_EVT_LAST_MS[lvl] : G_DPM_CLOSE_EVT_LAST_MS[lvl];
+   const ulong mn    = isOpen ? G_DPM_OPEN_EVT_MIN_MS[lvl]  : G_DPM_CLOSE_EVT_MIN_MS[lvl];
+   const ulong mx    = isOpen ? G_DPM_OPEN_EVT_MAX_MS[lvl]  : G_DPM_CLOSE_EVT_MAX_MS[lvl];
+   const double sum  = isOpen ? G_DPM_OPEN_EVT_SUM_MS[lvl]  : G_DPM_CLOSE_EVT_SUM_MS[lvl];
+   const int    th   = isOpen ? (lvl == 0 ? I_DPM_OPEN_TH1 : (lvl == 1 ? I_DPM_OPEN_TH2 : I_DPM_OPEN_TH3))
+                               : (lvl == 0 ? I_DPM_CLOSE_TH1 : (lvl == 1 ? I_DPM_CLOSE_TH2 : I_DPM_CLOSE_TH3));
+   const ulong avg   = (cnt > 0) ? (ulong)(sum / (double)cnt) : 0;
+   return StringFormat(" lv%d(%dpt): last=%ums avg=%ums min=%ums max=%ums n=%d\n",
+                       lvl + 1, th, (uint)last, (uint)avg, (uint)mn, (uint)mx, cnt);
+}
+
+string DpmHudBlock()
+{
+   if(!I_DPM_ENABLED || I_ROLE != ROLE_SOURCE_MASTER)
+      return "";
+   string out = "\n[ DPM ]\n";
+   if(I_DPM_TRACK_OPEN)
+   {
+      out += " Open:\n";
+      for(int i = 0; i < 3; i++)
+         out += DpmHudStatsLine(true, i);
+   }
+   if(I_DPM_TRACK_CLOSE)
+   {
+      out += " Close:\n";
+      for(int i = 0; i < 3; i++)
+         out += DpmHudStatsLine(false, i);
+   }
+   if(I_DPM_HUD_ROWS > 0 && G_DPM_RING_COUNT > 0)
+   {
+      out += "\n Recent events:\n";
+      const int show = MathMin(I_DPM_HUD_ROWS, G_DPM_RING_COUNT);
+      for(int r = 0; r < show; r++)
+      {
+         int idx = G_DPM_RING_HEAD - 1 - r;
+         if(idx < 0) idx += 50;
+         DpmEvent ev = G_DPM_RING[idx];
+         out += StringFormat("  %s | %s lv%d | %s | start=%.1fpt peak=%.1fpt | %ums | fired=%d\n",
+                             TimeToString(ev.eventTime, TIME_MINUTES | TIME_SECONDS),
+                             ev.isOpen ? "OPEN " : "CLOSE",
+                             ev.level,
+                             ev.masterSide,
+                             ev.snapPts, ev.peakPts,
+                             (uint)ev.durationMs,
+                             ev.fired);
+      }
+   }
+   return out;
+}
+
 void DiffQueueOpen()
 {
+   DpmNotifyFired(true);
    G_OPEN_SIGNAL_REASON = "DIFF_OPEN";
    G_OPEN_SIGNAL_REQUESTED = true;
 }
 
 void DiffQueueClose()
 {
+   DpmNotifyFired(false);
    G_CLOSE_SIGNAL_REASON = "DIFF_CLOSE";
    G_CLOSE_SIGNAL_REQUESTED = true;
 }
@@ -1304,6 +1636,36 @@ void DiffMasterTick()
             G_DIFF_RAW_OPEN_CNT = 0;
          }
       }
+      else if(I_DIFF_SIGNAL_MODE_VAL == DIFF_SIGNAL_TIME_GATE)
+      {
+         const double reset = (double)th - (double)I_DIFF_TIME_GATE_HYSTERESIS_OFFSET;
+         if(!G_DIFF_TG_OPEN_PEND)
+         {
+            if(diffOpen >= (double)th && (!I_DIFF_ZONE_STABILITY_ENABLED || G_DIFF_OPEN_ZONE_OK))
+            {
+               G_DIFF_TG_OPEN_PEND    = true;
+               G_DIFF_TG_OPEN_START_MS = nw;
+            }
+            return;
+         }
+         if(diffOpen < reset || (I_DIFF_ZONE_STABILITY_ENABLED && !G_DIFF_OPEN_ZONE_OK))
+         {
+            G_DIFF_TG_OPEN_PEND = false;
+            return;
+         }
+         if(I_DIFF_TIME_GATE_TIMEOUT_MS > 0 && (nw - G_DIFF_TG_OPEN_START_MS) > (ulong)I_DIFF_TIME_GATE_TIMEOUT_MS)
+         {
+            G_DIFF_TG_OPEN_PEND = false;
+            return;
+         }
+         if((nw - G_DIFF_TG_OPEN_START_MS) >= (ulong)I_DIFF_TIME_GATE_OPEN_MS)
+         {
+            fire = true;
+            G_DIFF_TG_OPEN_PEND = false;
+            if(I_DIFF_ZONE_STABILITY_ENABLED)
+               DiffResetOpenZoneCounters();
+         }
+      }
       else
       {
          if(diffOpen < (double)th)
@@ -1430,6 +1792,36 @@ void DiffMasterTick()
       {
          G_DIFF_RAW_CLOSE_PEND = false;
          G_DIFF_RAW_CLOSE_CNT = 0;
+      }
+   }
+   else if(I_DIFF_SIGNAL_MODE_VAL == DIFF_SIGNAL_TIME_GATE)
+   {
+      const double resetC = (double)I_DIFF_CLOSE_THRESHOLD_PTS - (double)I_DIFF_TIME_GATE_HYSTERESIS_OFFSET;
+      if(!G_DIFF_TG_CLOSE_PEND)
+      {
+         if(diffClose >= (double)I_DIFF_CLOSE_THRESHOLD_PTS && (!I_DIFF_ZONE_STABILITY_ENABLED || G_DIFF_CLOSE_ZONE_OK))
+         {
+            G_DIFF_TG_CLOSE_PEND     = true;
+            G_DIFF_TG_CLOSE_START_MS = nw2;
+         }
+         return;
+      }
+      if(diffClose < resetC || (I_DIFF_ZONE_STABILITY_ENABLED && !G_DIFF_CLOSE_ZONE_OK))
+      {
+         G_DIFF_TG_CLOSE_PEND = false;
+         return;
+      }
+      if(I_DIFF_TIME_GATE_TIMEOUT_MS > 0 && (nw2 - G_DIFF_TG_CLOSE_START_MS) > (ulong)I_DIFF_TIME_GATE_TIMEOUT_MS)
+      {
+         G_DIFF_TG_CLOSE_PEND = false;
+         return;
+      }
+      if((nw2 - G_DIFF_TG_CLOSE_START_MS) >= (ulong)I_DIFF_TIME_GATE_CLOSE_MS)
+      {
+         fireC = true;
+         G_DIFF_TG_CLOSE_PEND = false;
+         if(I_DIFF_ZONE_STABILITY_ENABLED)
+            DiffResetCloseZoneCounters();
       }
    }
    else

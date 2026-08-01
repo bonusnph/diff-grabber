@@ -3,7 +3,7 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.13"
+#define SFX_SYNC_EA_VERSION "1.15"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -29,9 +29,10 @@ enum ENUM_SIDE
 
 enum ENUM_DIFF_SIGNAL_MODE
 {
-   DIFF_SIGNAL_SIMPLE = 0,
+   DIFF_SIGNAL_SIMPLE       = 0,
    DIFF_SIGNAL_RAW_STABILITY = 1,
-   DIFF_SIGNAL_AVG = 2
+   DIFF_SIGNAL_AVG          = 2,
+   DIFF_SIGNAL_TIME_GATE    = 3
 };
 
 enum ENUM_OPEN_MODE
@@ -52,6 +53,23 @@ enum ENUM_LOCK_SCOPE
    LOCK_SCOPE_PAIR_ACTION = 0,
    LOCK_SCOPE_PAIR_ANY_ACTION = 1,
    LOCK_SCOPE_GROUP_GLOBAL = 2
+};
+
+struct DpmEvent
+{
+   bool     isOpen;
+   int      level;
+   int      thresholdPts;
+   double   snapPts;
+   double   peakPts;
+   ulong    durationMs;
+   int      fired;
+   int      signalMode;
+   int      masterSpread;
+   int      slaveSpread;
+   double   avgSnap;
+   string   masterSide;
+   datetime eventTime;
 };
 
 input ENUM_ROLE I_ROLE = ROLE_SOURCE_MASTER; // Master streams orders; slave copies
@@ -118,8 +136,8 @@ int               I_DIFF_QF_AUTO_MAX_MS = 7200;        // AUTO: ceiling for comp
 int               I_DIFF_QF_AUTO_WARMUP_N = 22;        // AUTO: need at least this many gap samples on master and on slave before AUTO replaces manual fresh ms
 input int               I_DIFF_MAX_SPREAD_SELF = 30;              // Block if this chart spread exceeds (pts)
 input int               I_DIFF_MAX_SPREAD_PEER = 30;             // Block if slave spread exceeds (pts)
-input int               I_DIFF_OPEN_COOLDOWN_SEC = 660;            // Wait after an auto-open before next auto-open
-input int               I_DIFF_CLOSE_COOLDOWN_SEC = 600;            // Base delay before diff auto-close; also post-open guard
+input int               I_DIFF_OPEN_COOLDOWN_SEC = 60;            // Wait after an auto-open before next auto-open
+input int               I_DIFF_CLOSE_COOLDOWN_SEC = 300;            // Base delay before diff auto-close; also post-open guard
 
 int               I_DIFF_AVG_PERIOD = 9;                  // EMA period for AVG mode
 bool              I_DIFF_USE_PREFILTER_MEDIAN = true;     // Median filter before EMA (AVG mode)
@@ -134,6 +152,23 @@ int               I_DIFF_AVG_SIGNAL_COOLDOWN_MS = 400;      // Min gap between A
 int               I_DIFF_RAW_STABILITY_TICKS = 3;          // Consecutive above-threshold ticks (RAW mode)
 int               I_DIFF_RAW_HYSTERESIS_OFFSET = 10;     // Points below threshold to reset streak (RAW)
 int               I_DIFF_RAW_STABILITY_TIMEOUT_MS = 500; // Abandon RAW wait after (ms)
+
+input int               I_DIFF_TIME_GATE_OPEN_MS           = 200;  // TIME_GATE: ms raw diff must stay >= open threshold
+input int               I_DIFF_TIME_GATE_CLOSE_MS          = 200;  // TIME_GATE: ms raw diff must stay >= close threshold
+input int               I_DIFF_TIME_GATE_HYSTERESIS_OFFSET = 5;    // TIME_GATE: pts below threshold to reset timer
+input int               I_DIFF_TIME_GATE_TIMEOUT_MS        = 2000; // TIME_GATE: abandon pending gate after (ms)
+
+input bool              I_DPM_ENABLED     = false; // Drift Persistence Monitor: enable background observer
+input bool              I_DPM_CSV_ENABLED = false; // DPM: write events to CSV file
+input int               I_DPM_HUD_ROWS   = 5;     // DPM: recent event rows on HUD (0 = stats only)
+input bool              I_DPM_TRACK_OPEN  = true;  // DPM: observe open-side persistence
+input bool              I_DPM_TRACK_CLOSE = true;  // DPM: observe close-side persistence
+input int               I_DPM_OPEN_TH1   = 15;    // DPM open threshold level 1 (pts)
+input int               I_DPM_OPEN_TH2   = 25;    // DPM open threshold level 2 (pts)
+input int               I_DPM_OPEN_TH3   = 40;    // DPM open threshold level 3 (pts)
+input int               I_DPM_CLOSE_TH1  = 15;    // DPM close threshold level 1 (pts)
+input int               I_DPM_CLOSE_TH2  = 25;    // DPM close threshold level 2 (pts)
+input int               I_DPM_CLOSE_TH3  = 40;    // DPM close threshold level 3 (pts)
 
 input bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
 input int               I_DIFF_ZONE_STABILITY_TICKS = 7;         // Ticks in positive zone required
@@ -318,6 +353,43 @@ ulong     G_DIFF_RAW_OPEN_START = 0;
 bool      G_DIFF_RAW_CLOSE_PEND = false;
 int       G_DIFF_RAW_CLOSE_CNT = 0;
 ulong     G_DIFF_RAW_CLOSE_START = 0;
+
+bool      G_DIFF_TG_OPEN_PEND      = false;
+ulong     G_DIFF_TG_OPEN_START_MS  = 0;
+bool      G_DIFF_TG_CLOSE_PEND     = false;
+ulong     G_DIFF_TG_CLOSE_START_MS = 0;
+
+bool      G_DPM_OPEN_ABOVE[3];
+ulong     G_DPM_OPEN_START_MS[3];
+double    G_DPM_OPEN_PEAK[3];
+double    G_DPM_OPEN_SNAP[3];
+bool      G_DPM_OPEN_FIRED[3];
+
+bool      G_DPM_CLOSE_ABOVE[3];
+ulong     G_DPM_CLOSE_START_MS[3];
+double    G_DPM_CLOSE_PEAK[3];
+double    G_DPM_CLOSE_SNAP[3];
+bool      G_DPM_CLOSE_FIRED[3];
+
+DpmEvent  G_DPM_RING[50];
+int       G_DPM_RING_HEAD  = 0;
+int       G_DPM_RING_COUNT = 0;
+
+int       G_DPM_OPEN_EVT_COUNT[3];
+ulong     G_DPM_OPEN_EVT_LAST_MS[3];
+ulong     G_DPM_OPEN_EVT_MIN_MS[3];
+ulong     G_DPM_OPEN_EVT_MAX_MS[3];
+double    G_DPM_OPEN_EVT_SUM_MS[3];
+
+int       G_DPM_CLOSE_EVT_COUNT[3];
+ulong     G_DPM_CLOSE_EVT_LAST_MS[3];
+ulong     G_DPM_CLOSE_EVT_MIN_MS[3];
+ulong     G_DPM_CLOSE_EVT_MAX_MS[3];
+double    G_DPM_CLOSE_EVT_SUM_MS[3];
+
+bool      G_DPM_CSV_PENDING        = false;
+string    G_DPM_CSV_BUFFER         = "";
+bool      G_DPM_CSV_HEADER_WRITTEN = false;
 
 bool      G_DIFF_OPEN_ZONE_OK = false;
 int       G_DIFF_OPEN_ZP = 0, G_DIFF_OPEN_ZN = 0;
@@ -3039,7 +3111,11 @@ void MasterLoop()
       }
       while(StringLen(msg) > 0);
 
+      if(I_DPM_ENABLED && G_HANDSHAKE_OK && G_DIFF_SLAVE_QUOTE_OK && DiffQuotesFresh())
+         DpmMasterTick(NowMs());
       DiffMasterTick();
+      if(I_DPM_ENABLED && I_DPM_CSV_ENABLED && G_DPM_CSV_PENDING)
+         DpmFlushCsv();
       MasterRecoverOrphanLegsIfNeeded();
       MonitorForceFlatState();
 
