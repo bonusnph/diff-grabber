@@ -3,7 +3,7 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.15"
+#define SFX_SYNC_EA_VERSION "1.16"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -1783,6 +1783,19 @@ bool MasterOpenGuardReason(string &code, string &detail)
    {
       code = "DEGRADED_LOCK";
       detail = "new opens are blocked while degraded";
+      return true;
+   }
+   if(!TerminalInfoInteger(TERMINAL_CONNECTED))
+   {
+      code = "TRADE_SERVER_DISCONNECTED";
+      detail = "no connection with trade server";
+      return true;
+   }
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED)
+      || !AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) || !AccountInfoInteger(ACCOUNT_TRADE_EXPERT))
+   {
+      code = "TRADE_NOT_ALLOWED";
+      detail = "AutoTrading or account trade permission is off";
       return true;
    }
    if(I_REOPEN_GUARD_AFTER_CLOSE_MS > 0 && G_LAST_PAIR_CLOSE_MS > 0)

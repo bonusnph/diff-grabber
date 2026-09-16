@@ -3,7 +3,7 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.15"
+#define SFX_SYNC_EA_VERSION "1.16"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -1220,7 +1220,16 @@ int OpenOrder(const int type, const double lots, int &err_out)
    const ulong opened_after_ms = NowMs();
    string sym = G_SYMBOL;
    RefreshRates();
+   ResetLastError();
+   const int digits = (int)MarketInfo(sym, MODE_DIGITS);
    double price = (type == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
+   if(digits > 0)
+      price = NormalizeDouble(price, digits);
+   if(price <= 0.0)
+   {
+      err_out = 129; // ERR_INVALID_PRICE
+      return -1;
+   }
    int ticket = OrderSend(sym, type, lots, price, I_SLIPPAGE, 0, 0, "", OrderMagic(), 0, clrNONE);
    if(ticket < 0)
    {
@@ -1253,12 +1262,16 @@ bool IsMt4CloseTransientError(const int err)
 {
    switch(err)
    {
+      case 4:   // ERR_SERVER_BUSY
+      case 6:   // ERR_NO_CONNECTION
+      case 8:   // ERR_TOO_FREQUENT_REQUESTS
       case 128: // ERR_TRADE_TIMEOUT
       case 129: // ERR_INVALID_PRICE
       case 135: // ERR_PRICE_CHANGED
       case 136: // ERR_OFF_QUOTES
       case 137: // ERR_BROKER_BUSY
       case 138: // ERR_REQUOTE
+      case 141: // ERR_TOO_MANY_REQUESTS
       case 146: // ERR_TRADE_CONTEXT_BUSY
          return true;
       default:
@@ -1270,12 +1283,16 @@ bool IsMt4OpenTransientError(const int err)
 {
    switch(err)
    {
+      case 4:   // ERR_SERVER_BUSY
+      case 6:   // ERR_NO_CONNECTION
+      case 8:   // ERR_TOO_FREQUENT_REQUESTS
       case 128: // ERR_TRADE_TIMEOUT
       case 129: // ERR_INVALID_PRICE
       case 135: // ERR_PRICE_CHANGED
       case 136: // ERR_OFF_QUOTES
       case 137: // ERR_BROKER_BUSY
       case 138: // ERR_REQUOTE
+      case 141: // ERR_TOO_MANY_REQUESTS
       case 146: // ERR_TRADE_CONTEXT_BUSY
          return true;
       default:
@@ -1750,6 +1767,18 @@ bool MasterOpenGuardReason(string &code, string &detail)
    {
       code = "DEGRADED_LOCK";
       detail = "new opens are blocked while degraded";
+      return true;
+   }
+   if(!IsConnected())
+   {
+      code = "TRADE_SERVER_DISCONNECTED";
+      detail = "no connection with trade server";
+      return true;
+   }
+   if(!IsExpertEnabled() || !IsTradeAllowed())
+   {
+      code = "TRADE_NOT_ALLOWED";
+      detail = "AutoTrading or symbol trade permission is off";
       return true;
    }
    if(I_REOPEN_GUARD_AFTER_CLOSE_MS > 0 && G_LAST_PAIR_CLOSE_MS > 0)
@@ -2558,9 +2587,9 @@ void StartOpenTransaction()
          }
          G_OPEN_LAST_ERROR_MASTER = err;
          const string attempt_ln = StringFormat(
-            "[SFX-SYNC] OPEN_BALANCED master result tx_id=%s attempt=%d/%d ok=%s ticket=%d err=%d%s",
+            "[SFX-SYNC] OPEN_BALANCED master result tx_id=%s attempt=%d/%d ok=%s ticket=%d err=%d connected=%d trade_allowed=%d%s",
             G_OPEN_TX_ID, attempt, max_attempts, G_OPEN_MASTER_OK ? "true" : "false",
-            G_OPEN_MASTER_TICKET, err, master_open_diff_snap
+            G_OPEN_MASTER_TICKET, err, (int)IsConnected(), (int)IsTradeAllowed(), master_open_diff_snap
          );
          SyncLog(attempt_ln);
          ExpertPrintLn(attempt_ln);
@@ -2582,7 +2611,7 @@ void StartOpenTransaction()
       G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), DynActiveLot(), err);
       G_OPEN_MASTER_OK = (G_OPEN_MASTER_TICKET > 0);
       G_OPEN_LAST_ERROR_MASTER = err;
-      SyncLog(StringFormat("[SFX-SYNC] OPEN_MASTER_FIRST master result tx_id=%s ok=%s ticket=%d err=%d%s", G_OPEN_TX_ID, G_OPEN_MASTER_OK ? "true" : "false", G_OPEN_MASTER_TICKET, err, master_open_diff_snap));
+      SyncLog(StringFormat("[SFX-SYNC] OPEN_MASTER_FIRST master result tx_id=%s ok=%s ticket=%d err=%d connected=%d trade_allowed=%d%s", G_OPEN_TX_ID, G_OPEN_MASTER_OK ? "true" : "false", G_OPEN_MASTER_TICKET, err, (int)IsConnected(), (int)IsTradeAllowed(), master_open_diff_snap));
       if(!G_OPEN_MASTER_OK) { RollbackOpenNow("MASTER_OPEN_FAIL"); return; }
       PrintLogMasterOpenIntent(open_tag);
       G_PAIR_OPEN_INTENT_MS = NowMs();
