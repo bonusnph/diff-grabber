@@ -3,7 +3,7 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.16"
+#define SFX_SYNC_EA_VERSION "1.17"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -86,6 +86,8 @@ input int       I_DYN_LOT_PROFIT_STREAK_N = 3;     // Dynamic lot: consecutive p
 input int       I_DYN_LOT_LOSS_STREAK_M = 3;       // Dynamic lot: consecutive loss rounds to decrease
 input int       I_DYN_LOT_STABLE_LOOP_Y = 3;       // Dynamic lot: inc->dec oscillations before Stable-Lock
 input bool      I_DYN_LOT_COUNT_SCHEDULED = false; // Dynamic lot: count weekend/schedule closes in streak
+input double    I_MIN_BALANCE_MASTER = 0.00;       // Min master balance to allow new open (0 = off)
+input double    I_MIN_BALANCE_SLAVE  = 0.00;       // Min slave balance to allow new open (0 = off)
 int             I_SLIPPAGE = 30;              // Max slippage (points) for sync orders
 input ENUM_OPEN_MODE I_OPEN_MODE = OPEN_BALANCED;   // How to sequence master/slave opens
 input ENUM_CLOSE_MODE I_CLOSE_MODE = CLOSE_BALANCED; // How to sequence closes (and rescue)
@@ -586,6 +588,7 @@ void RefreshChartComment()
             lines += StringFormat("Open-guard: %s (%s)\n", open_guard_code, open_guard_detail);
          else
             lines += "Open-guard: READY\n";
+         lines += MinBalanceHudLines();
 
          lines += "\n";
          lines += LockHudMasterCommentLine();
@@ -922,6 +925,37 @@ bool DynCloseReasonIsScheduled(const string reason)
    if(reason == "CLOSE_PATH_RECONCILE") return true;
    if(reason == "SLAVE_ORPHAN_RECONCILE") return true;
    return false;
+}
+
+bool SlaveBalanceReportFresh()
+{
+   if(!G_SLAVE_BALANCE_VALID || G_DIFF_SLAVE_MS == 0)
+      return false;
+   const ulong now_ms = NowMs();
+   if(now_ms < G_DIFF_SLAVE_MS)
+      return false;
+   const ulong fresh_lim = (ulong)MathMax(I_PAIR_STATUS_STALE_MS, I_DIFF_QUOTES_FRESH_MS * 2);
+   return ((now_ms - G_DIFF_SLAVE_MS) <= fresh_lim);
+}
+
+string MinBalanceHudLines()
+{
+   string out = "";
+   if(I_MIN_BALANCE_MASTER > 0.0)
+   {
+      const double master_bal = AccountInfoDouble(ACCOUNT_BALANCE);
+      out += StringFormat("MinBal master: cur=%.2f min=%.2f\n", master_bal, I_MIN_BALANCE_MASTER);
+   }
+   if(I_MIN_BALANCE_SLAVE > 0.0)
+   {
+      if(!G_SLAVE_BALANCE_VALID)
+         out += StringFormat("MinBal slave: cur=n/a min=%.2f (stale)\n", I_MIN_BALANCE_SLAVE);
+      else if(SlaveBalanceReportFresh())
+         out += StringFormat("MinBal slave: cur=%.2f min=%.2f\n", G_SLAVE_BALANCE_REPORT, I_MIN_BALANCE_SLAVE);
+      else
+         out += StringFormat("MinBal slave: cur=%.2f min=%.2f (stale)\n", G_SLAVE_BALANCE_REPORT, I_MIN_BALANCE_SLAVE);
+   }
+   return out;
 }
 
 string DynHudLine()
@@ -1806,6 +1840,31 @@ bool MasterOpenGuardReason(string &code, string &detail)
       {
          code = "POST_CLOSE_GUARD";
          detail = StringFormat("wait %I64ums before reopening", hold_ms - elapsed_ms);
+         return true;
+      }
+   }
+   if(I_MIN_BALANCE_MASTER > 0.0)
+   {
+      const double master_bal = AccountInfoDouble(ACCOUNT_BALANCE);
+      if(master_bal < I_MIN_BALANCE_MASTER)
+      {
+         code = "MIN_BALANCE_MASTER";
+         detail = StringFormat("master balance %.2f < min %.2f", master_bal, I_MIN_BALANCE_MASTER);
+         return true;
+      }
+   }
+   if(I_MIN_BALANCE_SLAVE > 0.0)
+   {
+      if(!SlaveBalanceReportFresh())
+      {
+         code = "MIN_BALANCE_SLAVE_STALE";
+         detail = "slave balance not fresh";
+         return true;
+      }
+      if(G_SLAVE_BALANCE_REPORT < I_MIN_BALANCE_SLAVE)
+      {
+         code = "MIN_BALANCE_SLAVE";
+         detail = StringFormat("slave balance %.2f < min %.2f", G_SLAVE_BALANCE_REPORT, I_MIN_BALANCE_SLAVE);
          return true;
       }
    }
