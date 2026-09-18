@@ -1311,6 +1311,11 @@
 		return result === '-0.00' ? '0.00' : result;
 	}
 
+	function usdParen(amount: number, prefix = ''): string {
+		if (displayCurrency === 'USD') return '';
+		return `(${bookValue(prefix + formatNumber(amount, false), revealBookValues)} USD)`;
+	}
+
 	function formatPercent(num: number): string {
 		const result = new Intl.NumberFormat('th-TH', {
 			minimumFractionDigits: 2,
@@ -1507,27 +1512,26 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					<CurrencyFlag currency={displayCurrency} />
 					<div class="text-xs sm:text-sm tracking-wide">PROFIT MONITOR</div>
 				</div>
-				<div class="flex items-center gap-2 text-xs mt-1 min-w-0">
+				<div class="flex flex-col gap-0.5 text-xs mt-1 min-w-0 sm:flex-row sm:items-center sm:gap-2">
 					{#if resumeLoading}
 						<span title="Returned to app — fetching latest data">RESUMED · LOADING LATEST</span>
 					{:else}
-						{#if latestUpdate}
-							<span class="tabular-nums">{formatDateTime(new Date(latestUpdate).toISOString())}</span>
-						{/if}
-						<span class="tabular-nums shrink-0" title="Next refresh">{String(countdownSeconds).padStart(2, '0')}s</span>
-						<span
-							class="shrink-0"
-							title={fxQuote.displayMode === 'live+buffer'
-								? `USD → ${displayCurrency} @ ${fxQuote.rawRate} − ${fxQuote.buffer} = ${fxQuote.rate} (${fxQuote.source})`
-								: fxQuote.source === 'identity'
-									? `${displayCurrency} · ${fxQuote.displayMode}`
-									: `USD → ${displayCurrency} @ ${fxQuote.rate} (${fxQuote.source})`}
-						>
-							{displayCurrency}{#if displayCurrency !== 'USD'}
-								· {formatNumber(fxQuote.rate, false)}
+						<div class="flex items-center gap-2 min-w-0">
+							{#if latestUpdate}
+								<span class="tabular-nums whitespace-nowrap">{formatDateTime(new Date(latestUpdate).toISOString())}</span>
 							{/if}
-							· {fxQuote.displayMode}
-						</span>
+							<span class="tabular-nums shrink-0" title="Next refresh">{String(countdownSeconds).padStart(2, '0')}s</span>
+						</div>
+						{#if displayCurrency !== 'USD'}
+							<span
+								class="whitespace-nowrap"
+								title={fxQuote.displayMode === 'live+buffer'
+									? `USD → ${displayCurrency} @ ${fxQuote.rawRate} − ${fxQuote.buffer} = ${fxQuote.rate} (${fxQuote.source})`
+									: `USD → ${displayCurrency} @ ${fxQuote.rate} (${fxQuote.source})`}
+							>
+								{displayCurrency} · {formatNumber(fxQuote.rate, false)} · {fxQuote.displayMode}
+							</span>
+						{/if}
 					{/if}
 				</div>
 			</div>
@@ -1578,6 +1582,28 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				</button>
 			</div>
 		</div>
+		{#if (plAlertSettings.profitEnabled && plAlertState.profitPaused) || (plAlertSettings.lossEnabled && plAlertState.lossPaused)}
+			<div class="max-w-7xl mx-auto px-3 sm:px-4 pb-3 flex flex-col sm:flex-row gap-2">
+				{#if plAlertSettings.profitEnabled && plAlertState.profitPaused}
+					<button
+						on:click={() => resetPlAlert('profit')}
+						class="w-full min-h-14 px-4 fac-display text-xl sm:text-2xl font-extrabold tracking-tight bg-[#ffcc33] text-[#0a0a0a] border border-[#ffcc33] hover:bg-[#f5f5f5] hover:border-[#f5f5f5] disabled:opacity-45 disabled:cursor-not-allowed"
+						disabled={resettingAlert !== null}
+					>
+						{resettingAlert === 'profit' ? 'RESETTING...' : 'RESET PROFIT ALERT'}
+					</button>
+				{/if}
+				{#if plAlertSettings.lossEnabled && plAlertState.lossPaused}
+					<button
+						on:click={() => resetPlAlert('loss')}
+						class="w-full min-h-14 px-4 fac-display text-xl sm:text-2xl font-extrabold tracking-tight bg-[#ffcc33] text-[#0a0a0a] border border-[#ffcc33] hover:bg-[#f5f5f5] hover:border-[#f5f5f5] disabled:opacity-45 disabled:cursor-not-allowed"
+						disabled={resettingAlert !== null}
+					>
+						{resettingAlert === 'loss' ? 'RESETTING...' : 'RESET LOSS ALERT'}
+					</button>
+				{/if}
+			</div>
+		{/if}
 	</div>
 
 	<div class="max-w-7xl mx-auto px-3 sm:px-4 py-4 space-y-4">
@@ -1638,24 +1664,6 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				{#if snapshot}
 					<button on:click={clearSnapshot} class="fac-ghost text-xs" disabled={snapshotLoading}>
 						CLEAR
-					</button>
-				{/if}
-				{#if plAlertSettings.profitEnabled && plAlertState.profitPaused}
-					<button
-						on:click={() => resetPlAlert('profit')}
-						class="fac-ghost text-xs"
-						disabled={resettingAlert !== null}
-					>
-						{resettingAlert === 'profit' ? 'RESETTING...' : 'RESET PROFIT ALERT'}
-					</button>
-				{/if}
-				{#if plAlertSettings.lossEnabled && plAlertState.lossPaused}
-					<button
-						on:click={() => resetPlAlert('loss')}
-						class="fac-ghost text-xs"
-						disabled={resettingAlert !== null}
-					>
-						{resettingAlert === 'loss' ? 'RESETTING...' : 'RESET LOSS ALERT'}
 					</button>
 				{/if}
 			</div>
@@ -1933,15 +1941,20 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											<span>C: {bookValue(formatNumber(unitInitialCapitals[unit] ?? 0), revealBookValues)}</span>
 											<span>T: {bookValue(formatNumber(unitStat.totalBalance), revealBookValues)}</span>
 											{#if unitWD > 0}
-												<span>WD: {bookValue('+' + formatNumber(unitWD), revealBookValues)}</span>
+												<span>WD: {bookValue('+' + formatNumber(unitWD), revealBookValues)}{#if displayCurrency !== 'USD'} <span class="text-[9px] text-[#ececec]">{usdParen(unitWD, '+')}</span>{/if}</span>
 											{/if}
 											{#if unitDP > 0}
-												<span>DP: {bookValue('-' + formatNumber(unitDP), revealBookValues)}</span>
+												<span>DP: {bookValue('-' + formatNumber(unitDP), revealBookValues)}{#if displayCurrency !== 'USD'} <span class="text-[9px] text-[#ececec]">{usdParen(unitDP, '-')}</span>{/if}</span>
 											{/if}
 										</div>
 										<div class="flex flex-col items-end flex-shrink-0 ml-3 leading-tight">
-											<span class="text-xs font-semibold {Math.abs(unitStat.profitLoss) < 0.005 ? 'text-[#ececec]' : unitStat.profitLoss >= 0 ? 'fac-plus' : 'fac-minus'}">
-												{unitStat.profitLoss >= 0.005 ? '+' : ''}{formatNumber(unitStat.profitLoss)}
+											<span class="text-xs font-semibold inline-flex items-baseline gap-1 {Math.abs(unitStat.profitLoss) < 0.005 ? 'text-[#ececec]' : unitStat.profitLoss >= 0 ? 'fac-plus' : 'fac-minus'}">
+												<span>{unitStat.profitLoss >= 0.005 ? '+' : ''}{formatNumber(unitStat.profitLoss)}</span>
+												{#if displayCurrency !== 'USD'}
+													<span class="text-[9px] font-medium tracking-normal text-[#ececec]">
+														({unitStat.profitLoss >= 0.005 ? '+' : ''}{formatNumber(unitStat.profitLoss, false)} USD)
+													</span>
+												{/if}
 											</span>
 											{#if unitInitialCapitals[unit] && unitInitialCapitals[unit] > 0}
 												{@const pct = (unitStat.profitLoss / unitInitialCapitals[unit]) * 100}
@@ -1974,8 +1987,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											{#each nonZeroEntries as [broker, s]}
 												<div class="flex items-center gap-1 text-[10px]">
 													<span class="text-[#ececec]">{bookBroker(broker, revealBookValues)}</span>
-													{#if s.d > 0}<span class="fac-plus font-medium">D{bookValue(formatNumber(s.d), revealBookValues)}</span>{/if}
-													{#if s.w > 0}<span class="fac-minus font-medium">W{bookValue(formatNumber(s.w), revealBookValues)}</span>{/if}
+													{#if s.d > 0}<span class="fac-plus font-medium">D{bookValue(formatNumber(s.d), revealBookValues)}{#if displayCurrency !== 'USD'} <span class="text-[8px] font-normal text-[#ececec]">{usdParen(s.d)}</span>{/if}</span>{/if}
+													{#if s.w > 0}<span class="fac-minus font-medium">W{bookValue(formatNumber(s.w), revealBookValues)}{#if displayCurrency !== 'USD'} <span class="text-[8px] font-normal text-[#ececec]">{usdParen(s.w)}</span>{/if}</span>{/if}
 												</div>
 											{/each}
 										</div>
