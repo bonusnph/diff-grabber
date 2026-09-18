@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { AccountData, OrderInfo } from '$lib/types.js';
 import { storage } from '$lib/storage-supabase.js';
+import { schedulePlAlertEvaluation } from '$lib/pl-alerts.js';
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
@@ -88,6 +89,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
 		// Store data into Supabase
 		await storage.addAccountData(data);
+		schedulePlAlertEvaluation();
 		
 		console.log(`Received data from ${data.broker_name} - Account: ${data.account_number}, Unit: ${data.unit}, Balance: ${data.balance}`);
 		

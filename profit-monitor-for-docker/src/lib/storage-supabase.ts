@@ -2,7 +2,8 @@ import dotenv from 'dotenv';
 dotenv.config()
 
 import { createClient } from '@supabase/supabase-js';
-import type { AccountData, AccountSummary, DashboardStats } from './types.js';
+import type { AccountData, AccountSummary, DashboardStats, PlAlertSettings, PlAlertState } from './types.js';
+import { defaultPlAlertSettings, defaultPlAlertState, normalizePlAlertSettings, normalizePlAlertState } from './pl-alert-model.js';
 
 // Supabase client
 // Fallback to placeholders so createClient doesn't throw when env vars are absent
@@ -761,6 +762,74 @@ class SupabaseStorage {
 		// This will need to be async in practice, but for compatibility
 		// we'll implement it synchronously with a fallback
 		return `Unit ${unit}`;
+	}
+
+	async setPlAlertSettings(settings: PlAlertSettings): Promise<void> {
+		const { error } = await supabase
+			.from('settings')
+			.upsert({
+				setting_key: 'pl_alert_settings',
+				setting_value: JSON.stringify(normalizePlAlertSettings(settings)),
+				updated_at: new Date().toISOString()
+			});
+		if (error) {
+			console.error('Error setting PL alert settings:', error);
+			throw error;
+		}
+	}
+
+	async getPlAlertSettings(): Promise<PlAlertSettings> {
+		const { data, error } = await supabase
+			.from('settings')
+			.select('setting_value')
+			.eq('setting_key', 'pl_alert_settings')
+			.single();
+		if (error && error.code !== 'PGRST116') {
+			console.error('Error getting PL alert settings:', error);
+			throw error;
+		}
+		if (data) {
+			try {
+				return normalizePlAlertSettings(JSON.parse(data.setting_value));
+			} catch (parseError) {
+				console.error('Error parsing PL alert settings:', parseError);
+			}
+		}
+		return defaultPlAlertSettings();
+	}
+
+	async setPlAlertState(state: PlAlertState): Promise<void> {
+		const { error } = await supabase
+			.from('settings')
+			.upsert({
+				setting_key: 'pl_alert_state',
+				setting_value: JSON.stringify(normalizePlAlertState(state)),
+				updated_at: new Date().toISOString()
+			});
+		if (error) {
+			console.error('Error setting PL alert state:', error);
+			throw error;
+		}
+	}
+
+	async getPlAlertState(): Promise<PlAlertState> {
+		const { data, error } = await supabase
+			.from('settings')
+			.select('setting_value')
+			.eq('setting_key', 'pl_alert_state')
+			.single();
+		if (error && error.code !== 'PGRST116') {
+			console.error('Error getting PL alert state:', error);
+			throw error;
+		}
+		if (data) {
+			try {
+				return normalizePlAlertState(JSON.parse(data.setting_value));
+			} catch (parseError) {
+				console.error('Error parsing PL alert state:', parseError);
+			}
+		}
+		return defaultPlAlertState();
 	}
 
 	async getAccessPin(): Promise<string> {

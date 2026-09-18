@@ -13,13 +13,15 @@ export const GET: RequestHandler = async () => {
 		unit_withdrawals: await storage.getUnitWithdrawals(),
 		account_withdrawals: await storage.getAccountWithdrawals(),
 		account_deposits: await storage.getAccountDeposits(),
-		snapshot: await storage.getSnapshotPL()
+		snapshot: await storage.getSnapshotPL(),
+		pl_alert: await storage.getPlAlertSettings(),
+		pl_alert_state: await storage.getPlAlertState()
 	});
 };
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
-		const { initial_capital, unit_initial_capitals, total_active_accounts, unit_warning_equity_percentages, unit_mappings, unit_broker_min_margins, unit_withdrawals, account_withdrawals, account_deposits, snapshot, clear_snapshot } = await request.json();
+		const { initial_capital, unit_initial_capitals, total_active_accounts, unit_warning_equity_percentages, unit_mappings, unit_broker_min_margins, unit_withdrawals, account_withdrawals, account_deposits, snapshot, clear_snapshot, pl_alert } = await request.json();
 		// Snapshot operations (optional)
 		if (clear_snapshot === true) {
 			console.log('Clearing snapshot from database...');
@@ -129,6 +131,23 @@ export const POST: RequestHandler = async ({ request }) => {
 			await storage.setAccountWithdrawals(normalizedAcc);
 		}
 
+		if (pl_alert !== undefined) {
+			if (typeof pl_alert !== 'object' || pl_alert === null || Array.isArray(pl_alert)) {
+				return json({ error: 'Invalid PL alert settings' }, { status: 400 });
+			}
+			const recipientEmail = typeof pl_alert.recipientEmail === 'string' ? pl_alert.recipientEmail.trim() : '';
+			if (recipientEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)) {
+				return json({ error: 'Invalid alert recipient email' }, { status: 400 });
+			}
+			await storage.setPlAlertSettings({
+				profitEnabled: pl_alert.profitEnabled === true,
+				profitThreshold: typeof pl_alert.profitThreshold === 'number' ? pl_alert.profitThreshold : 0,
+				lossEnabled: pl_alert.lossEnabled === true,
+				lossThreshold: typeof pl_alert.lossThreshold === 'number' ? pl_alert.lossThreshold : 0,
+				recipientEmail
+			});
+		}
+
 		if (account_deposits !== undefined) {
 			if (typeof account_deposits !== 'object' || Array.isArray(account_deposits)) {
 				return json({ error: 'Invalid account deposits' }, { status: 400 });
@@ -153,7 +172,9 @@ export const POST: RequestHandler = async ({ request }) => {
 			unit_withdrawals: await storage.getUnitWithdrawals(),
 			account_withdrawals: await storage.getAccountWithdrawals(),
 			account_deposits: await storage.getAccountDeposits(),
-			snapshot: await storage.getSnapshotPL()
+			snapshot: await storage.getSnapshotPL(),
+			pl_alert: await storage.getPlAlertSettings(),
+			pl_alert_state: await storage.getPlAlertState()
 		});
 		
 	} catch (error) {

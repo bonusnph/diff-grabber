@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import type { AccountSummary, DashboardStats, OrderInfo } from '$lib/types.js';
+	import type { AccountSummary, DashboardStats, OrderInfo, PlAlertSettings, PlAlertState } from '$lib/types.js';
+	import { defaultPlAlertSettings, defaultPlAlertState } from '$lib/pl-alert-model.js';
 
 	interface PairInfo {
 		symbol: string;
@@ -218,6 +219,10 @@
 	const STALE_FORCE_REFRESH_MS = 30 * 1000;
 	let lastForcedRefreshAt = 0;
 	let showSettingsModal = false;
+	let plAlertSettings: PlAlertSettings = defaultPlAlertSettings();
+	let plAlertState: PlAlertState = defaultPlAlertState();
+	let draftPlAlert: PlAlertSettings = defaultPlAlertSettings();
+	let resettingAlert: 'profit' | 'loss' | null = null;
 	const REVEAL_BOOK_KEY = 'pm-reveal-book';
 	function readStoredRevealBook(): boolean {
 		try {
@@ -404,6 +409,7 @@
 		draftBrokerMargins = cloneJson(unitBrokerMinMargins || {});
 		draftWithdrawals = { ...accountWithdrawals };
 		draftDeposits = { ...accountDeposits };
+		draftPlAlert = { ...plAlertSettings };
 		showSettingsModal = true;
 	}
 
@@ -576,6 +582,8 @@
 				}, 0);
 				snapshot = data.snapshot || null;
 				snapshotDelta = data.snapshotDelta ?? null;
+				if (data.plAlert?.settings) plAlertSettings = data.plAlert.settings;
+				if (data.plAlert?.state) plAlertState = data.plAlert.state;
 				loading = false;
 			} catch (error) {
 				console.error('Error fetching data:', error);
@@ -685,6 +693,8 @@
 			unitBrokerMinMargins = data.unit_broker_min_margins || {};
 			unitWithdrawals = data.unit_withdrawals || {};
 			accountDeposits = data.account_deposits || {};
+			plAlertSettings = data.pl_alert || defaultPlAlertSettings();
+			plAlertState = data.pl_alert_state || defaultPlAlertState();
 		} catch (error) {
 			console.error('Error loading settings:', error);
 			// Keep default values if loading fails
@@ -1370,7 +1380,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					unit_mappings: draftMappings,
 					unit_broker_min_margins: draftBrokerMargins,
 					account_withdrawals: draftWithdrawals,
-					account_deposits: draftDeposits
+					account_deposits: draftDeposits,
+					pl_alert: draftPlAlert
 				})
 			});
 			if (response.ok) {
@@ -1382,6 +1393,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				unitBrokerMinMargins = data.unit_broker_min_margins || draftBrokerMargins;
 				accountWithdrawals = data.account_withdrawals || draftWithdrawals;
 				accountDeposits = data.account_deposits || draftDeposits;
+				plAlertSettings = data.pl_alert || draftPlAlert;
+				plAlertState = data.pl_alert_state || plAlertState;
 				showSettingsModal = false;
 				location.reload();
 			}
@@ -1389,6 +1402,26 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			console.error('Error saving settings:', e);
 		} finally {
 			savingSettings = false;
+		}
+	}
+
+	async function resetPlAlert(kind: 'profit' | 'loss') {
+		if (resettingAlert) return;
+		resettingAlert = kind;
+		try {
+			const response = await fetch('/api/alerts/reset', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ kind })
+			});
+			if (response.ok) {
+				const data = await response.json();
+				if (data.state) plAlertState = data.state;
+			}
+		} catch (error) {
+			console.error('Error resetting PL alert:', error);
+		} finally {
+			resettingAlert = null;
 		}
 	}
 
@@ -1551,6 +1584,24 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				{#if snapshot}
 					<button on:click={clearSnapshot} class="fac-ghost text-xs" disabled={snapshotLoading}>
 						CLEAR
+					</button>
+				{/if}
+				{#if plAlertSettings.profitEnabled && plAlertState.profitPaused}
+					<button
+						on:click={() => resetPlAlert('profit')}
+						class="fac-ghost text-xs"
+						disabled={resettingAlert !== null}
+					>
+						{resettingAlert === 'profit' ? 'RESETTING...' : 'RESET PROFIT ALERT'}
+					</button>
+				{/if}
+				{#if plAlertSettings.lossEnabled && plAlertState.lossPaused}
+					<button
+						on:click={() => resetPlAlert('loss')}
+						class="fac-ghost text-xs"
+						disabled={resettingAlert !== null}
+					>
+						{resettingAlert === 'loss' ? 'RESETTING...' : 'RESET LOSS ALERT'}
 					</button>
 				{/if}
 			</div>
@@ -2661,6 +2712,79 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						<p class="text-xs text-[#ececec] mt-1">
 							Stored as mapping: account_number → amount (grouped by unit for display).
 						</p>
+					</fieldset>
+				</div>
+
+				<div>
+					<fieldset>
+						<legend class="block text-sm font-medium text-[#f5f5f5] mb-2">P/L Alerts</legend>
+						<p class="text-xs text-[#ececec] mb-3">
+							Email when adjusted P/L crosses a threshold. Each alert sends once, then stays paused until you reset it.
+						</p>
+						<div class="space-y-3">
+							<div class="flex flex-wrap items-center gap-2 text-sm text-[#ececec]">
+								<label class="inline-flex items-center gap-2">
+									<input
+										type="checkbox"
+										checked={draftPlAlert.profitEnabled}
+										on:change={(e) => {
+											draftPlAlert = { ...draftPlAlert, profitEnabled: (e.target as HTMLInputElement).checked };
+										}}
+										class="border-stone-600 bg-stone-700 text-[#f5f5f5] focus:ring-[#f5f5f5]"
+									/>
+									<span>Profit alert</span>
+								</label>
+								<input
+									type="number"
+									min="0"
+									step="100"
+									value={draftPlAlert.profitThreshold}
+									on:change={(e) => {
+										const v = parseFloat((e.target as HTMLInputElement).value);
+										draftPlAlert = { ...draftPlAlert, profitThreshold: isNaN(v) || v < 0 ? 0 : v };
+									}}
+									class="w-32 border border-stone-600 bg-stone-700 text-[#f5f5f5] px-2 py-1 text-right focus:ring-2 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+								/>
+								<span>USD</span>
+							</div>
+							<div class="flex flex-wrap items-center gap-2 text-sm text-[#ececec]">
+								<label class="inline-flex items-center gap-2">
+									<input
+										type="checkbox"
+										checked={draftPlAlert.lossEnabled}
+										on:change={(e) => {
+											draftPlAlert = { ...draftPlAlert, lossEnabled: (e.target as HTMLInputElement).checked };
+										}}
+										class="border-stone-600 bg-stone-700 text-[#f5f5f5] focus:ring-[#f5f5f5]"
+									/>
+									<span>Loss alert</span>
+								</label>
+								<input
+									type="number"
+									min="0"
+									step="100"
+									value={draftPlAlert.lossThreshold}
+									on:change={(e) => {
+										const v = parseFloat((e.target as HTMLInputElement).value);
+										draftPlAlert = { ...draftPlAlert, lossThreshold: isNaN(v) || v < 0 ? 0 : v };
+									}}
+									class="w-32 border border-stone-600 bg-stone-700 text-[#f5f5f5] px-2 py-1 text-right focus:ring-2 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+								/>
+								<span>USD</span>
+							</div>
+							<label class="block text-sm text-[#ececec]">
+								<span class="block mb-1">Recipient email</span>
+								<input
+									type="email"
+									value={draftPlAlert.recipientEmail}
+									placeholder="alerts@example.com"
+									on:change={(e) => {
+										draftPlAlert = { ...draftPlAlert, recipientEmail: (e.target as HTMLInputElement).value.trim() };
+									}}
+									class="w-full max-w-md border border-stone-600 bg-stone-700 text-[#f5f5f5] px-2 py-1 focus:ring-2 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+								/>
+							</label>
+						</div>
 					</fieldset>
 				</div>
 

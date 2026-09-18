@@ -25,6 +25,7 @@
 		"@tailwindcss/forms": "^0.5.9",
 		"@tailwindcss/typography": "^0.5.15",
 		"@tailwindcss/vite": "^4.0.0",
+		"@types/nodemailer": "^8.0.2",
 		"eslint": "^9.18.0",
 		"eslint-config-prettier": "^10.0.1",
 		"eslint-plugin-svelte": "^3.0.0",
@@ -43,6 +44,7 @@
 	"dependencies": {
 		"@planetscale/database": "^1.19.0",
 		"@supabase/supabase-js": "^2.56.0",
-		"dotenv": "^17.2.1"
+		"dotenv": "^17.2.1",
+		"nodemailer": "^10.0.10"
 	}
 }

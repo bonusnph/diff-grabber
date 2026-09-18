@@ -42,3 +42,18 @@ export interface DashboardStats {
 	initial_capital: number;
 	account_count: number;
 }
+
+export interface PlAlertSettings {
+	profitEnabled: boolean;
+	profitThreshold: number;
+	lossEnabled: boolean;
+	lossThreshold: number;
+	recipientEmail: string;
+}
+
+export interface PlAlertState {
+	profitPaused: boolean;
+	lossPaused: boolean;
+	lastProfitSentAt: string | null;
+	lastLossSentAt: string | null;
+}

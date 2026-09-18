@@ -11,6 +11,8 @@ export const GET: RequestHandler = async () => {
 		const accountWithdrawals = await storage.getAccountWithdrawals();
 		const accountDeposits = await storage.getAccountDeposits();
 		const snapshot = await storage.getSnapshotPL();
+		const plAlertState = await storage.getPlAlertState();
+		const plAlertSettings = await storage.getPlAlertSettings();
 		
 		const currentAdjusted = (() => {
 			const totalWaitingWD = Object.values(accountWithdrawals || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
@@ -29,7 +31,11 @@ export const GET: RequestHandler = async () => {
 			accountWithdrawals,
 			accountDeposits,
 			snapshot: snapshot ? { kind: snapshot.kind, value: snapshot.value, timestamp: snapshot.timestamp } : null,
-			snapshotDelta
+			snapshotDelta,
+			plAlert: {
+				settings: plAlertSettings,
+				state: plAlertState
+			}
 		});
 		
 	} catch (error) {
