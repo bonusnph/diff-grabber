@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import type { AccountSummary, DashboardStats, OrderInfo, PlAlertSettings, PlAlertState } from '$lib/types.js';
+	import type { AccountSummary, CurrencySettings, DashboardStats, FxQuote, OrderInfo, PlAlertSettings, PlAlertState } from '$lib/types.js';
 	import { defaultPlAlertSettings, defaultPlAlertState } from '$lib/pl-alert-model.js';
+	import { convertUsd, defaultCurrencySettings, identityFxQuote, normalizeCurrencySettings } from '$lib/currency.js';
+	import CurrencyFlag from '$lib/CurrencyFlag.svelte';
 
 	interface PairInfo {
 		symbol: string;
@@ -222,6 +224,9 @@
 	let plAlertSettings: PlAlertSettings = defaultPlAlertSettings();
 	let plAlertState: PlAlertState = defaultPlAlertState();
 	let draftPlAlert: PlAlertSettings = defaultPlAlertSettings();
+	let currencySettings: CurrencySettings = defaultCurrencySettings();
+	let draftCurrency: CurrencySettings = defaultCurrencySettings();
+	let fxQuote: FxQuote = identityFxQuote(defaultCurrencySettings());
 	let resettingAlert: 'profit' | 'loss' | null = null;
 	const REVEAL_BOOK_KEY = 'pm-reveal-book';
 	function readStoredRevealBook(): boolean {
@@ -276,6 +281,8 @@
 	})();
 
 	$: appReady = settingsLoaded;
+	$: displayRate = currencySettings.currency === 'USD' ? 1 : fxQuote.rate;
+	$: displayCurrency = currencySettings.currency;
 
 	$: uniqueBrokersList = (() => {
 		const counts = new Map<string, number>();
@@ -410,6 +417,7 @@
 		draftWithdrawals = { ...accountWithdrawals };
 		draftDeposits = { ...accountDeposits };
 		draftPlAlert = { ...plAlertSettings };
+		draftCurrency = { ...currencySettings };
 		showSettingsModal = true;
 	}
 
@@ -584,6 +592,7 @@
 				snapshotDelta = data.snapshotDelta ?? null;
 				if (data.plAlert?.settings) plAlertSettings = data.plAlert.settings;
 				if (data.plAlert?.state) plAlertState = data.plAlert.state;
+				applyCurrencyPayload(data);
 				loading = false;
 			} catch (error) {
 				console.error('Error fetching data:', error);
@@ -695,6 +704,7 @@
 			accountDeposits = data.account_deposits || {};
 			plAlertSettings = data.pl_alert || defaultPlAlertSettings();
 			plAlertState = data.pl_alert_state || defaultPlAlertState();
+			applyCurrencyPayload({ currency: data.currency, fx: data.fx });
 		} catch (error) {
 			console.error('Error loading settings:', error);
 			// Keep default values if loading fails
@@ -1275,11 +1285,29 @@
 		};
 	}
 
-	function formatNumber(num: number): string {
+	function applyCurrencyPayload(data: { currency?: unknown; fx?: FxQuote | null }) {
+		if (data.currency) {
+			currencySettings = normalizeCurrencySettings(data.currency);
+		}
+		if (data.fx && typeof data.fx.rate === 'number' && data.fx.rate > 0) {
+			fxQuote = {
+				...identityFxQuote(currencySettings),
+				...data.fx,
+				displayMode: data.fx.displayMode || identityFxQuote(currencySettings).displayMode,
+				rawRate: typeof data.fx.rawRate === 'number' ? data.fx.rawRate : data.fx.rate,
+				buffer: typeof data.fx.buffer === 'number' ? data.fx.buffer : currencySettings.liveBuffer
+			};
+		} else {
+			fxQuote = identityFxQuote(currencySettings);
+		}
+	}
+
+	function formatNumber(num: number, convert = true): string {
+		const value = convert ? convertUsd(num, displayRate) : num;
 		const result = new Intl.NumberFormat('th-TH', {
 			minimumFractionDigits: 2,
 			maximumFractionDigits: 2
-		}).format(num);
+		}).format(value);
 		return result === '-0.00' ? '0.00' : result;
 	}
 
@@ -1381,7 +1409,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					unit_broker_min_margins: draftBrokerMargins,
 					account_withdrawals: draftWithdrawals,
 					account_deposits: draftDeposits,
-					pl_alert: draftPlAlert
+					pl_alert: draftPlAlert,
+					currency: draftCurrency
 				})
 			});
 			if (response.ok) {
@@ -1395,6 +1424,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				accountDeposits = data.account_deposits || draftDeposits;
 				plAlertSettings = data.pl_alert || draftPlAlert;
 				plAlertState = data.pl_alert_state || plAlertState;
+				applyCurrencyPayload({ currency: data.currency || draftCurrency, fx: data.fx });
 				showSettingsModal = false;
 				location.reload();
 			}
@@ -1473,7 +1503,10 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 	<div class="sticky top-0 z-30 bg-[#0a0a0a] pt-[env(safe-area-inset-top)]">
 		<div class="max-w-7xl mx-auto px-3 sm:px-4 py-3 flex items-start justify-between gap-3">
 			<div class="min-w-0 flex-1">
-				<div class="text-xs sm:text-sm tracking-wide">PROFIT MONITOR</div>
+				<div class="flex items-center gap-2">
+					<CurrencyFlag currency={displayCurrency} />
+					<div class="text-xs sm:text-sm tracking-wide">PROFIT MONITOR</div>
+				</div>
 				<div class="flex items-center gap-2 text-xs mt-1 min-w-0">
 					{#if resumeLoading}
 						<span title="Returned to app — fetching latest data">RESUMED · LOADING LATEST</span>
@@ -1482,6 +1515,19 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							<span class="tabular-nums">{formatDateTime(new Date(latestUpdate).toISOString())}</span>
 						{/if}
 						<span class="tabular-nums shrink-0" title="Next refresh">{String(countdownSeconds).padStart(2, '0')}s</span>
+						<span
+							class="shrink-0"
+							title={fxQuote.displayMode === 'live+buffer'
+								? `USD → ${displayCurrency} @ ${fxQuote.rawRate} − ${fxQuote.buffer} = ${fxQuote.rate} (${fxQuote.source})`
+								: fxQuote.source === 'identity'
+									? `${displayCurrency} · ${fxQuote.displayMode}`
+									: `USD → ${displayCurrency} @ ${fxQuote.rate} (${fxQuote.source})`}
+						>
+							{displayCurrency}{#if displayCurrency !== 'USD'}
+								· {formatNumber(fxQuote.rate, false)}
+							{/if}
+							· {fxQuote.displayMode}
+						</span>
 					{/if}
 				</div>
 			</div>
@@ -1541,19 +1587,22 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			</div>
 		{:else}
 
-		<div class="pt-6 pb-4">
+		<div class="pt-6 pb-4" data-fx-rate={displayRate}>
 			{#if !isDataComplete}
 				<span class="inline-block text-xs font-semibold fac-minus mb-2">Partial Data</span>
 			{/if}
-			<p
-				class="fac-display text-5xl sm:text-6xl lg:text-8xl font-extrabold tracking-tight leading-none tabular-nums {!isDataComplete ? 'opacity-60' : ''} {Math.abs(adjustedProfitLoss) < 0.005 ? 'text-[#ececec]' : adjustedProfitLoss >= 0 ? 'fac-plus' : 'fac-minus'}"
-			>
-				{adjustedProfitLoss >= 0.005 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
-			</p>
+			<div class="flex items-center gap-3 sm:gap-4">
+				<CurrencyFlag currency={displayCurrency} size={28} />
+				<p
+					class="fac-display text-5xl sm:text-6xl lg:text-8xl font-extrabold tracking-tight leading-none tabular-nums {!isDataComplete ? 'opacity-60' : ''} {Math.abs(adjustedProfitLoss) < 0.005 ? 'text-[#ececec]' : adjustedProfitLoss >= 0 ? 'fac-plus' : 'fac-minus'}"
+				>
+					{adjustedProfitLoss >= 0.005 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
+				</p>
+			</div>
 			<p
 				class="text-sm mt-3 tracking-tight {revealBookValues && Math.abs(adjustedProfitLossPercent) >= 0.005 ? (adjustedProfitLossPercent >= 0 ? 'fac-plus' : 'fac-minus') : 'text-[#ececec]'}"
 			>
-				{bookValue((adjustedProfitLossPercent >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLossPercent), revealBookValues)}%
+				{bookValue((adjustedProfitLossPercent >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLossPercent, false), revealBookValues)}%
 				{#if totalWaitingWD !== 0 || totalDeposits !== 0}
 					<span class="text-[#ececec]">
 						&nbsp; Total P/L
@@ -2395,6 +2444,98 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
             <div class="flex-1 overflow-y-auto px-4 sm:px-6 pb-4 space-y-6">
                 <div>
                     <fieldset>
+                        <legend class="block text-sm font-medium text-[#f5f5f5] mb-2">Display Currency</legend>
+                        <div class="flex flex-wrap items-center gap-2 mb-3">
+                            <button
+                                type="button"
+                                class="fac-ghost text-xs inline-flex items-center gap-2"
+                                class:fac-on={draftCurrency.currency === 'USD'}
+                                on:click={() => { draftCurrency = { ...draftCurrency, currency: 'USD' }; }}
+                            >
+                                <CurrencyFlag currency="USD" size={16} />
+                                USD
+                            </button>
+                            <button
+                                type="button"
+                                class="fac-ghost text-xs inline-flex items-center gap-2"
+                                class:fac-on={draftCurrency.currency === 'THB'}
+                                on:click={() => { draftCurrency = { ...draftCurrency, currency: 'THB' }; }}
+                            >
+                                <CurrencyFlag currency="THB" size={16} />
+                                THB
+                            </button>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2 mb-3">
+                            <button
+                                type="button"
+                                class="fac-ghost text-xs"
+                                class:fac-on={draftCurrency.rateMode === 'live'}
+                                on:click={() => { draftCurrency = { ...draftCurrency, rateMode: 'live' }; }}
+                            >
+                                Live API
+                            </button>
+                            <button
+                                type="button"
+                                class="fac-ghost text-xs"
+                                class:fac-on={draftCurrency.rateMode === 'fixed'}
+                                on:click={() => { draftCurrency = { ...draftCurrency, rateMode: 'fixed' }; }}
+                            >
+                                Fixed
+                            </button>
+                            <input
+                                type="number"
+                                min="0.01"
+                                step="0.01"
+                                value={draftCurrency.fixedRate}
+                                disabled={draftCurrency.rateMode !== 'fixed'}
+                                on:change={(e) => {
+                                    const v = parseFloat((e.target as HTMLInputElement).value);
+                                    draftCurrency = {
+                                        ...draftCurrency,
+                                        fixedRate: !Number.isFinite(v) || v <= 0 ? 31 : v
+                                    };
+                                }}
+                                class="w-28 border border-stone-600 bg-stone-700 text-[#f5f5f5] px-2 py-1 text-right focus:ring-2 focus:ring-[#f5f5f5] focus:border-[#f5f5f5] disabled:opacity-50"
+                                aria-label="Fixed USD to THB rate"
+                            />
+                            <span class="text-sm text-[#ececec]">USD → THB</span>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2 mb-3">
+                            <span class="text-sm text-[#ececec]">Live buffer</span>
+                            <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={draftCurrency.liveBuffer}
+                                disabled={draftCurrency.rateMode !== 'live'}
+                                on:change={(e) => {
+                                    const v = parseFloat((e.target as HTMLInputElement).value);
+                                    draftCurrency = {
+                                        ...draftCurrency,
+                                        liveBuffer: !Number.isFinite(v) || v < 0 ? 0 : v
+                                    };
+                                }}
+                                class="w-28 border border-stone-600 bg-stone-700 text-[#f5f5f5] px-2 py-1 text-right focus:ring-2 focus:ring-[#f5f5f5] focus:border-[#f5f5f5] disabled:opacity-50"
+                                aria-label="Live rate buffer subtracted from USD to THB"
+                            />
+                            <span class="text-sm text-[#ececec]">subtracted from live rate</span>
+                        </div>
+                        <p class="text-xs text-[#ececec]">
+                            Default display is USD. Account values stay stored in USD; the dashboard converts for viewing.
+                            {#if draftCurrency.rateMode === 'live'}
+                                Live rate uses Frankfurter (no signup), with open.er-api as fallback.
+                                Buffer {formatNumber(draftCurrency.liveBuffer, false)} turns the mode into {draftCurrency.liveBuffer > 0 ? 'live+buffer' : 'live'}.
+                                {#if fxQuote.currency === 'THB' && fxQuote.mode === 'live'}
+                                    Current: {formatNumber(fxQuote.rawRate, false)} − {formatNumber(fxQuote.buffer, false)} = {formatNumber(fxQuote.rate, false)} ({fxQuote.source}).
+                                {/if}
+                            {:else}
+                                Fixed rate default is 31.
+                            {/if}
+                        </p>
+                    </fieldset>
+                </div>
+                <div>
+                    <fieldset>
                         <legend class="block text-sm font-medium text-[#f5f5f5] mb-2">Unit Settings</legend>
                         <div class="space-y-2 mb-3">
                             {#each settingsUnitList as unit}
@@ -2592,8 +2733,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										<span class="text-sm text-[#f5f5f5]">Unit {u === 0 ? 'Unknown' : u}</span>
 										<span class="text-xs text-[#ececec]"
 											>WD Total: {formatNumber(
-												(entries || []).reduce((s, e) => s + (e.amount ?? 0), 0)
-											)}</span
+												(entries || []).reduce((s, e) => s + (e.amount ?? 0), 0),
+												false
+											)}</span>
 										>
 									</div>
 									<div class="divide-y divide-stone-600/50">
@@ -2608,7 +2750,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 													{/if}
 												</div>
 												<div class="flex items-center gap-2">
-													<span class="text-xs text-[#ececec]">{formatNumber(e.amount)}</span>
+													<span class="text-xs text-[#ececec]">{formatNumber(e.amount, false)}</span>
 													<button
 														on:click={() => {
 															draftWithdrawals = { ...draftWithdrawals, [e.account_number]: 0 };
@@ -2661,8 +2803,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										<span class="text-sm text-[#f5f5f5]">Unit {u === 0 ? 'Unknown' : u}</span>
 										<span class="text-xs text-[#ececec]"
 											>DP Total: {formatNumber(
-												(entries || []).reduce((s, e) => s + (e.amount ?? 0), 0)
-											)}</span
+												(entries || []).reduce((s, e) => s + (e.amount ?? 0), 0),
+												false
+											)}</span>
 										>
 									</div>
 									<div class="divide-y divide-stone-600/50">
@@ -2677,7 +2820,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 													{/if}
 												</div>
 												<div class="flex items-center gap-2">
-													<span class="text-xs text-[#ececec]">{formatNumber(e.amount)}</span>
+													<span class="text-xs text-[#ececec]">{formatNumber(e.amount, false)}</span>
 													<button
 														on:click={() => {
 															draftDeposits = { ...draftDeposits, [e.account_number]: 0 };

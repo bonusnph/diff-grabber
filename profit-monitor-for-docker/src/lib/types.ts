@@ -57,3 +57,25 @@ export interface PlAlertState {
 	lastProfitSentAt: string | null;
 	lastLossSentAt: string | null;
 }
+
+export type DisplayCurrency = 'USD' | 'THB';
+export type FxRateMode = 'live' | 'fixed';
+export type FxDisplayMode = 'live' | 'live+buffer' | 'fixed';
+
+export interface CurrencySettings {
+	currency: DisplayCurrency;
+	rateMode: FxRateMode;
+	fixedRate: number;
+	liveBuffer: number;
+}
+
+export interface FxQuote {
+	currency: DisplayCurrency;
+	rate: number;
+	rawRate: number;
+	buffer: number;
+	mode: FxRateMode;
+	displayMode: FxDisplayMode;
+	source: string;
+	fetchedAt: string;
+}

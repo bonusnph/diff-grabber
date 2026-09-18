@@ -1,9 +1,12 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { storage } from '$lib/storage-supabase.js';
+import { normalizeCurrencySettings } from '$lib/currency.js';
+import { resolveFxQuote } from '$lib/fx-rate.js';
 
-export const GET: RequestHandler = async () => {
-	return json({
+async function settingsPayload() {
+	const currency = await storage.getCurrencySettings();
+	return {
 		initial_capital: await storage.getInitialCapital(),
 		unit_initial_capitals: await storage.getUnitInitialCapitals(),
 		unit_warning_equity_percentages: await storage.getUnitWarningEquityPercentages(),
@@ -15,13 +18,19 @@ export const GET: RequestHandler = async () => {
 		account_deposits: await storage.getAccountDeposits(),
 		snapshot: await storage.getSnapshotPL(),
 		pl_alert: await storage.getPlAlertSettings(),
-		pl_alert_state: await storage.getPlAlertState()
-	});
+		pl_alert_state: await storage.getPlAlertState(),
+		currency,
+		fx: await resolveFxQuote(currency)
+	};
+}
+
+export const GET: RequestHandler = async () => {
+	return json(await settingsPayload());
 };
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
-		const { initial_capital, unit_initial_capitals, total_active_accounts, unit_warning_equity_percentages, unit_mappings, unit_broker_min_margins, unit_withdrawals, account_withdrawals, account_deposits, snapshot, clear_snapshot, pl_alert } = await request.json();
+		const { initial_capital, unit_initial_capitals, total_active_accounts, unit_warning_equity_percentages, unit_mappings, unit_broker_min_margins, unit_withdrawals, account_withdrawals, account_deposits, snapshot, clear_snapshot, pl_alert, currency } = await request.json();
 		// Snapshot operations (optional)
 		if (clear_snapshot === true) {
 			console.log('Clearing snapshot from database...');
@@ -148,6 +157,13 @@ export const POST: RequestHandler = async ({ request }) => {
 			});
 		}
 
+		if (currency !== undefined) {
+			if (typeof currency !== 'object' || currency === null || Array.isArray(currency)) {
+				return json({ error: 'Invalid currency settings' }, { status: 400 });
+			}
+			await storage.setCurrencySettings(normalizeCurrencySettings(currency));
+		}
+
 		if (account_deposits !== undefined) {
 			if (typeof account_deposits !== 'object' || Array.isArray(account_deposits)) {
 				return json({ error: 'Invalid account deposits' }, { status: 400 });
@@ -161,20 +177,9 @@ export const POST: RequestHandler = async ({ request }) => {
 			await storage.setAccountDeposits(normalizedDep);
 		}
 		
-		return json({ 
+		return json({
 			status: 'success',
-			initial_capital: await storage.getInitialCapital(),
-			unit_initial_capitals: await storage.getUnitInitialCapitals(),
-			unit_warning_equity_percentages: await storage.getUnitWarningEquityPercentages(),
-			total_active_accounts: await storage.getTotalActiveAccounts(),
-			unit_mappings: await storage.getUnitMappings(),
-			unit_broker_min_margins: await storage.getUnitBrokerMinMargins(),
-			unit_withdrawals: await storage.getUnitWithdrawals(),
-			account_withdrawals: await storage.getAccountWithdrawals(),
-			account_deposits: await storage.getAccountDeposits(),
-			snapshot: await storage.getSnapshotPL(),
-			pl_alert: await storage.getPlAlertSettings(),
-			pl_alert_state: await storage.getPlAlertState()
+			...(await settingsPayload())
 		});
 		
 	} catch (error) {

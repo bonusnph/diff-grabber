@@ -2,8 +2,9 @@ import dotenv from 'dotenv';
 dotenv.config()
 
 import { createClient } from '@supabase/supabase-js';
-import type { AccountData, AccountSummary, DashboardStats, PlAlertSettings, PlAlertState } from './types.js';
+import type { AccountData, AccountSummary, CurrencySettings, DashboardStats, PlAlertSettings, PlAlertState } from './types.js';
 import { defaultPlAlertSettings, defaultPlAlertState, normalizePlAlertSettings, normalizePlAlertState } from './pl-alert-model.js';
+import { defaultCurrencySettings, normalizeCurrencySettings } from './currency.js';
 
 // Supabase client
 // Fallback to placeholders so createClient doesn't throw when env vars are absent
@@ -830,6 +831,40 @@ class SupabaseStorage {
 			}
 		}
 		return defaultPlAlertState();
+	}
+
+	async setCurrencySettings(settings: CurrencySettings): Promise<void> {
+		const { error } = await supabase
+			.from('settings')
+			.upsert({
+				setting_key: 'currency_settings',
+				setting_value: JSON.stringify(normalizeCurrencySettings(settings)),
+				updated_at: new Date().toISOString()
+			});
+		if (error) {
+			console.error('Error setting currency settings:', error);
+			throw error;
+		}
+	}
+
+	async getCurrencySettings(): Promise<CurrencySettings> {
+		const { data, error } = await supabase
+			.from('settings')
+			.select('setting_value')
+			.eq('setting_key', 'currency_settings')
+			.single();
+		if (error && error.code !== 'PGRST116') {
+			console.error('Error getting currency settings:', error);
+			throw error;
+		}
+		if (data) {
+			try {
+				return normalizeCurrencySettings(JSON.parse(data.setting_value));
+			} catch (parseError) {
+				console.error('Error parsing currency settings:', parseError);
+			}
+		}
+		return defaultCurrencySettings();
 	}
 
 	async getAccessPin(): Promise<string> {

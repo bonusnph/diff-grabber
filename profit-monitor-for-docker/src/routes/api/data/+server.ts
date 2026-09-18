@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { storage } from '$lib/storage-supabase.js';
+import { resolveFxQuote } from '$lib/fx-rate.js';
 
 export const GET: RequestHandler = async () => {
 	try {
@@ -13,6 +14,8 @@ export const GET: RequestHandler = async () => {
 		const snapshot = await storage.getSnapshotPL();
 		const plAlertState = await storage.getPlAlertState();
 		const plAlertSettings = await storage.getPlAlertSettings();
+		const currency = await storage.getCurrencySettings();
+		const fx = await resolveFxQuote(currency);
 		
 		const currentAdjusted = (() => {
 			const totalWaitingWD = Object.values(accountWithdrawals || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
@@ -35,7 +38,9 @@ export const GET: RequestHandler = async () => {
 			plAlert: {
 				settings: plAlertSettings,
 				state: plAlertState
-			}
+			},
+			currency,
+			fx
 		});
 		
 	} catch (error) {
