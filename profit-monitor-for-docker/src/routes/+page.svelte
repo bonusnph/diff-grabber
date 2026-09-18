@@ -247,6 +247,7 @@
 
 	let profitLossPercent = 0;
 	let isRefreshing = false;
+	let resumeLoading = false;
 	// Filters (Broker / Account Name)
 	let activeBrokers: Set<string> = new Set();
 	let activeAccountNames: Set<string> = new Set();
@@ -549,6 +550,7 @@
 	let fetchInFlight: Promise<void> | null = null;
 
 	async function fetchData() {
+		if (!loading) isRefreshing = true;
 		if (fetchInFlight) return fetchInFlight;
 
 		const run = async () => {
@@ -592,21 +594,31 @@
 	}
 
 	/** Immediate fetch when the tab/app becomes visible again (mobile browsers freeze timers). */
-	function fetchLatestOnResume() {
+	async function fetchLatestOnResume() {
 		if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+		if (resumeLoading) return;
+		resumeLoading = true;
+		isRefreshing = true;
 		fetchedThisCycle = true;
-		updateCountdown();
-		void fetchData();
-	}
-
-	function handleVisibilityChange() {
-		if (document.visibilityState === 'visible') {
-			fetchLatestOnResume();
+		try {
+			await fetchData();
+		} finally {
+			resumeLoading = false;
+			updateCountdown();
 		}
 	}
 
-	function handlePageShow() {
-		fetchLatestOnResume();
+	function handleVisibilityChange() {
+		if (document.visibilityState === 'visible' && appReady) {
+			void fetchLatestOnResume();
+		}
+	}
+
+	function handlePageShow(event: PageTransitionEvent) {
+		if (!appReady) return;
+		if (event.persisted || document.visibilityState === 'visible') {
+			void fetchLatestOnResume();
+		}
 	}
 
 	async function takeSnapshot(kind: 'adjusted' | 'real' = 'adjusted') {
@@ -703,7 +715,7 @@
 			fetchedThisCycle = false;
 		}
 		// Trigger fetch one tick after 0 (i.e., when switching to 9)
-		if (autoFetchEnabled && lastCountdown === 0 && countdownSeconds === 9 && !fetchedThisCycle) {
+		if (autoFetchEnabled && !resumeLoading && lastCountdown === 0 && countdownSeconds === 9 && !fetchedThisCycle) {
 			fetchedThisCycle = true;
 			fetchData();
 		}
@@ -711,7 +723,7 @@
 		// Force refresh if client time is more than 30s newer than last update
 		const nowMs = now.getTime();
 		const dataStale = latestUpdate > 0 && nowMs - latestUpdate > STALE_FORCE_REFRESH_MS;
-		if (autoFetchEnabled && dataStale && !isRefreshing && nowMs - lastForcedRefreshAt > 5000) {
+		if (autoFetchEnabled && !resumeLoading && dataStale && !isRefreshing && nowMs - lastForcedRefreshAt > 5000) {
 			lastForcedRefreshAt = nowMs;
 			fetchedThisCycle = true;
 			fetchData();
@@ -1426,13 +1438,21 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 
 <div class="min-h-screen bg-[#0a0a0a] text-[#f5f5f5] pb-[max(1rem,env(safe-area-inset-bottom))]" class:hidden={!appReady}>
 	<div class="sticky top-0 z-30 bg-[#0a0a0a] pt-[env(safe-area-inset-top)]">
-		<div class="max-w-7xl mx-auto px-3 sm:px-4 py-3 flex items-center justify-between gap-2 flex-wrap">
-			<div class="text-xs sm:text-sm tracking-wide">PROFIT MONITOR</div>
-			<div class="flex items-center gap-2 text-xs min-w-0">
-				{#if latestUpdate}
-					<span class="truncate max-w-[7.5rem] sm:max-w-none tabular-nums">{formatDateTime(new Date(latestUpdate).toISOString())}</span>
-				{/if}
-				<span class="tabular-nums" title="Next refresh">{String(countdownSeconds).padStart(2, '0')}s</span>
+		<div class="max-w-7xl mx-auto px-3 sm:px-4 py-3 flex items-start justify-between gap-3">
+			<div class="min-w-0 flex-1">
+				<div class="text-xs sm:text-sm tracking-wide">PROFIT MONITOR</div>
+				<div class="flex items-center gap-2 text-xs mt-1 min-w-0">
+					{#if resumeLoading}
+						<span title="Returned to app — fetching latest data">RESUMED · LOADING LATEST</span>
+					{:else}
+						{#if latestUpdate}
+							<span class="tabular-nums">{formatDateTime(new Date(latestUpdate).toISOString())}</span>
+						{/if}
+						<span class="tabular-nums shrink-0" title="Next refresh">{String(countdownSeconds).padStart(2, '0')}s</span>
+					{/if}
+				</div>
+			</div>
+			<div class="flex items-center gap-1.5 shrink-0">
 				<button
 					on:click={() => setRevealBookValues(!revealBookValues)}
 					class="fac-ghost fac-icon"
@@ -1456,20 +1476,23 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				</button>
 				<button
 					on:click={openSettings}
-					class="fac-ghost text-xs"
+					class="fac-ghost fac-icon"
 					title="Settings"
 					aria-label="Open Settings"
 				>
-					SETTINGS
+					<svg viewBox="0 0 24 24" aria-hidden="true">
+						<circle cx="12" cy="12" r="2.5" />
+						<path d="M10.2 3.6h3.6l.4 2.3 2.1-1 2.6 2.6-1 2.1 2.3.4v3.6l-2.3.4 1 2.1-2.6 2.6-2.1-1-.4 2.3h-3.6l-.4-2.3-2.1 1-2.6-2.6 1-2.1-2.3-.4V10l2.3-.4-1-2.1 2.6-2.6 2.1 1z" />
+					</svg>
 				</button>
 				<button
 					on:click={fetchData}
 					class="fac-ghost fac-icon"
 					title="Refresh"
 					aria-label="Refresh"
-					disabled={loading || isRefreshing}
+					disabled={loading || isRefreshing || resumeLoading}
 				>
-					<svg viewBox="0 0 24 24" aria-hidden="true" class={isRefreshing ? 'animate-spin' : ''}>
+					<svg viewBox="0 0 24 24" aria-hidden="true" class={isRefreshing || resumeLoading ? 'animate-spin' : ''}>
 						<path d="M4.8 12a7.2 7.2 0 0112.4-5M19.2 12a7.2 7.2 0 01-12.4 5" />
 						<path d="M17.2 3.8V7h-3.2M6.8 20.2V17H10" />
 					</svg>
