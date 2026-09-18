@@ -1,0 +1,80 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "profit-monitor-for-docker/src/routes/+page.svelte"
+        ],
+        "createdAt": "2026-09-18T02:24:40.057Z",
+        "reason": "Agent: indigo left border is a live-trading status accent on unit cards, not decorative AI chrome"
+      },
+      {
+        "rule": "gray-on-color",
+        "value": "*",
+        "files": [
+          "profit-monitor-for-docker/src/routes/+page.svelte"
+        ],
+        "createdAt": "2026-09-18T02:24:43.081Z",
+        "reason": "Agent: false positive — text-stone-500 is only disabled: on bg-stone-700, not on indigo/red buttons"
+      },
+      {
+        "rule": "low-contrast",
+        "value": "*",
+        "files": [
+          ".impeccable/direction-previews.html"
+        ],
+        "createdAt": "2026-09-18T03:08:42.245Z",
+        "reason": "Agent: preview fixture for phosphor/metal direction worlds; contrast is the specimen grammar, not shipping UI"
+      },
+      {
+        "rule": "dark-glow",
+        "value": "*",
+        "files": [
+          ".impeccable/direction-previews.html"
+        ],
+        "createdAt": "2026-09-18T03:15:21.010Z",
+        "reason": "Agent: preview fixture; no glow, lime/red are status inks on matte black catalog"
+      },
+      {
+        "rule": "generic-font",
+        "value": "*",
+        "files": [
+          ".impeccable/direction-previews.html"
+        ],
+        "createdAt": "2026-09-18T03:15:21.023Z",
+        "reason": "Agent: Fac Catalog specimen uses Barlow Condensed + Azeret Mono as catalog lettering, not shipping UI"
+      },
+      {
+        "rule": "cards",
+        "value": "*",
+        "files": [
+          ".impeccable/direction-previews.html"
+        ],
+        "createdAt": "2026-09-18T03:15:21.037Z",
+        "reason": "Agent: preview fixture has catalog rows not card grids"
+      },
+      {
+        "rule": "rounded-2xl",
+        "value": "*",
+        "files": [
+          ".impeccable/direction-previews.html"
+        ],
+        "createdAt": "2026-09-18T03:15:21.050Z",
+        "reason": "Agent: preview fixture uses hairline squares; no rounded cards"
+      },
+      {
+        "rule": "same-font",
+        "value": "*",
+        "files": [
+          ".impeccable/direction-previews.html"
+        ],
+        "createdAt": "2026-09-18T03:15:21.064Z",
+        "reason": "Agent: preview uses display condensed + mono catalog type by design"
+      }
+    ]
+  }
+}

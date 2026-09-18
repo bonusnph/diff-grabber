@@ -1,0 +1,161 @@
+{
+  "title": "\u0e40\u0e25\u0e37\u0e2d\u0e01\u0e42\u0e25\u0e01\u0e20\u0e32\u0e1e \u2014 \u0e21\u0e37\u0e2d\u0e17\u0e35\u0e48 2",
+  "question": "\u0e21\u0e37\u0e2d\u0e40\u0e14\u0e34\u0e21\u0e16\u0e39\u0e01\u0e15\u0e31\u0e14\u0e2d\u0e2d\u0e01\u0e41\u0e25\u0e49\u0e27 \u0e17\u0e38\u0e01\u0e17\u0e32\u0e07\u0e40\u0e25\u0e37\u0e2d\u0e01\u0e22\u0e31\u0e07\u0e04\u0e07\u0e1f\u0e34\u0e25\u0e14\u0e4c\u0e41\u0e25\u0e30\u0e01\u0e32\u0e23\u0e15\u0e31\u0e49\u0e07\u0e04\u0e48\u0e32\u0e04\u0e23\u0e1a",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "Racecard",
+      "kicker": "THE ROLL",
+      "lineage": "turf racecard / tote board",
+      "thesis": "Each hedge unit is a runner: cloth number, starting-price chips, scratched if unpaired.",
+      "palette": [
+        "#f4e6d4",
+        "#1a1510",
+        "#c81e1e",
+        "#0b3d2e"
+      ],
+      "materials": [
+        "racing-pink newsprint",
+        "letterpress numerals",
+        "cloth numbers"
+      ],
+      "viewport": "A paper card, not a dark dashboard: P/L as the day\u2019s SP in black condensed type; units as runner rows with red SCRATCHED for unpaired.",
+      "risk": "Can look novelty-sport if the paper texture is louder than the numbers.",
+      "raised": [
+        {
+          "from": "cracktro queue",
+          "raise": "No card shells: runners sit on ruled paper, never rounded tiles."
+        },
+        {
+          "from": "Factory Records",
+          "raise": "The P/L numeral owns the field; everything else is small type."
+        },
+        {
+          "from": "consumer app",
+          "raise": "One action ink only: refresh, snapshot, and save share a single saturated press color."
+        },
+        {
+          "from": "darkroom",
+          "raise": "Snapshot is a test-strip: a band of the marked P/L, not a ghost button."
+        },
+        {
+          "from": "cloud quarry",
+          "raise": "Cut gaps: air between units, not stacked stone slabs."
+        },
+        {
+          "from": "sneaker archive",
+          "raise": "End-label grid: unit header is name / pairs / P/L in three cells."
+        }
+      ]
+    },
+    {
+      "id": "model-pick",
+      "label": "Approach Plate",
+      "kicker": "IMPECCABLE\u2019S PICK",
+      "lineage": "ICAO instrument approach plate",
+      "thesis": "The book as a procedure plate: boxed fields, magenta course, black minima.",
+      "palette": [
+        "#f7f2e8",
+        "#111111",
+        "#c4007a",
+        "#3a5a40"
+      ],
+      "materials": [
+        "chart paper",
+        "hairline boxes",
+        "procedure magenta"
+      ],
+      "viewport": "Title block with P/L as the minima; units as procedure strips with frequencies (lots) and missed-approach (unpaired).",
+      "risk": "Aviation notation can feel coded until the boxes teach the scan."
+    },
+    {
+      "id": "challenger-fac",
+      "label": "Fac Catalog",
+      "verdict": "competitive",
+      "lineage": "Factory Records catalog sleeve",
+      "thesis": "Matte black field, one white P/L plot, units as fac numbers decoded on focus.",
+      "palette": [
+        "#0a0a0a",
+        "#f4f4f4",
+        "#c8ff00",
+        "#6a5acd"
+      ],
+      "materials": [
+        "matte black sleeve",
+        "hairline pulsar",
+        "hue-block codes"
+      ],
+      "viewport": "Vast black, a stacked pulse from live P/L, unit index as FAC-01\u2026; hover decodes the color strip to WD/DP.",
+      "case": "Holds identification for a night desk; loses clarity because encoding labels as color fights a money blotter.",
+      "risk": "Looks like a music brand if the pulse is decorative.",
+      "hero": "https://impeccable.style/worlds/cards/brand-identity-canon-saville-catalog-sleeve-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/brand-identity-canon-saville-catalog-sleeve.webp"
+    },
+    {
+      "id": "challenger-consumer",
+      "label": "Warm consumer app",
+      "verdict": "declined",
+      "lineage": "soft-card consumer UI",
+      "palette": [
+        "#f6efe4",
+        "#ffffff",
+        "#2563eb"
+      ],
+      "materials": [
+        "soft radii",
+        "bottom bar"
+      ],
+      "viewport": "Stacked friendly cards.",
+      "case": "This is the category the brief asked to leave; it would look like a nicer version of now.",
+      "kept": "One action color; thumb-reachable primary controls.",
+      "hero": "https://impeccable.style/worlds/cards/digital-design-canon-warm-consumer-app-surface-hero.webp"
+    },
+    {
+      "id": "challenger-cracktro",
+      "label": "Cracktro Queue",
+      "verdict": "declined",
+      "lineage": "demo-scene title scroller",
+      "palette": [
+        "#050508",
+        "#e8e0d0",
+        "#ffbf00"
+      ],
+      "materials": [
+        "bitmap face",
+        "starfield dust"
+      ],
+      "viewport": "Ivory P/L on a void, no boxes.",
+      "case": "A settings form cannot lose enclosure; operators do not identify with a cracktro.",
+      "kept": "Refuse rounded card shells; rank by stillness and weight.",
+      "hero": "https://impeccable.style/worlds/cards/operate-c-cracktro-scroller-queue-hero.webp"
+    }
+  ],
+  "reroll": {
+    "registers": [
+      "safer",
+      "bolder"
+    ]
+  },
+  "buildPath": {
+    "value": "code",
+    "toggle": true
+  },
+  "canon": true,
+  "canonCard": {
+    "label": "Dark ops dashboard",
+    "thesis": "Stone cards, centered P/L, indigo \u2014 the look you already have.",
+    "palette": [
+      "#1c1917",
+      "#292524",
+      "#6366f1",
+      "#10b981"
+    ],
+    "materials": [
+      "rounded cards",
+      "soft blur header"
+    ],
+    "viewport": "Centered hero metric and stacked unit panels.",
+    "risk": "Indistinguishable from the current site."
+  },
+  "steer": true
+}
