@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { storage } from '$lib/storage-supabase.js';
+import { schedulePlAlertEvaluation } from '$lib/pl-alerts.js';
 import { normalizeCurrencySettings } from '$lib/currency.js';
 import { resolveFxQuote } from '$lib/fx-rate.js';
 
@@ -150,11 +151,12 @@ export const POST: RequestHandler = async ({ request }) => {
 			}
 			await storage.setPlAlertSettings({
 				profitEnabled: pl_alert.profitEnabled === true,
-				profitThreshold: typeof pl_alert.profitThreshold === 'number' ? pl_alert.profitThreshold : 0,
+				profitThreshold: Number(pl_alert.profitThreshold) || 0,
 				lossEnabled: pl_alert.lossEnabled === true,
-				lossThreshold: typeof pl_alert.lossThreshold === 'number' ? pl_alert.lossThreshold : 0,
+				lossThreshold: Number(pl_alert.lossThreshold) || 0,
 				recipientEmail
 			});
+			schedulePlAlertEvaluation();
 		}
 
 		if (currency !== undefined) {

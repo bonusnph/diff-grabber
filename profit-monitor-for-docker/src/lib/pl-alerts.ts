@@ -10,7 +10,7 @@ let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let evaluating = false;
 
 export function schedulePlAlertEvaluation(): void {
-	if (debounceTimer) clearTimeout(debounceTimer);
+	if (debounceTimer) return;
 	debounceTimer = setTimeout(() => {
 		debounceTimer = null;
 		void runPlAlertEvaluation();
@@ -22,17 +22,30 @@ export async function runPlAlertEvaluation(): Promise<void> {
 	evaluating = true;
 	try {
 		const settings = await storage.getPlAlertSettings();
-		if (!settings.profitEnabled && !settings.lossEnabled) return;
-		if (!settings.recipientEmail) return;
+		if (!settings.profitEnabled && !settings.lossEnabled) {
+			console.log('PL alert skip: disabled');
+			return;
+		}
+		if (!settings.recipientEmail) {
+			console.log('PL alert skip: no recipient');
+			return;
+		}
 
 		const summaries = await storage.getAccountSummaries();
-		if (!isSnapshotReady(summaries)) return;
+		if (!isSnapshotReady(summaries)) {
+			const units = new Set(summaries.map((item) => item.unit)).size;
+			console.log(`PL alert skip: snapshot not ready (accounts=${summaries.length}, units=${units})`);
+			return;
+		}
 
 		const stats = await storage.getDashboardStats();
 		const withdrawals = await storage.getAccountWithdrawals();
 		const deposits = await storage.getAccountDeposits();
 		const adjusted = computeAdjustedProfitLoss(stats.profit_loss, withdrawals, deposits);
 		const state = await storage.getPlAlertState();
+		console.log(
+			`PL alert check adjusted=${adjusted.toFixed(2)} profit=${settings.profitThreshold} loss=${settings.lossThreshold} paused=${state.profitPaused}/${state.lossPaused}`
+		);
 		const next: PlAlertState = { ...state };
 
 		if (
@@ -46,6 +59,7 @@ export async function runPlAlertEvaluation(): Promise<void> {
 			if (sent) {
 				next.profitPaused = true;
 				next.lastProfitSentAt = new Date().toISOString();
+				console.log('PL alert sent: profit');
 			}
 		}
 
@@ -60,6 +74,7 @@ export async function runPlAlertEvaluation(): Promise<void> {
 			if (sent) {
 				next.lossPaused = true;
 				next.lastLossSentAt = new Date().toISOString();
+				console.log('PL alert sent: loss');
 			}
 		}
 

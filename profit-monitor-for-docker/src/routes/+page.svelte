@@ -1594,9 +1594,14 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			<div class="flex items-center gap-3 sm:gap-4">
 				<CurrencyFlag currency={displayCurrency} size={28} />
 				<p
-					class="fac-display text-5xl sm:text-6xl lg:text-8xl font-extrabold tracking-tight leading-none tabular-nums {!isDataComplete ? 'opacity-60' : ''} {Math.abs(adjustedProfitLoss) < 0.005 ? 'text-[#ececec]' : adjustedProfitLoss >= 0 ? 'fac-plus' : 'fac-minus'}"
+					class="fac-display text-5xl sm:text-6xl lg:text-8xl font-extrabold tracking-tight leading-none tabular-nums flex items-baseline gap-[0.18em] flex-wrap {!isDataComplete ? 'opacity-60' : ''} {Math.abs(adjustedProfitLoss) < 0.005 ? 'text-[#ececec]' : adjustedProfitLoss >= 0 ? 'fac-plus' : 'fac-minus'}"
 				>
-					{adjustedProfitLoss >= 0.005 ? '+' : ''}{formatNumber(adjustedProfitLoss)}
+					<span>{adjustedProfitLoss >= 0.005 ? '+' : ''}{formatNumber(adjustedProfitLoss)}</span>
+					{#if displayCurrency !== 'USD'}
+						<span class="text-[0.28em] sm:text-[0.24em] lg:text-[0.22em] font-semibold tracking-normal text-[#ececec]">
+							({adjustedProfitLoss >= 0.005 ? '+' : ''}{formatNumber(adjustedProfitLoss, false)} USD)
+						</span>
+					{/if}
 				</p>
 			</div>
 			<p
