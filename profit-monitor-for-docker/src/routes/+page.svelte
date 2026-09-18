@@ -939,7 +939,7 @@
 		if (accounts.length === 0) return;
 
 		const direction = stat.profitLoss > 0 ? 'DP Note' : 'WD Note';
-		if (!confirm(`Zero P/L for Unit ${unit}?\n\nP/L: ${formatNumber(stat.profitLoss)}\nWill add ${formatNumber(Math.abs(stat.profitLoss))} to ${direction} of account ${accounts[0].account_number}`)) return;
+		if (!confirm(`Zero P/L for Unit ${unit}?\n\nP/L: ${moneyLine(stat.profitLoss, '', true)}\nWill add ${moneyLine(Math.abs(stat.profitLoss), '', true)} to ${direction} of account ${accounts[0].account_number}`)) return;
 
 		adjustingPLUnits = new Set([...adjustingPLUnits, unit]);
 		const firstAccount = accounts[0].account_number;
@@ -966,7 +966,7 @@
 		const affectedUnits = unitStats.filter((s) => Math.abs(s.profitLoss) >= 0.01);
 		if (affectedUnits.length === 0) return;
 
-		const summary = affectedUnits.map((s) => `  Unit ${s.unit}: P/L ${s.profitLoss >= 0 ? '+' : ''}${formatNumber(s.profitLoss)}`).join('\n');
+		const summary = affectedUnits.map((s) => `  Unit ${s.unit}: P/L ${moneyLine(s.profitLoss, s.profitLoss >= 0 ? '+' : '', true)}`).join('\n');
 		if (!confirm(`Zero P/L for all groups?\n\n${summary}\n\nThis will adjust WD/DP Notes for ${affectedUnits.length} group(s).`)) return;
 
 		adjustingAllPL = true;
@@ -1039,12 +1039,12 @@
 
 		const lines = accounts
 			.filter((a) => (accountWithdrawals[a.account_number] ?? 0) > 0 || (accountDeposits[a.account_number] ?? 0) > 0)
-			.map((a) => `  ${a.account_number}: WD ${formatNumber(accountWithdrawals[a.account_number] ?? 0)}, DP ${formatNumber(accountDeposits[a.account_number] ?? 0)}`)
+			.map((a) => `  ${a.account_number}: WD ${moneyLine(accountWithdrawals[a.account_number] ?? 0, '', true)}, DP ${moneyLine(accountDeposits[a.account_number] ?? 0, '', true)}`)
 			.join('\n');
 		const resultLine = net > 0
-			? `Net WD: ${formatNumber(net)} -> ${maxWDAccount}`
+			? `Net WD: ${moneyLine(net, '', true)} -> ${maxWDAccount}`
 			: net < 0
-				? `Net DP: ${formatNumber(Math.abs(net))} -> ${accounts[0].account_number}`
+				? `Net DP: ${moneyLine(Math.abs(net), '', true)} -> ${accounts[0].account_number}`
 				: 'Net: 0 (all cleared)';
 
 		if (!confirm(`Consolidate WD/DP for Unit ${unit}?\n\nCurrent:\n${lines}\n\nResult:\n  ${resultLine}\n  All other WD/DP cleared to 0`)) return;
@@ -1065,7 +1065,7 @@
 
 		if (groups.length === 0) return;
 
-		const lines = groups.map((g) => `  Unit ${g.unit}: WD ${formatNumber(g.totalWD)}, DP ${formatNumber(g.totalDP)} -> Net ${g.net >= 0 ? 'WD' : 'DP'} ${formatNumber(Math.abs(g.net))}`).join('\n');
+		const lines = groups.map((g) => `  Unit ${g.unit}: WD ${moneyLine(g.totalWD, '', true)}, DP ${moneyLine(g.totalDP, '', true)} -> Net ${g.net >= 0 ? 'WD' : 'DP'} ${moneyLine(Math.abs(g.net), '', true)}`).join('\n');
 		if (!confirm(`Consolidate WD/DP for all groups?\n\n${lines}\n\nThis will net WD/DP for ${groups.length} group(s).`)) return;
 
 		consolidatingAll = true;
@@ -1302,6 +1302,8 @@
 		}
 	}
 
+	const MASK = '#####';
+
 	function formatNumber(num: number, convert = true): string {
 		const value = convert ? convertUsd(num, displayRate) : num;
 		const result = new Intl.NumberFormat('th-TH', {
@@ -1311,9 +1313,17 @@
 		return result === '-0.00' ? '0.00' : result;
 	}
 
-	function usdParen(amount: number, prefix = ''): string {
+	function usdParen(amount: number, prefix = '', reveal = revealBookValues): string {
 		if (displayCurrency === 'USD') return '';
-		return `(${bookValue(prefix + formatNumber(amount, false), revealBookValues)} USD)`;
+		if (!reveal) return MASK;
+		return `(${prefix}${formatNumber(amount, false)} USD)`;
+	}
+
+	function moneyLine(amount: number, prefix = '', reveal = revealBookValues): string {
+		if (!reveal) return MASK;
+		const shown = prefix + formatNumber(amount);
+		const extra = usdParen(amount, prefix, true);
+		return extra ? `${shown} ${extra}` : shown;
 	}
 
 	function formatPercent(num: number): string {
@@ -1347,7 +1357,6 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
     return name.length > max ? name.slice(0, max) + '...' : name;
 }
 
-	const MASK = '#####';
 	const brokerAliasPool = [
 		'NORTH', 'RIDGE', 'QUILL', 'EMBER', 'HAVEN', 'PRISM', 'LEDGER', 'ORBIT',
 		'FABLE', 'CIPHER', 'NOVA', 'WILLOW', 'HARBOR', 'QUARTZ', 'MAPLE', 'VISTA'
@@ -1622,10 +1631,10 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				<p
 					class="fac-display text-5xl sm:text-6xl lg:text-8xl font-extrabold tracking-tight leading-none tabular-nums flex items-baseline gap-[0.18em] flex-wrap {!isDataComplete ? 'opacity-60' : ''} {Math.abs(adjustedProfitLoss) < 0.005 ? 'text-[#ececec]' : adjustedProfitLoss >= 0 ? 'fac-plus' : 'fac-minus'}"
 				>
-					<span>{adjustedProfitLoss >= 0.005 ? '+' : ''}{formatNumber(adjustedProfitLoss)}</span>
+					<span>{bookValue((adjustedProfitLoss >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLoss), true)}</span>
 					{#if displayCurrency !== 'USD'}
 						<span class="text-[0.28em] sm:text-[0.24em] lg:text-[0.22em] font-semibold tracking-normal text-[#ececec]">
-							({adjustedProfitLoss >= 0.005 ? '+' : ''}{formatNumber(adjustedProfitLoss, false)} USD)
+							{usdParen(adjustedProfitLoss, adjustedProfitLoss >= 0.005 ? '+' : '', true)}
 						</span>
 					{/if}
 				</p>
@@ -1637,12 +1646,12 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				{#if totalWaitingWD !== 0 || totalDeposits !== 0}
 					<span class="text-[#ececec]">
 						&nbsp; Total P/L
-						<span class={revealBookValues ? (stats.profit_loss >= 0 ? 'fac-plus' : 'fac-minus') : ''}>{bookValue((stats.profit_loss >= 0 ? '+' : '') + formatNumber(stats.profit_loss), revealBookValues)}</span>
+						<span class={revealBookValues ? (stats.profit_loss >= 0 ? 'fac-plus' : 'fac-minus') : ''}>{moneyLine(stats.profit_loss, stats.profit_loss >= 0 ? '+' : '', revealBookValues)}</span>
 						{#if totalWaitingWD !== 0}
-							&nbsp; WD <span class={revealBookValues ? (totalWaitingWD >= 0 ? 'fac-plus' : 'fac-minus') : ''}>{bookValue((totalWaitingWD >= 0 ? '+' : '') + formatNumber(totalWaitingWD), revealBookValues)}</span>
+							&nbsp; WD <span class={revealBookValues ? (totalWaitingWD >= 0 ? 'fac-plus' : 'fac-minus') : ''}>{moneyLine(totalWaitingWD, totalWaitingWD >= 0 ? '+' : '', revealBookValues)}</span>
 						{/if}
 						{#if totalDeposits !== 0}
-							&nbsp; DP <span class={revealBookValues ? 'fac-minus' : ''}>{bookValue('−' + formatNumber(totalDeposits), revealBookValues)}</span>
+							&nbsp; DP <span class={revealBookValues ? 'fac-minus' : ''}>{moneyLine(totalDeposits, '−', revealBookValues)}</span>
 						{/if}
 					</span>
 				{/if}
@@ -1655,7 +1664,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			<div class="flex items-center gap-3 flex-wrap text-xs">
 				{#if snapshot}
 					<span class={(snapshotDelta ?? 0) >= 0 ? 'fac-plus' : 'fac-minus'}>
-						SNAPSHOT Δ {(snapshotDelta ?? 0) >= 0 ? '+' : ''}{formatNumber(snapshotDelta ?? 0)}
+						SNAPSHOT Δ {moneyLine(snapshotDelta ?? 0, (snapshotDelta ?? 0) >= 0 ? '+' : '', revealBookValues)}
 					</span>
 				{/if}
 				<button on:click={() => takeSnapshot('adjusted')} class="fac-ghost text-xs" disabled={snapshotLoading}>
@@ -1938,23 +1947,18 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 									{@const unitDP = (unitGroups[unit] || []).reduce((s, a) => s + (accountDeposits[a.account_number] ?? 0), 0)}
 									<div class="flex items-center justify-between mt-1.5">
 										<div class="flex items-center gap-x-3 gap-y-0.5 flex-wrap text-xs text-[#ececec]">
-											<span>C: {bookValue(formatNumber(unitInitialCapitals[unit] ?? 0), revealBookValues)}</span>
-											<span>T: {bookValue(formatNumber(unitStat.totalBalance), revealBookValues)}</span>
+											<span>C: {moneyLine(unitInitialCapitals[unit] ?? 0, '', revealBookValues)}</span>
+											<span>T: {moneyLine(unitStat.totalBalance, '', revealBookValues)}</span>
 											{#if unitWD > 0}
-												<span>WD: {bookValue('+' + formatNumber(unitWD), revealBookValues)}{#if displayCurrency !== 'USD'} <span class="text-[9px] text-[#ececec]">{usdParen(unitWD, '+')}</span>{/if}</span>
+												<span>WD: {moneyLine(unitWD, '+', revealBookValues)}</span>
 											{/if}
 											{#if unitDP > 0}
-												<span>DP: {bookValue('-' + formatNumber(unitDP), revealBookValues)}{#if displayCurrency !== 'USD'} <span class="text-[9px] text-[#ececec]">{usdParen(unitDP, '-')}</span>{/if}</span>
+												<span>DP: {moneyLine(unitDP, '-', revealBookValues)}</span>
 											{/if}
 										</div>
 										<div class="flex flex-col items-end flex-shrink-0 ml-3 leading-tight">
-											<span class="text-xs font-semibold inline-flex items-baseline gap-1 {Math.abs(unitStat.profitLoss) < 0.005 ? 'text-[#ececec]' : unitStat.profitLoss >= 0 ? 'fac-plus' : 'fac-minus'}">
-												<span>{unitStat.profitLoss >= 0.005 ? '+' : ''}{formatNumber(unitStat.profitLoss)}</span>
-												{#if displayCurrency !== 'USD'}
-													<span class="text-[9px] font-medium tracking-normal text-[#ececec]">
-														({unitStat.profitLoss >= 0.005 ? '+' : ''}{formatNumber(unitStat.profitLoss, false)} USD)
-													</span>
-												{/if}
+											<span class="text-xs font-semibold {Math.abs(unitStat.profitLoss) < 0.005 ? 'text-[#ececec]' : unitStat.profitLoss >= 0 ? 'fac-plus' : 'fac-minus'}">
+												{moneyLine(unitStat.profitLoss, unitStat.profitLoss >= 0.005 ? '+' : '', true)}
 											</span>
 											{#if unitInitialCapitals[unit] && unitInitialCapitals[unit] > 0}
 												{@const pct = (unitStat.profitLoss / unitInitialCapitals[unit]) * 100}
@@ -1987,8 +1991,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											{#each nonZeroEntries as [broker, s]}
 												<div class="flex items-center gap-1 text-[10px]">
 													<span class="text-[#ececec]">{bookBroker(broker, revealBookValues)}</span>
-													{#if s.d > 0}<span class="fac-plus font-medium">D{bookValue(formatNumber(s.d), revealBookValues)}{#if displayCurrency !== 'USD'} <span class="text-[8px] font-normal text-[#ececec]">{usdParen(s.d)}</span>{/if}</span>{/if}
-													{#if s.w > 0}<span class="fac-minus font-medium">W{bookValue(formatNumber(s.w), revealBookValues)}{#if displayCurrency !== 'USD'} <span class="text-[8px] font-normal text-[#ececec]">{usdParen(s.w)}</span>{/if}</span>{/if}
+													{#if s.d > 0}<span class="fac-plus font-medium">D{moneyLine(s.d, '', revealBookValues)}</span>{/if}
+													{#if s.w > 0}<span class="fac-minus font-medium">W{moneyLine(s.w, '', revealBookValues)}</span>{/if}
 												</div>
 											{/each}
 										</div>
@@ -2146,21 +2150,21 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										<div class="grid grid-cols-2 gap-2 text-xs">
 											<div>
 												<div class="text-[#ececec]">Balance</div>
-												<div class="font-medium text-[#f5f5f5] tabular-nums">{formatNumber(account.latest_balance)}</div>
+												<div class="font-medium text-[#f5f5f5] tabular-nums">{moneyLine(account.latest_balance, '', revealBookValues)}</div>
 											</div>
 											<div>
 												<div class="text-[#ececec]">Equity</div>
-												<div class="font-medium text-[#f5f5f5] tabular-nums">{formatNumber(account.latest_equity)}</div>
+												<div class="font-medium text-[#f5f5f5] tabular-nums">{moneyLine(account.latest_equity, '', revealBookValues)}</div>
 											</div>
 											<div>
 												<div class="text-[#ececec]">Adjust</div>
 												<div class="font-medium tabular-nums {adjust > 0 ? 'fac-plus' : adjust < 0 ? 'fac-minus' : 'text-[#ececec]'}">
 													{#if adjust > 0}
-														D {formatNumber(Math.abs(adjust))}
+														D {moneyLine(Math.abs(adjust), '', revealBookValues)}
 													{:else if adjust < 0}
-														W {formatNumber(Math.abs(adjust))}
+														W {moneyLine(Math.abs(adjust), '', revealBookValues)}
 													{:else}
-														{formatNumber(0)}
+														{moneyLine(0, '', revealBookValues)}
 													{/if}
 												</div>
 											</div>
@@ -2168,25 +2172,33 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										<div class="grid grid-cols-2 gap-2">
 											<label class="block text-[11px] text-[#ececec]">
 												WD Note (+)
-												<input
-													type="number"
-													min="0"
-													step="100"
-													value={accountWithdrawals[account.account_number] ?? 0}
-													on:change={(e) => handleAccountWithdrawalChange(account.account_number, e)}
-													class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
-												/>
+												{#if revealBookValues}
+													<input
+														type="number"
+														min="0"
+														step="100"
+														value={accountWithdrawals[account.account_number] ?? 0}
+														on:change={(e) => handleAccountWithdrawalChange(account.account_number, e)}
+														class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+													/>
+												{:else}
+													<div class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm leading-[2.75rem]">{MASK}</div>
+												{/if}
 											</label>
 											<label class="block text-[11px] text-[#ececec]">
 												DP Note (-)
-												<input
-													type="number"
-													min="0"
-													step="100"
-													value={accountDeposits[account.account_number] ?? 0}
-													on:change={(e) => handleAccountDepositChange(account.account_number, e)}
-													class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
-												/>
+												{#if revealBookValues}
+													<input
+														type="number"
+														min="0"
+														step="100"
+														value={accountDeposits[account.account_number] ?? 0}
+														on:change={(e) => handleAccountDepositChange(account.account_number, e)}
+														class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+													/>
+												{:else}
+													<div class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm leading-[2.75rem]">{MASK}</div>
+												{/if}
 											</label>
 										</div>
 									</div>
@@ -2219,11 +2231,11 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                                                 class:fac-plus={getUnitTargetEquity(account.unit) - account.latest_equity > 0}
 												>
                                                 {#if getUnitTargetEquity(account.unit) - account.latest_equity > 0}
-                                                    D {formatNumber(Math.abs(getUnitTargetEquity(account.unit) - account.latest_equity))}
+                                                    D {moneyLine(Math.abs(getUnitTargetEquity(account.unit) - account.latest_equity), '', revealBookValues)}
                                                 {:else if getUnitTargetEquity(account.unit) - account.latest_equity < 0}
-                                                    W {formatNumber(Math.abs(getUnitTargetEquity(account.unit) - account.latest_equity))}
+                                                    W {moneyLine(Math.abs(getUnitTargetEquity(account.unit) - account.latest_equity), '', revealBookValues)}
 													{:else}
-														{formatNumber(0)}
+														{moneyLine(0, '', revealBookValues)}
 													{/if}
 												</td>
 												<td class="py-1.5 px-2">
@@ -2238,32 +2250,40 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												</td>
 												<td class="py-1.5 px-2 text-[#ececec] text-xs">{account.broker_name}</td>
 												<td class="py-1.5 px-2 text-right font-medium text-[#f5f5f5] text-xs"
-													>{formatNumber(account.latest_balance)}</td
+													>{moneyLine(account.latest_balance, '', revealBookValues)}</td
 												>
 												<td class="py-1.5 px-2 text-right font-medium text-[#f5f5f5] text-xs"
-													>{formatNumber(account.latest_equity)}</td
+													>{moneyLine(account.latest_equity, '', revealBookValues)}</td
 												>
 												<td class="py-1.5 px-2 text-right">
-													<input
-														type="number"
-														min="0"
-														step="100"
-														value={accountWithdrawals[account.account_number] ?? 0}
-														on:change={(e) =>
-															handleAccountWithdrawalChange(account.account_number, e)}
-														class="w-20 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-1.5 py-0.5 text-right text-xs focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
-													/>
+													{#if revealBookValues}
+														<input
+															type="number"
+															min="0"
+															step="100"
+															value={accountWithdrawals[account.account_number] ?? 0}
+															on:change={(e) =>
+																handleAccountWithdrawalChange(account.account_number, e)}
+															class="w-20 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-1.5 py-0.5 text-right text-xs focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+														/>
+													{:else}
+														<span class="inline-block w-20 px-1.5 py-0.5 text-right text-xs">{MASK}</span>
+													{/if}
 												</td>
 												<td class="py-1.5 px-2 text-right">
-													<input
-														type="number"
-														min="0"
-														step="100"
-														value={accountDeposits[account.account_number] ?? 0}
-														on:change={(e) =>
-															handleAccountDepositChange(account.account_number, e)}
-														class="w-20 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-1.5 py-0.5 text-right text-xs focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
-													/>
+													{#if revealBookValues}
+														<input
+															type="number"
+															min="0"
+															step="100"
+															value={accountDeposits[account.account_number] ?? 0}
+															on:change={(e) =>
+																handleAccountDepositChange(account.account_number, e)}
+															class="w-20 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-1.5 py-0.5 text-right text-xs focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+														/>
+													{:else}
+														<span class="inline-block w-20 px-1.5 py-0.5 text-right text-xs">{MASK}</span>
+													{/if}
 												</td>
 												<td class="py-1.5 px-2 text-center">
 													{#if dataAge.status === 'stale'}
@@ -2311,12 +2331,12 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					<div class="flex flex-col">
 						<span class="text-xs font-medium tracking-wider">TOTAL</span>
 						{#if initialCapital > 0}
-							<span class="text-[10px] text-[#ececec] mt-0.5">Capital: {formatNumber(initialCapital)}</span>
+							<span class="text-[10px] text-[#ececec] mt-0.5">Capital: {moneyLine(initialCapital, '', revealBookValues)}</span>
 						{/if}
 					</div>
 					<div class="flex items-center gap-2 flex-wrap">
 						<span class="text-lg font-bold text-[#f5f5f5]">
-							{formatNumber(unitStats.reduce((sum, s) => sum + s.totalBalance, 0))}
+							{moneyLine(unitStats.reduce((sum, s) => sum + s.totalBalance, 0), '', revealBookValues)}
 						</span>
 						{#if unitStats.some((s) => Math.abs(s.profitLoss) >= 0.01)}
 							<button on:click={adjustAllGroupsPL} disabled={adjustingAllPL} class="text-[11px] min-h-9 px-2.5 rounded-md font-medium bg-amber-900/40 hover:bg-amber-900/60 text-amber-400 disabled:opacity-50 transition-colors">
@@ -2351,7 +2371,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										{broker}
 										<span class="text-[10px] text-[#ececec]">({Object.keys(brokerData.names).length})</span>
 									</span>
-									<span class="font-semibold text-[#f5f5f5]">{formatNumber(brokerData.equity)}</span>
+									<span class="font-semibold text-[#f5f5f5]">{moneyLine(brokerData.equity, '', revealBookValues)}</span>
 								</button>
 								{#if expandedBrokers.has(broker)}
 									<div class="ml-5 mt-1 flex flex-col gap-1">
@@ -2376,14 +2396,14 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 															<span class="truncate">{name}</span>
 															<span class="text-[10px] text-[#ececec]">({nameData.accounts.length})</span>
 														</span>
-														<span class="font-medium text-[#f5f5f5] whitespace-nowrap">{formatNumber(nameData.equity)}</span>
+														<span class="font-medium text-[#f5f5f5] whitespace-nowrap">{moneyLine(nameData.equity, '', revealBookValues)}</span>
 													</button>
 													{#if expandedBrokerNames.has(nameKey)}
 														<div class="ml-5 mt-0.5 space-y-0.5">
 															{#each nameData.accounts.sort((a, b) => b.equity - a.equity) as acct}
 																<div class="flex items-center justify-between text-[10px] px-2.5 py-0.5 rounded bg-stone-800/40">
 																	<span class="text-[#ececec] tabular-nums">{acct.number}</span>
-																	<span class="font-medium text-[#ececec] whitespace-nowrap">{formatNumber(acct.equity)}</span>
+																	<span class="font-medium text-[#ececec] whitespace-nowrap">{moneyLine(acct.equity, '', revealBookValues)}</span>
 																</div>
 															{/each}
 														</div>
@@ -2396,7 +2416,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 															<span class="truncate">{name}</span>
 															<span class="text-[10px] text-[#ececec]">{nameData.accounts[0].number}</span>
 														</span>
-														<span class="font-medium text-[#f5f5f5] whitespace-nowrap">{formatNumber(nameData.equity)}</span>
+														<span class="font-medium text-[#f5f5f5] whitespace-nowrap">{moneyLine(nameData.equity, '', revealBookValues)}</span>
 													</div>
 												{/if}
 											</div>
