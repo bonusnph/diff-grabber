@@ -45,7 +45,10 @@ export function buildEquityWarningEmail(input: {
 	const when = formatWhen(input.at ?? new Date());
 	const unitLabel = input.unitName || `Unit ${input.unit}`;
 	const headline = `${unitLabel} has at least one account below the warning equity threshold.`;
-	const subject = `Low equity ${unitLabel}`;
+	const brokers = [...new Set(input.accounts.map((account) => account.brokerName.trim()).filter(Boolean))];
+	const subject = brokers.length
+		? `Low equity ${unitLabel} (${brokers.join(', ')})`
+		: `Low equity ${unitLabel}`;
 	const accountLines = input.accounts.map((account) => {
 		const name = account.accountName || account.accountNumber;
 		return `${name} (${account.accountNumber}) ${account.brokerName}: ${formatUsd(account.equity)} / ${formatUsd(account.threshold)}`;
