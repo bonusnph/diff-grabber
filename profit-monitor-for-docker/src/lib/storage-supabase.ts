@@ -2,8 +2,9 @@ import dotenv from 'dotenv';
 dotenv.config()
 
 import { createClient } from '@supabase/supabase-js';
-import type { AccountData, AccountSummary, CurrencySettings, DashboardStats, PlAlertSettings, PlAlertState } from './types.js';
+import type { AccountData, AccountSummary, CurrencySettings, DashboardStats, EquityWarningState, PlAlertSettings, PlAlertState } from './types.js';
 import { defaultPlAlertSettings, defaultPlAlertState, normalizePlAlertSettings, normalizePlAlertState } from './pl-alert-model.js';
+import { defaultEquityWarningState, normalizeEquityWarningState } from './equity-warning-model.js';
 import { defaultCurrencySettings, normalizeCurrencySettings } from './currency.js';
 
 // Supabase client
@@ -831,6 +832,40 @@ class SupabaseStorage {
 			}
 		}
 		return defaultPlAlertState();
+	}
+
+	async setEquityWarningState(state: EquityWarningState): Promise<void> {
+		const { error } = await supabase
+			.from('settings')
+			.upsert({
+				setting_key: 'equity_warning_state',
+				setting_value: JSON.stringify(normalizeEquityWarningState(state)),
+				updated_at: new Date().toISOString()
+			});
+		if (error) {
+			console.error('Error setting equity warning state:', error);
+			throw error;
+		}
+	}
+
+	async getEquityWarningState(): Promise<EquityWarningState> {
+		const { data, error } = await supabase
+			.from('settings')
+			.select('setting_value')
+			.eq('setting_key', 'equity_warning_state')
+			.single();
+		if (error && error.code !== 'PGRST116') {
+			console.error('Error getting equity warning state:', error);
+			throw error;
+		}
+		if (data) {
+			try {
+				return normalizeEquityWarningState(JSON.parse(data.setting_value));
+			} catch (parseError) {
+				console.error('Error parsing equity warning state:', parseError);
+			}
+		}
+		return defaultEquityWarningState();
 	}
 
 	async setCurrencySettings(settings: CurrencySettings): Promise<void> {

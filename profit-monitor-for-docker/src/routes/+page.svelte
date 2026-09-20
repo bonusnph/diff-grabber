@@ -1,7 +1,15 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import type { AccountSummary, CurrencySettings, DashboardStats, FxQuote, OrderInfo, PlAlertSettings, PlAlertState } from '$lib/types.js';
+	import type { AccountSummary, CurrencySettings, DashboardStats, EquityWarningState, FxQuote, OrderInfo, PlAlertSettings, PlAlertState } from '$lib/types.js';
 	import { defaultPlAlertSettings, defaultPlAlertState } from '$lib/pl-alert-model.js';
+	import {
+		defaultEquityWarningState,
+		getUnitTargetEquity as targetEquityFromCap,
+		getUnitWarningPct as warnPctFromValue,
+		isEquityWarningPaused,
+		isLowEquityWarning as isLowEquityByValues,
+		normalizeEquityWarningState
+	} from '$lib/equity-warning-model.js';
 	import { convertUsd, defaultCurrencySettings, identityFxQuote, normalizeCurrencySettings } from '$lib/currency.js';
 	import CurrencyFlag from '$lib/CurrencyFlag.svelte';
 
@@ -224,10 +232,12 @@
 	let plAlertSettings: PlAlertSettings = defaultPlAlertSettings();
 	let plAlertState: PlAlertState = defaultPlAlertState();
 	let draftPlAlert: PlAlertSettings = defaultPlAlertSettings();
+	let equityWarningState: EquityWarningState = defaultEquityWarningState();
 	let currencySettings: CurrencySettings = defaultCurrencySettings();
 	let draftCurrency: CurrencySettings = defaultCurrencySettings();
 	let fxQuote: FxQuote = identityFxQuote(defaultCurrencySettings());
 	let resettingAlert: 'profit' | 'loss' | null = null;
+	let resettingEquityUnit: number | null = null;
 	const REVEAL_BOOK_KEY = 'pm-reveal-book';
 	function readStoredRevealBook(): boolean {
 		try {
@@ -592,6 +602,7 @@
 				snapshotDelta = data.snapshotDelta ?? null;
 				if (data.plAlert?.settings) plAlertSettings = data.plAlert.settings;
 				if (data.plAlert?.state) plAlertState = data.plAlert.state;
+				if (data.equityWarning?.state) equityWarningState = normalizeEquityWarningState(data.equityWarning.state);
 				applyCurrencyPayload(data);
 				loading = false;
 			} catch (error) {
@@ -704,6 +715,7 @@
 			accountDeposits = data.account_deposits || {};
 			plAlertSettings = data.pl_alert || defaultPlAlertSettings();
 			plAlertState = data.pl_alert_state || defaultPlAlertState();
+			equityWarningState = normalizeEquityWarningState(data.equity_warning_state);
 			applyCurrencyPayload({ currency: data.currency, fx: data.fx });
 		} catch (error) {
 			console.error('Error loading settings:', error);
@@ -1224,19 +1236,24 @@
 	}
 
     function getUnitTargetEquity(unit: number): number {
-        const cap = unitInitialCapitals[unit] ?? 0;
-        return cap / 2;
+        return targetEquityFromCap(unitInitialCapitals[unit] ?? 0);
     }
 
     function getUnitWarningPct(unit: number): number {
-        return unitWarningEquityPercentages[unit] ?? 30;
+        return warnPctFromValue(unitWarningEquityPercentages[unit]);
     }
 
     function isLowEquityWarning(account: AccountSummary): boolean {
-        const targetEquity = getUnitTargetEquity(account.unit);
-        const warningThreshold = targetEquity * (getUnitWarningPct(account.unit) / 100);
-        return account.latest_equity < warningThreshold;
+        return isLowEquityByValues(
+            account.latest_equity,
+            unitInitialCapitals[account.unit] ?? 0,
+            unitWarningEquityPercentages[account.unit]
+        );
     }
+
+	function isEquityUnitPaused(unit: number): boolean {
+		return isEquityWarningPaused(equityWarningState, unit);
+	}
 
 	function computeUnitDelta(accounts: AccountSummary[]): number | null {
 		const buy = accounts.find(
@@ -1438,6 +1455,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				accountDeposits = data.account_deposits || draftDeposits;
 				plAlertSettings = data.pl_alert || draftPlAlert;
 				plAlertState = data.pl_alert_state || plAlertState;
+				if (data.equity_warning_state) equityWarningState = normalizeEquityWarningState(data.equity_warning_state);
 				applyCurrencyPayload({ currency: data.currency || draftCurrency, fx: data.fx });
 				showSettingsModal = false;
 				location.reload();
@@ -1466,6 +1484,28 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			console.error('Error resetting PL alert:', error);
 		} finally {
 			resettingAlert = null;
+		}
+	}
+
+	async function resetEquityWarning(unit: number) {
+		if (resettingEquityUnit !== null) return;
+		resettingEquityUnit = unit;
+		try {
+			const response = await fetch('/api/alerts/reset', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ kind: 'equity', unit })
+			});
+			if (response.ok) {
+				const data = await response.json();
+				if (data.equityWarningState) {
+					equityWarningState = normalizeEquityWarningState(data.equityWarningState);
+				}
+			}
+		} catch (error) {
+			console.error('Error resetting equity warning:', error);
+		} finally {
+			resettingEquityUnit = null;
 		}
 	}
 
@@ -1827,6 +1867,15 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						
 						{#if visibleAccounts.length > 0}
 						<div class="py-3 {unitUnmatched.length > 0 ? 'fac-unit-solo' : unitHasOpenTrades(unitPairs, unitUnmatched) ? 'fac-unit-open' : ''}">
+							{#if plAlertSettings.equityWarningEnabled && isEquityUnitPaused(unit)}
+								<button
+									on:click={() => resetEquityWarning(unit)}
+									class="w-full min-h-12 px-4 mb-1 fac-display text-lg sm:text-xl font-extrabold tracking-tight bg-[#ffcc33] text-[#0a0a0a] border border-[#ffcc33] hover:bg-[#f5f5f5] hover:border-[#f5f5f5] disabled:opacity-45 disabled:cursor-not-allowed"
+									disabled={resettingEquityUnit !== null}
+								>
+									{resettingEquityUnit === unit ? 'RESETTING...' : 'RESET EQUITY ALERT'}
+								</button>
+							{/if}
 							<!-- Unit Header Row 1: Name + badges -->
 							<div 
 								class="px-4 py-2.5 cursor-pointer transition-colors {accounts.some(isLowEquityWarning) ? 'bg-red-900/20 hover:bg-red-900/30' : 'hover:bg-stone-700/50'}"
@@ -2900,9 +2949,20 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					<fieldset>
 						<legend class="block text-sm font-medium text-[#f5f5f5] mb-2">P/L Alerts</legend>
 						<p class="text-xs text-[#ececec] mb-3">
-							Email when adjusted P/L crosses a threshold. Each alert sends once, then stays paused until you reset it.
+							Email when adjusted P/L crosses a threshold, or when a unit hits its warning equity %. Each alert sends once, then stays paused until you reset it.
 						</p>
 						<div class="space-y-3">
+							<label class="inline-flex items-center gap-2 text-sm text-[#ececec]">
+								<input
+									type="checkbox"
+									checked={draftPlAlert.equityWarningEnabled}
+									on:change={(e) => {
+										draftPlAlert = { ...draftPlAlert, equityWarningEnabled: (e.target as HTMLInputElement).checked };
+									}}
+									class="border-stone-600 bg-stone-700 text-[#f5f5f5] focus:ring-[#f5f5f5]"
+								/>
+								<span>Low equity alert</span>
+							</label>
 							<div class="flex flex-wrap items-center gap-2 text-sm text-[#ececec]">
 								<label class="inline-flex items-center gap-2">
 									<input

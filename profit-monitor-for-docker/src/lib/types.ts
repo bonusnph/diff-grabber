@@ -48,6 +48,7 @@ export interface PlAlertSettings {
 	profitThreshold: number;
 	lossEnabled: boolean;
 	lossThreshold: number;
+	equityWarningEnabled: boolean;
 	recipientEmail: string;
 }
 
@@ -56,6 +57,10 @@ export interface PlAlertState {
 	lossPaused: boolean;
 	lastProfitSentAt: string | null;
 	lastLossSentAt: string | null;
+}
+
+export interface EquityWarningState {
+	pausedUnits: Record<number, string>;
 }
 
 export type DisplayCurrency = 'USD' | 'THB';

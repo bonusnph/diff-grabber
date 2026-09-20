@@ -14,6 +14,7 @@ export const GET: RequestHandler = async () => {
 		const snapshot = await storage.getSnapshotPL();
 		const plAlertState = await storage.getPlAlertState();
 		const plAlertSettings = await storage.getPlAlertSettings();
+		const equityWarningState = await storage.getEquityWarningState();
 		const currency = await storage.getCurrencySettings();
 		const fx = await resolveFxQuote(currency);
 		
@@ -38,6 +39,9 @@ export const GET: RequestHandler = async () => {
 			plAlert: {
 				settings: plAlertSettings,
 				state: plAlertState
+			},
+			equityWarning: {
+				state: equityWarningState
 			},
 			currency,
 			fx

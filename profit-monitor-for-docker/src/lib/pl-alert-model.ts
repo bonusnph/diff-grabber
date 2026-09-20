@@ -6,6 +6,7 @@ export function defaultPlAlertSettings(): PlAlertSettings {
 		profitThreshold: 0,
 		lossEnabled: false,
 		lossThreshold: 0,
+		equityWarningEnabled: false,
 		recipientEmail: ''
 	};
 }
@@ -31,6 +32,7 @@ export function normalizePlAlertSettings(raw: unknown): PlAlertSettings {
 		profitThreshold: Number.isFinite(profitThreshold) && profitThreshold > 0 ? profitThreshold : 0,
 		lossEnabled: value.lossEnabled === true,
 		lossThreshold: Number.isFinite(lossThreshold) && lossThreshold > 0 ? lossThreshold : 0,
+		equityWarningEnabled: value.equityWarningEnabled === true,
 		recipientEmail
 	};
 }

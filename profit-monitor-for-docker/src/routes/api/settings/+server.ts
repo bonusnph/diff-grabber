@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { storage } from '$lib/storage-supabase.js';
 import { schedulePlAlertEvaluation } from '$lib/pl-alerts.js';
+import { normalizePlAlertSettings } from '$lib/pl-alert-model.js';
 import { normalizeCurrencySettings } from '$lib/currency.js';
 import { resolveFxQuote } from '$lib/fx-rate.js';
 
@@ -20,6 +21,7 @@ async function settingsPayload() {
 		snapshot: await storage.getSnapshotPL(),
 		pl_alert: await storage.getPlAlertSettings(),
 		pl_alert_state: await storage.getPlAlertState(),
+		equity_warning_state: await storage.getEquityWarningState(),
 		currency,
 		fx: await resolveFxQuote(currency)
 	};
@@ -150,10 +152,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				return json({ error: 'Invalid alert recipient email' }, { status: 400 });
 			}
 			await storage.setPlAlertSettings({
-				profitEnabled: pl_alert.profitEnabled === true,
-				profitThreshold: Number(pl_alert.profitThreshold) || 0,
-				lossEnabled: pl_alert.lossEnabled === true,
-				lossThreshold: Number(pl_alert.lossThreshold) || 0,
+				...normalizePlAlertSettings(pl_alert),
 				recipientEmail
 			});
 			schedulePlAlertEvaluation();
