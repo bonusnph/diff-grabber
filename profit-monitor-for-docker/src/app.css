@@ -137,17 +137,3 @@ body {
 	opacity: 0.45;
 	cursor: not-allowed;
 }
-
-.fac-bars {
-	display: flex;
-	align-items: flex-end;
-	gap: 4px;
-	height: 28px;
-	margin: 22px 0 10px;
-}
-
-.fac-bars i {
-	width: 3px;
-	background: #f5f5f5;
-	display: block;
-}

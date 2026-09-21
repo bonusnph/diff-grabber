@@ -1451,14 +1451,14 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			</div>
 		{:else}
 
-		<div class="pt-6 pb-4" data-fx-rate={displayRate}>
+		<div class="pt-6 pb-2" data-fx-rate={displayRate}>
 			{#if !isDataComplete}
 				<span class="inline-block text-xs font-semibold fac-minus mb-2">Partial Data</span>
 			{/if}
 			<div class="flex items-center gap-3 sm:gap-4">
 				<CurrencyFlag currency={displayCurrency} size={28} />
 				<p
-					class="fac-display text-5xl sm:text-6xl lg:text-8xl font-extrabold tracking-tight leading-none tabular-nums flex items-baseline gap-[0.18em] flex-wrap {!isDataComplete ? 'opacity-60' : ''} {Math.abs(adjustedProfitLoss) < 0.005 ? 'text-[#ececec]' : adjustedProfitLoss >= 0 ? 'fac-plus' : 'fac-minus'}"
+					class="fac-display text-6xl sm:text-7xl lg:text-[7rem] font-extrabold tracking-tight leading-none tabular-nums flex items-baseline gap-[0.18em] flex-wrap {!isDataComplete ? 'opacity-60' : ''} {Math.abs(adjustedProfitLoss) < 0.005 ? 'text-[#ececec]' : adjustedProfitLoss >= 0 ? 'fac-plus' : 'fac-minus'}"
 				>
 					<span class="inline-flex items-baseline whitespace-nowrap">
 						<span>{heroAmountParts.whole}</span><span class="pl-hero-frac">{heroAmountParts.frac}</span>
@@ -1468,31 +1468,27 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							{usdParen(adjustedProfitLoss, adjustedProfitLoss >= 0.005 ? '+' : '', true)}
 						</span>
 					{/if}
+					<span
+						class="text-[0.22em] sm:text-[0.20em] lg:text-[0.18em] font-semibold tracking-normal {revealBookValues && Math.abs(adjustedProfitLossPercent) >= 0.005 ? (adjustedProfitLossPercent >= 0 ? 'fac-plus' : 'fac-minus') : 'text-[#ececec]'}"
+					>
+						{bookValue((adjustedProfitLossPercent >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLossPercent, false), revealBookValues)}%
+					</span>
 				</p>
 			</div>
-			<p
-				class="text-sm mt-3 tracking-tight {revealBookValues && Math.abs(adjustedProfitLossPercent) >= 0.005 ? (adjustedProfitLossPercent >= 0 ? 'fac-plus' : 'fac-minus') : 'text-[#ececec]'}"
-			>
-				{bookValue((adjustedProfitLossPercent >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLossPercent, false), revealBookValues)}%
-				{#if totalWaitingWD !== 0 || totalDeposits !== 0}
-					<span class="text-[#ececec]">
-						&nbsp; Total P/L
-						<span class={revealBookValues ? (stats.profit_loss >= 0 ? 'fac-plus' : 'fac-minus') : ''}>{moneyLine(stats.profit_loss, stats.profit_loss >= 0 ? '+' : '', revealBookValues)}</span>
-						{#if totalWaitingWD !== 0}
-							&nbsp; WD <span class={revealBookValues ? (totalWaitingWD >= 0 ? 'fac-plus' : 'fac-minus') : ''}>{moneyLine(totalWaitingWD, totalWaitingWD >= 0 ? '+' : '', revealBookValues)}</span>
-						{/if}
-						{#if totalDeposits !== 0}
-							&nbsp; DP <span class={revealBookValues ? 'fac-minus' : ''}>{moneyLine(totalDeposits, '−', revealBookValues)}</span>
-						{/if}
-					</span>
-				{/if}
-			</p>
+			{#if totalWaitingWD !== 0 || totalDeposits !== 0}
+				<p class="text-sm mt-2 tracking-tight text-[#ececec]">
+					Total P/L
+					<span class={revealBookValues ? (stats.profit_loss >= 0 ? 'fac-plus' : 'fac-minus') : ''}>{moneyLine(stats.profit_loss, stats.profit_loss >= 0 ? '+' : '', revealBookValues)}</span>
+					{#if totalWaitingWD !== 0}
+						&nbsp; WD <span class={revealBookValues ? (totalWaitingWD >= 0 ? 'fac-plus' : 'fac-minus') : ''}>{moneyLine(totalWaitingWD, totalWaitingWD >= 0 ? '+' : '', revealBookValues)}</span>
+					{/if}
+					{#if totalDeposits !== 0}
+						&nbsp; DP <span class={revealBookValues ? 'fac-minus' : ''}>{moneyLine(totalDeposits, '−', revealBookValues)}</span>
+					{/if}
+				</p>
+			{/if}
 
-			<div class="fac-bars" aria-hidden="true">
-				<i style="height:12px"></i><i style="height:22px"></i><i style="height:8px"></i><i style="height:26px"></i>
-				<i style="height:14px"></i><i style="height:24px"></i><i style="height:10px"></i><i style="height:20px"></i>
-			</div>
-			<div class="flex items-center gap-3 flex-wrap text-xs">
+			<div class="flex items-center gap-3 flex-wrap text-xs mt-2">
 				{#if snapshot}
 					<span class={(snapshotDelta ?? 0) >= 0 ? 'fac-plus' : 'fac-minus'}>
 						SNAPSHOT Δ {moneyLine(snapshotDelta ?? 0, (snapshotDelta ?? 0) >= 0 ? '+' : '', revealBookValues)}
@@ -1509,56 +1505,49 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			</div>
 		</div>
 
-		<div class="flex flex-wrap gap-x-6 gap-y-1 py-2 text-xs text-[#ececec]">
-			<span>ACTIVE {stats.account_count}</span>
-			<span>
-				OPEN PAIRS {tradingPairs}
-				{#if positivePairsCount > 0 || negativePairsCount > 0}
-					<span class="fac-chip-plus">+{positivePairsCount}</span>
-					/
-					<span class="fac-chip-minus">−{negativePairsCount}</span>
-				{/if}
-			</span>
-			<span class={lowEquityUnits.length > 0 ? 'fac-minus' : ''}>
-				LOW EQUITY
-				{#if lowEquityUnits.length > 0}
-					{#each lowEquityUnits as u}
-						#{u} {getUnitDisplayName(u)}
+		<div class="flex flex-col gap-1 pb-2 text-xs text-[#ececec]">
+			<div class="flex flex-wrap gap-x-6 gap-y-1">
+				<span>ACTIVE {stats.account_count}</span>
+				<span>
+					OPEN PAIRS {tradingPairs}
+					{#if positivePairsCount > 0 || negativePairsCount > 0}
+						<span class="fac-plus">+{positivePairsCount}</span>
+						/
+						<span class="fac-minus">−{negativePairsCount}</span>
+					{/if}
+				</span>
+				<span class={lowEquityUnits.length > 0 ? 'fac-minus' : ''}>
+					LOW EQUITY
+					{#if lowEquityUnits.length > 0}
+						{#each lowEquityUnits as u}
+							#{u} {getUnitDisplayName(u)}
+						{/each}
+					{:else}
+						--
+					{/if}
+				</span>
+			</div>
+			{#if displayPairs.length > 0}
+				<div class="flex flex-wrap gap-1.5 items-center" aria-label="Pair diffs">
+					{#each positivePairs as p}
+						<span
+							class="fac-chip-plus tabular-nums"
+							title={`Unit ${p.unit}${p.pairMagic !== undefined ? ` · magic ${p.pairMagic}` : ''}${p.symbol ? ' · ' + p.symbol : ''} · ${((p.buyLots + p.sellLots) / 2).toFixed(2)}L`}
+						>
+							+{Math.round(p.diffPoints)}
+						</span>
 					{/each}
-				{:else}
-					--
-				{/if}
-			</span>
-		</div>
-
-		{#if positivePairs.length > 0 || negativePairs.length > 0}
-		<div class="flex flex-wrap gap-x-4 gap-y-2 items-center py-2">
-			<span>POSITIVE</span>
-			{#each positivePairs as p}
-				<span
-					class="fac-chip-plus tabular-nums"
-					title={`Unit ${p.unit}${p.pairMagic !== undefined ? ` · magic ${p.pairMagic}` : ''}${p.symbol ? ' · ' + p.symbol : ''} · ${((p.buyLots + p.sellLots) / 2).toFixed(2)}L`}
-				>
-					+{Math.round(p.diffPoints)}
-				</span>
-			{/each}
-			{#if positivePairs.length === 0}
-				<span class="text-xs text-[#ececec]">--</span>
-			{/if}
-			<span>NEGATIVE</span>
-			{#each negativePairs as p}
-				<span
-					class="fac-chip-minus tabular-nums"
-					title={`Unit ${p.unit}${p.pairMagic !== undefined ? ` · magic ${p.pairMagic}` : ''}${p.symbol ? ' · ' + p.symbol : ''} · ${((p.buyLots + p.sellLots) / 2).toFixed(2)}L`}
-				>
-					{Math.round(p.diffPoints)}
-				</span>
-			{/each}
-			{#if negativePairs.length === 0}
-				<span class="text-xs text-[#ececec]">--</span>
+					{#each negativePairs as p}
+						<span
+							class="fac-chip-minus tabular-nums"
+							title={`Unit ${p.unit}${p.pairMagic !== undefined ? ` · magic ${p.pairMagic}` : ''}${p.symbol ? ' · ' + p.symbol : ''} · ${((p.buyLots + p.sellLots) / 2).toFixed(2)}L`}
+						>
+							{Math.round(p.diffPoints)}
+						</span>
+					{/each}
+				</div>
 			{/if}
 		</div>
-		{/if}
 
 		<div class="flex items-center justify-between gap-2 flex-wrap py-3">
 			<div class="flex items-center gap-2">
@@ -1739,7 +1728,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										{:else}
 											{@const legacyDelta = computeUnitDelta(accounts)}
 											{#if legacyDelta !== null}
-												<span class="text-xs px-1.5 py-0.5 rounded-md font-semibold {legacyDelta >= 0 ? 'fac-chip-plus' : 'fac-chip-minus'}">
+												<span class="text-xs px-1.5 py-0.5 rounded-md font-semibold {legacyDelta >= 0 ? 'fac-plus' : 'fac-minus'}">
 													{legacyDelta > 0 ? '+' : ''}{legacyDelta.toFixed(0)} pts
 												</span>
 											{/if}
@@ -1765,7 +1754,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 									<div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
 										{#each unitPairs as p}
 											<span
-												class="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md {p.diffPoints >= 0 ? 'fac-chip-plus' : 'fac-chip-minus'}"
+												class="inline-flex items-center gap-1 text-[10px] font-medium {p.diffPoints >= 0 ? 'fac-plus' : 'fac-minus'}"
 												title={`${p.pairMagic !== undefined ? `Magic ${p.pairMagic}` : 'Pair'}${p.symbol ? ' · ' + p.symbol : ''} · BUY ${p.buyPrice} / SELL ${p.sellPrice} · ${formatDateTime(p.openTime)}`}
 											>
 												{#if p.pairMagic !== undefined}
