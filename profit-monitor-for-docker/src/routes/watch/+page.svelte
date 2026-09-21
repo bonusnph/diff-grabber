@@ -7,8 +7,9 @@
 		normalizeCurrencySettings
 	} from '$lib/currency.js';
 	import CurrencyFlag from '$lib/CurrencyFlag.svelte';
+	import { listDisplayPairs, splitSignedPairs } from '$lib/pairs.js';
 	import { computeAdjustedProfitLoss } from '$lib/pl-alert-model.js';
-	import type { CurrencySettings, FxQuote } from '$lib/types.js';
+	import type { AccountSummary, CurrencySettings, FxQuote } from '$lib/types.js';
 
 	const STALE_FORCE_REFRESH_MS = 30 * 1000;
 	const CACHE_KEY = 'pm-watch-last';
@@ -20,6 +21,7 @@
 		summaries?: Array<{ last_update?: string }>;
 		accountWithdrawals?: Record<string, number>;
 		accountDeposits?: Record<string, number>;
+		unitGroups?: Record<string, AccountSummary[]>;
 		currency?: unknown;
 		fx?: FxQuote | null;
 		snapshot?: WatchSnapshot | null;
@@ -36,6 +38,7 @@
 	let snapshot: WatchSnapshot | null = null;
 	let snapshotDelta: number | null = null;
 	let snapshotLoading = false;
+	let unitGroups: Record<string, AccountSummary[]> = {};
 	let latestUpdate = 0;
 	let currencySettings: CurrencySettings = defaultCurrencySettings();
 	let fxQuote: FxQuote = identityFxQuote(currencySettings);
@@ -60,6 +63,10 @@
 	$: delta = snapshotDelta ?? 0;
 	$: deltaShown = formatAmount(delta, displayRate);
 	$: deltaTone = Math.abs(delta) < 0.005 ? 'flat' : delta >= 0 ? 'plus' : 'minus';
+	$: displayPairs = listDisplayPairs(unitGroups);
+	$: signedPairs = splitSignedPairs(displayPairs);
+	$: positivePairs = signedPairs.positive;
+	$: negativePairs = signedPairs.negative;
 	$: stamp = latestUpdate > 0 ? formatDateTime(latestUpdate) : '';
 	$: stale = latestUpdate > 0 && Date.now() - latestUpdate >= 5 * 60 * 1000;
 	$: countLabel = String(countdownSeconds).padStart(2, '0');
@@ -146,6 +153,7 @@
 			typeof payload.stats?.initial_capital === 'number' ? payload.stats.initial_capital : 0;
 		snapshot = payload.snapshot || null;
 		snapshotDelta = payload.snapshotDelta ?? null;
+		unitGroups = payload.unitGroups || {};
 		latestUpdate = latestFromSummaries(payload.summaries);
 		hasValue = true;
 		failed = false;
@@ -317,6 +325,16 @@
 				</span>
 			</p>
 			<p class="meta {percentTone}">{percentShown}%</p>
+			{#if displayPairs.length > 0}
+				<div class="bubbles" aria-label="Pair diffs">
+					{#each positivePairs as p, i (`p-${p.unit}-${p.pairMagic ?? 'x'}-${p.buyAccount}-${i}`)}
+						<span class="chip fac-chip-plus">+{Math.round(p.diffPoints)}</span>
+					{/each}
+					{#each negativePairs as p, i (`n-${p.unit}-${p.pairMagic ?? 'x'}-${p.sellAccount}-${i}`)}
+						<span class="chip fac-chip-minus">{Math.round(p.diffPoints)}</span>
+					{/each}
+				</div>
+			{/if}
 			<div class="fresh">
 				{#if stamp}
 					<p class="meta stamp" class:stale class:busy={refreshing}>{stamp}</p>
@@ -422,6 +440,26 @@
 		line-height: 1.2;
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
+	}
+
+	.bubbles {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: center;
+		align-items: center;
+		gap: calc(4px * var(--ui));
+		width: 100%;
+		font-family: 'Azeret Mono', ui-monospace, monospace;
+		font-size: calc(11px * var(--ui));
+		letter-spacing: -0.02em;
+		line-height: 1.2;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.chip {
+		padding: calc(2px * var(--ui)) calc(6px * var(--ui));
+		border-radius: 6px;
+		font-weight: 600;
 	}
 
 	.actions {

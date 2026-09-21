@@ -12,188 +12,13 @@
 	} from '$lib/equity-warning-model.js';
 	import { convertUsd, defaultCurrencySettings, identityFxQuote, normalizeCurrencySettings } from '$lib/currency.js';
 	import CurrencyFlag from '$lib/CurrencyFlag.svelte';
-
-	interface PairInfo {
-		symbol: string;
-		/** Raw symbols from BUY / SELL legs (pair label is derived, sorted A–Z). */
-		buySymbol?: string;
-		sellSymbol?: string;
-		buyAccount: string;
-		sellAccount: string;
-		buyBroker: string;
-		sellBroker: string;
-		buyPrice: number;
-		sellPrice: number;
-		diff: number;
-		diffPoints: number;
-		lots: number;
-		buyLots: number;
-		sellLots: number;
-		openTime: string;
-		/** BUY leg open time (ISO); pair rows only. */
-		buyOpenTime?: string;
-		/** SELL leg open time (ISO); pair rows only. */
-		sellOpenTime?: string;
-		pairMagic?: number;
-	}
-
-	type UnitPair = PairInfo & { unit: number };
-
-	function nearlyEqualAtTick(price: number, roundedToTick: number): boolean {
-		return Math.abs(price - roundedToTick) <= 1e-9 * Math.max(1, Math.abs(price));
-	}
-
-	/** Smallest fractional digit count that represents this quote on a uniform grid. */
-	function inferFractionDecimalsForPrice(p: number): number {
-		for (let d = 0; d <= 12; d++) {
-			const scale = Math.pow(10, d);
-			const r = Math.round(p * scale) / scale;
-			if (nearlyEqualAtTick(r, p)) return d;
-		}
-		return 5;
-	}
-
-	/**
-	 * Align BUY and SELL to the coarser implied precision (min decimals per leg), scale to integers, subtract.
-	 * Example: buy 4500.12 (2 dp), sell 4600.120 (3 dp) → scale ×100 → 450012 vs 460012 → diff 10000 ticks at 0.01.
-	 */
-	function spreadDiffWholeTicks(buyPrice: number, sellPrice: number): number {
-		const db = inferFractionDecimalsForPrice(buyPrice);
-		const ds = inferFractionDecimalsForPrice(sellPrice);
-		const d = Math.min(db, ds);
-		const scale = Math.pow(10, d);
-		return Math.round(sellPrice * scale) - Math.round(buyPrice * scale);
-	}
-
-	/** Both leg symbols, sorted alphabetically, as "A - B" (for cross-broker suffixes). */
-	function formatPairSymbolsLabel(buySym: string | undefined, sellSym: string | undefined): string {
-		const bs = (buySym ?? '').trim();
-		const ss = (sellSym ?? '').trim();
-		if (!bs && !ss) return '';
-		if (!bs) return ss;
-		if (!ss) return bs;
-		const [a, b] = [bs, ss].sort((x, y) => x.localeCompare(y));
-		return `${a} - ${b}`;
-	}
-
-	function computeUnitPairs(accounts: AccountSummary[]): { pairs: PairInfo[]; unmatched: Array<OrderInfo & { account_number: string; broker_name: string }> } {
-		type Annotated = OrderInfo & { account_number: string; broker_name: string; openMs: number };
-
-		function annotate(acc: AccountSummary, o: OrderInfo): Annotated | null {
-			if (!o?.openTime) return null;
-			const ms = new Date(o.openTime).getTime();
-			if (!isFinite(ms)) return null;
-			return {
-				...o,
-				account_number: acc.account_number,
-				broker_name: acc.broker_name,
-				openMs: ms
-			};
-		}
-
-		function orderMagic(o: OrderInfo): number | undefined {
-			if (typeof o.magic !== 'number' || !Number.isFinite(o.magic)) return undefined;
-			return o.magic;
-		}
-
-		function makePair(buy: Annotated, sell: Annotated, magic?: number): PairInfo {
-			const diff = sell.price - buy.price;
-			const bs = (buy.symbol || '').trim();
-			const ss = (sell.symbol || '').trim();
-			const pi: PairInfo = {
-				symbol: formatPairSymbolsLabel(bs, ss) || bs || ss,
-				buySymbol: bs,
-				sellSymbol: ss,
-				buyAccount: buy.account_number,
-				sellAccount: sell.account_number,
-				buyBroker: buy.broker_name,
-				sellBroker: sell.broker_name,
-				buyPrice: buy.price,
-				sellPrice: sell.price,
-				diff,
-				diffPoints: spreadDiffWholeTicks(buy.price, sell.price),
-				lots: (buy.lots + sell.lots) / 2,
-				buyLots: buy.lots,
-				sellLots: sell.lots,
-				openTime: new Date(Math.min(buy.openMs, sell.openMs)).toISOString(),
-				buyOpenTime: new Date(buy.openMs).toISOString(),
-				sellOpenTime: new Date(sell.openMs).toISOString()
-			};
-			if (magic !== undefined) pi.pairMagic = magic;
-			return pi;
-		}
-
-		const allBuys: Annotated[] = [];
-		const allSells: Annotated[] = [];
-		for (const acc of accounts || []) {
-			const orders = (acc.orders || []) as OrderInfo[];
-			for (const o of orders) {
-				const a = annotate(acc, o);
-				if (!a) continue;
-				if (o.side === 'BUY') allBuys.push(a);
-				else if (o.side === 'SELL') allSells.push(a);
-			}
-		}
-
-		const pairs: PairInfo[] = [];
-		const buysMagic = new Map<number, Annotated[]>();
-		const sellsMagic = new Map<number, Annotated[]>();
-		const unpairedBuys: Annotated[] = [];
-		const unpairedSells: Annotated[] = [];
-
-		for (const buy of allBuys) {
-			const m = orderMagic(buy);
-			if (m !== undefined) {
-				const arr = buysMagic.get(m) ?? [];
-				arr.push(buy);
-				buysMagic.set(m, arr);
-			} else {
-				unpairedBuys.push(buy);
-			}
-		}
-		for (const sell of allSells) {
-			const m = orderMagic(sell);
-			if (m !== undefined) {
-				const arr = sellsMagic.get(m) ?? [];
-				arr.push(sell);
-				sellsMagic.set(m, arr);
-			} else {
-				unpairedSells.push(sell);
-			}
-		}
-
-		const magicKeys = new Set<number>([...buysMagic.keys(), ...sellsMagic.keys()]);
-		for (const mk of magicKeys) {
-			const bList = [...(buysMagic.get(mk) ?? [])].sort((x, y) => x.openMs - y.openMs);
-			const sList = [...(sellsMagic.get(mk) ?? [])].sort((x, y) => x.openMs - y.openMs);
-			const n = Math.min(bList.length, sList.length);
-			for (let i = 0; i < n; i++) {
-				pairs.push(makePair(bList[i], sList[i], mk));
-			}
-			for (let i = n; i < bList.length; i++) unpairedBuys.push(bList[i]);
-			for (let i = n; i < sList.length; i++) unpairedSells.push(sList[i]);
-		}
-
-		unpairedBuys.sort((a, b) => a.openMs - b.openMs);
-		unpairedSells.sort((a, b) => a.openMs - b.openMs);
-
-		const unmatched: Array<OrderInfo & { account_number: string; broker_name: string }> = [];
-		for (const leg of unpairedBuys) {
-			const { openMs: _omitMs, ...rest } = leg;
-			unmatched.push(rest);
-		}
-		for (const leg of unpairedSells) {
-			const { openMs: _omitMs, ...rest } = leg;
-			unmatched.push(rest);
-		}
-
-		const magicAscKey = (m: number | undefined) =>
-			typeof m === 'number' && Number.isFinite(m) ? m : Number.POSITIVE_INFINITY;
-		pairs.sort((a, b) => magicAscKey(a.pairMagic) - magicAscKey(b.pairMagic));
-		unmatched.sort((a, b) => magicAscKey(orderMagic(a)) - magicAscKey(orderMagic(b)));
-
-		return { pairs, unmatched };
-	}
+	import {
+		computeLegacyUnitPair,
+		computeUnitDelta,
+		computeUnitPairs,
+		type PairInfo,
+		type UnitPair
+	} from '$lib/pairs.js';
 
 	let stats: DashboardStats = {
 		total_balance: 0,
@@ -1260,53 +1085,6 @@
 		return isEquityWarningPaused(equityWarningState, unit);
 	}
 
-	function computeUnitDelta(accounts: AccountSummary[]): number | null {
-		const buy = accounts.find(
-			(a) => a.lastPositionSide === 'BUY' && (a.lastPositionEntryPrice ?? 0) > 0
-		);
-		const sell = accounts.find(
-			(a) => a.lastPositionSide === 'SELL' && (a.lastPositionEntryPrice ?? 0) > 0
-		);
-		if (!buy || !sell) return null;
-		const buyPrice = buy.lastPositionEntryPrice as number;
-		const sellPrice = sell.lastPositionEntryPrice as number;
-		return spreadDiffWholeTicks(buyPrice, sellPrice);
-	}
-
-	/** Top-summary legacy pair when unit has no order-json pairing (EA last-position only). */
-	function computeLegacyUnitPair(unit: number, accounts: AccountSummary[]): UnitPair | null {
-		const buy = accounts.find(
-			(a) => a.lastPositionSide === 'BUY' && (a.lastPositionEntryPrice ?? 0) > 0
-		);
-		const sell = accounts.find(
-			(a) => a.lastPositionSide === 'SELL' && (a.lastPositionEntryPrice ?? 0) > 0
-		);
-		if (!buy || !sell) return null;
-		const buyPrice = buy.lastPositionEntryPrice as number;
-		const sellPrice = sell.lastPositionEntryPrice as number;
-		const diff = sellPrice - buyPrice;
-		const buyLots = buy.lastSize ?? 0;
-		const sellLots = sell.lastSize ?? 0;
-		return {
-			unit,
-			symbol: '',
-			buyAccount: buy.account_number,
-			sellAccount: sell.account_number,
-			buyBroker: buy.broker_name,
-			sellBroker: sell.broker_name,
-			buyPrice,
-			sellPrice,
-			diff,
-			diffPoints: spreadDiffWholeTicks(buyPrice, sellPrice),
-			lots: (buyLots + sellLots) / 2,
-			buyLots,
-			sellLots,
-			openTime: buy.last_update || sell.last_update,
-			buyOpenTime: buy.last_update || undefined,
-			sellOpenTime: sell.last_update || undefined
-		};
-	}
-
 	function applyCurrencyPayload(data: { currency?: unknown; fx?: FxQuote | null }) {
 		if (data.currency) {
 			currencySettings = normalizeCurrencySettings(data.currency);
@@ -1758,7 +1536,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			<span>POSITIVE</span>
 			{#each positivePairs as p}
 				<span
-					class="fac-plus tabular-nums"
+					class="fac-chip-plus tabular-nums px-1.5 py-0.5 rounded-md font-semibold"
 					title={`Unit ${p.unit}${p.pairMagic !== undefined ? ` · magic ${p.pairMagic}` : ''}${p.symbol ? ' · ' + p.symbol : ''} · ${((p.buyLots + p.sellLots) / 2).toFixed(2)}L`}
 				>
 					+{Math.round(p.diffPoints)}
@@ -1770,7 +1548,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			<span>NEGATIVE</span>
 			{#each negativePairs as p}
 				<span
-					class="fac-minus tabular-nums"
+					class="fac-chip-minus tabular-nums px-1.5 py-0.5 rounded-md font-semibold"
 					title={`Unit ${p.unit}${p.pairMagic !== undefined ? ` · magic ${p.pairMagic}` : ''}${p.symbol ? ' · ' + p.symbol : ''} · ${((p.buyLots + p.sellLots) / 2).toFixed(2)}L`}
 				>
 					{Math.round(p.diffPoints)}
@@ -1961,7 +1739,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										{:else}
 											{@const legacyDelta = computeUnitDelta(accounts)}
 											{#if legacyDelta !== null}
-												<span class="text-xs px-1.5 py-0.5 rounded-md font-semibold {legacyDelta >= 0 ? 'bg-emerald-900/40 fac-plus' : 'bg-red-900/40 fac-minus'}">
+												<span class="text-xs px-1.5 py-0.5 rounded-md font-semibold {legacyDelta >= 0 ? 'fac-chip-plus' : 'fac-chip-minus'}">
 													{legacyDelta > 0 ? '+' : ''}{legacyDelta.toFixed(0)} pts
 												</span>
 											{/if}
@@ -1987,7 +1765,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 									<div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
 										{#each unitPairs as p}
 											<span
-												class="inline-flex items-center gap-1 text-[10px] font-medium {p.diffPoints >= 0 ? 'fac-plus' : 'fac-minus'}"
+												class="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md {p.diffPoints >= 0 ? 'fac-chip-plus' : 'fac-chip-minus'}"
 												title={`${p.pairMagic !== undefined ? `Magic ${p.pairMagic}` : 'Pair'}${p.symbol ? ' · ' + p.symbol : ''} · BUY ${p.buyPrice} / SELL ${p.sellPrice} · ${formatDateTime(p.openTime)}`}
 											>
 												{#if p.pairMagic !== undefined}

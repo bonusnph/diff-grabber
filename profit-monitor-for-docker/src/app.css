@@ -63,6 +63,16 @@ body {
 	color: #ff4d4d;
 }
 
+.fac-chip-plus {
+	background: color-mix(in srgb, #3dff6a 20%, transparent);
+	color: #3dff6a;
+}
+
+.fac-chip-minus {
+	background: color-mix(in srgb, #ff4d4d 20%, transparent);
+	color: #ff4d4d;
+}
+
 .fac-warn {
 	color: #ffcc33;
 }
