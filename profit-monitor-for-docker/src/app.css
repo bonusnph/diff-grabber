@@ -63,6 +63,13 @@ body {
 	color: #ff4d4d;
 }
 
+.fac-chip-plus,
+.fac-chip-minus {
+	padding: 2px 6px;
+	border-radius: 6px;
+	font-weight: 600;
+}
+
 .fac-chip-plus {
 	background: color-mix(in srgb, #3dff6a 20%, transparent);
 	color: #3dff6a;

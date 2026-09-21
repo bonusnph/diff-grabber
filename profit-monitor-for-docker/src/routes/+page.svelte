@@ -1514,9 +1514,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			<span>
 				OPEN PAIRS {tradingPairs}
 				{#if positivePairsCount > 0 || negativePairsCount > 0}
-					<span class="fac-plus">+{positivePairsCount}</span>
+					<span class="fac-chip-plus">+{positivePairsCount}</span>
 					/
-					<span class="fac-minus">−{negativePairsCount}</span>
+					<span class="fac-chip-minus">−{negativePairsCount}</span>
 				{/if}
 			</span>
 			<span class={lowEquityUnits.length > 0 ? 'fac-minus' : ''}>
@@ -1536,7 +1536,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			<span>POSITIVE</span>
 			{#each positivePairs as p}
 				<span
-					class="fac-chip-plus tabular-nums px-1.5 py-0.5 rounded-md font-semibold"
+					class="fac-chip-plus tabular-nums"
 					title={`Unit ${p.unit}${p.pairMagic !== undefined ? ` · magic ${p.pairMagic}` : ''}${p.symbol ? ' · ' + p.symbol : ''} · ${((p.buyLots + p.sellLots) / 2).toFixed(2)}L`}
 				>
 					+{Math.round(p.diffPoints)}
@@ -1548,7 +1548,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			<span>NEGATIVE</span>
 			{#each negativePairs as p}
 				<span
-					class="fac-chip-minus tabular-nums px-1.5 py-0.5 rounded-md font-semibold"
+					class="fac-chip-minus tabular-nums"
 					title={`Unit ${p.unit}${p.pairMagic !== undefined ? ` · magic ${p.pairMagic}` : ''}${p.symbol ? ' · ' + p.symbol : ''} · ${((p.buyLots + p.sellLots) / 2).toFixed(2)}L`}
 				>
 					{Math.round(p.diffPoints)}
