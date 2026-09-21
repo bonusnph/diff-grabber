@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 dotenv.config();
+dotenv.config({ path: '.env.local', override: true });
 
 import { existsSync, readFileSync } from 'node:fs';
 import { Pool, type QueryResultRow } from 'pg';
@@ -9,6 +10,7 @@ import type {
 	CurrencySettings,
 	DashboardStats,
 	EquityWarningState,
+	PendingWithdrawal,
 	PlAlertSettings,
 	PlAlertState
 } from './types.js';
@@ -18,6 +20,7 @@ import {
 	normalizePlAlertSettings,
 	normalizePlAlertState
 } from './pl-alert-model.js';
+import { normalizePendingWithdrawals } from './pending-withdrawal-model.js';
 import { defaultEquityWarningState, normalizeEquityWarningState } from './equity-warning-model.js';
 import { defaultCurrencySettings, normalizeCurrencySettings } from './currency.js';
 
@@ -459,6 +462,14 @@ class PostgresStorage {
 
 	async getAccountDeposits(): Promise<Record<string, number>> {
 		return parseJson(await this.getSetting('account_deposits'), {});
+	}
+
+	async setPendingWithdrawals(entries: PendingWithdrawal[]): Promise<void> {
+		await this.setSetting('pending_withdrawals', JSON.stringify(normalizePendingWithdrawals(entries)));
+	}
+
+	async getPendingWithdrawals(): Promise<PendingWithdrawal[]> {
+		return normalizePendingWithdrawals(parseJson(await this.getSetting('pending_withdrawals'), []));
 	}
 
 	async setSnapshotPL(payload: {

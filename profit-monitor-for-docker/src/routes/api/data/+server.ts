@@ -11,6 +11,7 @@ export const GET: RequestHandler = async () => {
 		const unitStats = await storage.getUnitStats();
 		const accountWithdrawals = await storage.getAccountWithdrawals();
 		const accountDeposits = await storage.getAccountDeposits();
+		const pendingWithdrawals = await storage.getPendingWithdrawals();
 		const snapshot = await storage.getSnapshotPL();
 		const plAlertState = await storage.getPlAlertState();
 		const plAlertSettings = await storage.getPlAlertSettings();
@@ -34,6 +35,7 @@ export const GET: RequestHandler = async () => {
 			unitStats,
 			accountWithdrawals,
 			accountDeposits,
+			pendingWithdrawals,
 			snapshot: snapshot ? { kind: snapshot.kind, value: snapshot.value, timestamp: snapshot.timestamp } : null,
 			snapshotDelta,
 			plAlert: {

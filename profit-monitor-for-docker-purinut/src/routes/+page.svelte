@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import type { AccountSummary, CurrencySettings, DashboardStats, EquityWarningState, FxQuote, OrderInfo, PlAlertSettings, PlAlertState } from '$lib/types.js';
+	import type { AccountSummary, CurrencySettings, DashboardStats, EquityWarningState, FxQuote, OrderInfo, PendingWithdrawal, PlAlertSettings, PlAlertState } from '$lib/types.js';
+	import { PENDING_NOTE_MAX_LENGTH } from '$lib/pending-withdrawal-model.js';
 	import { defaultPlAlertSettings, defaultPlAlertState } from '$lib/pl-alert-model.js';
 	import {
 		defaultEquityWarningState,
@@ -43,6 +44,15 @@
 	let unitWithdrawals: Record<number, number> = {};
 	let accountWithdrawals: Record<string, number> = {};
 	let accountDeposits: Record<string, number> = {};
+	let pendingWithdrawals: PendingWithdrawal[] = [];
+	let pendingDialogAccount: AccountSummary | null = null;
+	let pendingAmount = '';
+	let pendingNote = '';
+	let pendingDate = '';
+	let pendingFormError = '';
+	let pendingSaving = false;
+	let pendingDeleteTarget: PendingWithdrawal | null = null;
+	let pendingDeleting = false;
 	let loading = true;
 	let pollingInterval = 5; // seconds
 	let intervalId: ReturnType<typeof setInterval> | null = null;
@@ -424,6 +434,7 @@
 				unitStats = data.unitStats || [];
 				accountWithdrawals = data.accountWithdrawals || {};
 				accountDeposits = data.accountDeposits || {};
+				pendingWithdrawals = Array.isArray(data.pendingWithdrawals) ? data.pendingWithdrawals : [];
 				latestUpdate = (summaries || []).reduce((latest, a) => {
 					const t = new Date(a.last_update).getTime();
 					return t > latest ? t : latest;
@@ -1158,6 +1169,107 @@
 		return name.length > 8 ? name.slice(0, 8) + '~' : name;
 	}
 
+	function pendingTotalForAccount(accountNumber: string): number {
+		return pendingWithdrawals
+			.filter((item) => item.account_number === accountNumber)
+			.reduce((sum, item) => sum + item.amount, 0);
+	}
+
+	function pendingTotalForAccounts(accounts: AccountSummary[]): number {
+		const numbers = new Set(accounts.map((account) => account.account_number));
+		return pendingWithdrawals
+			.filter((item) => numbers.has(item.account_number))
+			.reduce((sum, item) => sum + item.amount, 0);
+	}
+
+	function openPendingDialog(account: AccountSummary) {
+		pendingDialogAccount = account;
+		pendingAmount = '';
+		pendingNote = '';
+		pendingDate = '';
+		pendingFormError = '';
+	}
+
+	function closePendingDialog() {
+		if (pendingSaving) return;
+		pendingDialogAccount = null;
+		pendingFormError = '';
+	}
+
+	function requestPendingDelete(entry: PendingWithdrawal) {
+		pendingDeleteTarget = entry;
+	}
+
+	function closePendingDelete() {
+		if (pendingDeleting) return;
+		pendingDeleteTarget = null;
+	}
+
+	async function submitPendingWithdrawal() {
+		if (!pendingDialogAccount || pendingSaving) return;
+		const amount = Number(pendingAmount);
+		if (!Number.isFinite(amount) || amount <= 0) {
+			pendingFormError = 'Enter an amount greater than 0';
+			return;
+		}
+		pendingSaving = true;
+		pendingFormError = '';
+		try {
+			const res = await fetch('/api/pending-withdrawals', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					account_number: pendingDialogAccount.account_number,
+					amount,
+					note: pendingNote,
+					withdrawn_at: pendingDate || undefined
+				})
+			});
+			const data = await res.json();
+			if (!res.ok) {
+				pendingFormError = data.error || 'Failed to save';
+				return;
+			}
+			pendingWithdrawals = Array.isArray(data.pendingWithdrawals) ? data.pendingWithdrawals : [];
+			pendingAmount = '';
+			pendingNote = '';
+			pendingDate = '';
+		} catch (error) {
+			console.error('Error saving pending withdrawal:', error);
+			pendingFormError = 'Failed to save';
+		} finally {
+			pendingSaving = false;
+		}
+	}
+
+	async function confirmPendingDelete() {
+		if (!pendingDeleteTarget || pendingDeleting) return;
+		pendingDeleting = true;
+		try {
+			const res = await fetch(`/api/pending-withdrawals/${encodeURIComponent(pendingDeleteTarget.id)}`, {
+				method: 'DELETE'
+			});
+			const data = await res.json();
+			if (res.ok) {
+				pendingWithdrawals = Array.isArray(data.pendingWithdrawals) ? data.pendingWithdrawals : [];
+				pendingDeleteTarget = null;
+			}
+		} catch (error) {
+			console.error('Error deleting pending withdrawal:', error);
+		} finally {
+			pendingDeleting = false;
+		}
+	}
+
+	$: pendingDialogHistory = pendingDialogAccount
+		? pendingWithdrawals
+				.filter((item) => item.account_number === pendingDialogAccount?.account_number)
+				.sort((a, b) => new Date(b.withdrawn_at).getTime() - new Date(a.withdrawn_at).getTime())
+		: [];
+	$: pendingSummaryRows = [...pendingWithdrawals].sort(
+		(a, b) => new Date(b.withdrawn_at).getTime() - new Date(a.withdrawn_at).getTime()
+	);
+
 function truncateWithEllipsis(name: string, max: number = 6): string {
     if (!name) return '';
     return name.length > max ? name.slice(0, max) + '...' : name;
@@ -1774,6 +1886,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								{#if unitStat}
 									{@const unitWD = (unitGroups[unit] || []).reduce((s, a) => s + (accountWithdrawals[a.account_number] ?? 0), 0)}
 									{@const unitDP = (unitGroups[unit] || []).reduce((s, a) => s + (accountDeposits[a.account_number] ?? 0), 0)}
+									{@const unitPWD = pendingTotalForAccounts(unitGroups[unit] || [])}
 									<div class="flex items-center justify-between mt-1.5">
 										<div class="flex items-center gap-x-3 gap-y-0.5 flex-wrap text-xs text-[#ececec]">
 											<span>C: {moneyLine(unitInitialCapitals[unit] ?? 0, '', revealBookValues)}</span>
@@ -1783,6 +1896,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											{/if}
 											{#if unitDP > 0}
 												<span>DP: {moneyLine(unitDP, '-', revealBookValues)}</span>
+											{/if}
+											{#if unitPWD > 0}
+												<span class="text-amber-300">PWD: {moneyLine(unitPWD, '', revealBookValues)}</span>
 											{/if}
 										</div>
 										<div class="flex flex-col items-end flex-shrink-0 ml-3 leading-tight">
@@ -1963,9 +2079,28 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 									{@const adjust = getUnitTargetEquity(account.unit) - account.latest_equity}
 									<div class="px-4 py-3 space-y-2 {dataAge.status === 'fresh' && isLowEquityWarning(account) ? 'bg-red-900/20' : ''}">
 										<div class="flex items-start justify-between gap-2">
-											<div class="min-w-0">
-												<div class="font-mono font-semibold text-[#f5f5f5] text-sm">{account.account_number}</div>
-												<div class="text-xs text-[#ececec] truncate">{account.account_name} · {account.broker_name}</div>
+											<div class="flex items-start gap-2 min-w-0">
+												<button
+													type="button"
+													on:click|stopPropagation={() => openPendingDialog(account)}
+													class="relative mt-0.5 inline-flex items-center justify-center w-8 h-8 rounded-md border {pendingTotalForAccount(account.account_number) > 0 ? 'border-amber-700/70 text-amber-300' : 'border-stone-600 text-[#ececec]'} hover:bg-stone-700 hover:text-[#f5f5f5]"
+													title="Pending withdrawal"
+													aria-label={`Pending withdrawal for ${account.account_number}`}
+												>
+													<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+														<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l2.5 1.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+													</svg>
+													{#if pendingTotalForAccount(account.account_number) > 0}
+														<span class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-400"></span>
+													{/if}
+												</button>
+												<div class="min-w-0">
+													<div class="font-mono font-semibold text-[#f5f5f5] text-sm">{account.account_number}</div>
+													<div class="text-xs text-[#ececec] truncate">{account.account_name} · {account.broker_name}</div>
+													{#if pendingTotalForAccount(account.account_number) > 0}
+														<div class="text-[10px] text-amber-300 tabular-nums">PWD {moneyLine(pendingTotalForAccount(account.account_number), '', revealBookValues)}</div>
+													{/if}
+												</div>
 											</div>
 											<div class="text-right shrink-0">
 												{#if dataAge.status === 'stale'}
@@ -2068,13 +2203,32 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 													{/if}
 												</td>
 												<td class="py-1.5 px-2">
-													<div class="flex flex-col leading-tight">
-														<span class="font-mono font-semibold text-[#f5f5f5] text-xs">
-															{account.account_number}
-														</span>
-														<span class="text-[#ececec] text-xs truncate" title={account.account_name}
-															>{shortName(account.account_name)}</span
+													<div class="flex items-start gap-1.5">
+														<button
+															type="button"
+															on:click|stopPropagation={() => openPendingDialog(account)}
+															class="relative mt-0.5 inline-flex items-center justify-center w-7 h-7 rounded-md border {pendingTotalForAccount(account.account_number) > 0 ? 'border-amber-700/70 text-amber-300' : 'border-stone-600 text-[#ececec]'} hover:bg-stone-700 hover:text-[#f5f5f5]"
+															title="Pending withdrawal"
+															aria-label={`Pending withdrawal for ${account.account_number}`}
 														>
+															<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+																<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l2.5 1.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+															</svg>
+															{#if pendingTotalForAccount(account.account_number) > 0}
+																<span class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-400"></span>
+															{/if}
+														</button>
+														<div class="flex flex-col leading-tight min-w-0">
+															<span class="font-mono font-semibold text-[#f5f5f5] text-xs">
+																{account.account_number}
+															</span>
+															<span class="text-[#ececec] text-xs truncate" title={account.account_name}
+																>{shortName(account.account_name)}</span
+															>
+															{#if pendingTotalForAccount(account.account_number) > 0}
+																<span class="text-[10px] text-amber-300 tabular-nums">PWD {moneyLine(pendingTotalForAccount(account.account_number), '', revealBookValues)}</span>
+															{/if}
+														</div>
 													</div>
 												</td>
 												<td class="py-1.5 px-2 text-[#ececec] text-xs">{account.broker_name}</td>
@@ -2256,6 +2410,93 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						{/each}
 					</div>
 				{/if}
+			</div>
+		{/if}
+
+		{#if summaries.length > 0 || pendingSummaryRows.length > 0}
+			{@const pendingTotal = pendingSummaryRows.reduce((sum, item) => sum + item.amount, 0)}
+			<div class="py-4 border-t border-stone-700/60">
+				<div class="flex items-center justify-between gap-2 mb-2">
+					<h3 class="text-sm font-semibold text-[#f5f5f5]">Pending Withdrawals</h3>
+					{#if pendingTotal > 0}
+						<span class="text-xs text-amber-300 tabular-nums">Total {moneyLine(pendingTotal, '', revealBookValues)}</span>
+					{/if}
+				</div>
+				<div class="md:hidden divide-y divide-[#3a3a3a] fac-sheet">
+					{#each pendingSummaryRows as entry (entry.id)}
+						<div class="px-4 py-3 space-y-1.5">
+							<div class="flex items-start justify-between gap-2">
+								<div class="min-w-0">
+									<div class="font-mono font-semibold text-[#f5f5f5] text-sm">{entry.account_number}</div>
+									<div class="text-xs text-[#ececec] truncate">{entry.account_name} · {entry.broker_name}</div>
+								</div>
+								<button
+									type="button"
+									on:click={() => requestPendingDelete(entry)}
+									class="min-h-9 px-2 text-xs fac-minus"
+									aria-label={`Delete pending withdrawal ${entry.account_number}`}
+								>
+									Delete
+								</button>
+							</div>
+							<div class="flex items-center justify-between text-xs text-[#ececec]">
+								<span>Unit {entry.unit === 0 ? 'Unknown' : entry.unit}</span>
+								<span class="text-amber-300 tabular-nums">{moneyLine(entry.amount, '', revealBookValues)}</span>
+							</div>
+							<div class="text-[11px] text-[#ececec]">{formatDateTime(entry.withdrawn_at)}</div>
+							{#if entry.note}
+								<div class="text-[11px] text-[#ececec]">{entry.note}</div>
+							{/if}
+						</div>
+					{/each}
+					{#if pendingSummaryRows.length === 0}
+						<div class="px-4 py-6 text-xs text-[#ececec]">No pending withdrawals.</div>
+					{/if}
+				</div>
+				<div class="hidden md:block overflow-x-auto fac-sheet">
+					<table class="w-full text-xs">
+						<thead>
+							<tr class="border-b border-stone-700">
+								<th class="text-left py-1.5 px-2 text-[#ececec] font-medium">Date</th>
+								<th class="text-left py-1.5 px-2 text-[#ececec] font-medium">Unit</th>
+								<th class="text-left py-1.5 px-2 text-[#ececec] font-medium">Account</th>
+								<th class="text-left py-1.5 px-2 text-[#ececec] font-medium">Name</th>
+								<th class="text-left py-1.5 px-2 text-[#ececec] font-medium">Broker</th>
+								<th class="text-right py-1.5 px-2 text-[#ececec] font-medium">Amount</th>
+								<th class="text-left py-1.5 px-2 text-[#ececec] font-medium">Note</th>
+								<th class="text-right py-1.5 px-2 text-[#ececec] font-medium"></th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each pendingSummaryRows as entry (entry.id)}
+								<tr class="border-b border-stone-700/50">
+									<td class="py-1.5 px-2 text-[#ececec] tabular-nums">{formatDateTime(entry.withdrawn_at)}</td>
+									<td class="py-1.5 px-2 text-[#ececec]">{entry.unit === 0 ? 'Unknown' : entry.unit}</td>
+									<td class="py-1.5 px-2 font-mono text-[#f5f5f5]">{entry.account_number}</td>
+									<td class="py-1.5 px-2 text-[#ececec] truncate" title={entry.account_name}>{shortName(entry.account_name)}</td>
+									<td class="py-1.5 px-2 text-[#ececec]">{entry.broker_name}</td>
+									<td class="py-1.5 px-2 text-right text-amber-300 tabular-nums">{moneyLine(entry.amount, '', revealBookValues)}</td>
+									<td class="py-1.5 px-2 text-[#ececec] truncate" title={entry.note}>{entry.note || '—'}</td>
+									<td class="py-1.5 px-2 text-right">
+										<button
+											type="button"
+											on:click={() => requestPendingDelete(entry)}
+											class="min-h-9 px-2 text-xs fac-minus"
+											aria-label={`Delete pending withdrawal ${entry.account_number}`}
+										>
+											Delete
+										</button>
+									</td>
+								</tr>
+							{/each}
+							{#if pendingSummaryRows.length === 0}
+								<tr>
+									<td colspan="8" class="py-6 px-2 text-center text-[#ececec]">No pending withdrawals.</td>
+								</tr>
+							{/if}
+						</tbody>
+					</table>
+				</div>
 			</div>
 		{/if}
 
@@ -2924,6 +3165,162 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						{:else}
 							ลบข้อมูลทั้งหมด
 						{/if}
+					</button>
+				</div>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if pendingDialogAccount}
+	<div
+		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 overflow-y-auto flex items-stretch md:items-center justify-center p-0 md:p-6"
+		on:click={closePendingDialog}
+		on:keydown={(e) => e.key === 'Escape' && closePendingDialog()}
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="pending-wd-title"
+		tabindex="-1"
+	>
+		<div
+			class="bg-[#0a0a0a] text-[#f5f5f5] w-full max-w-lg md:mx-4 md:my-8 flex flex-col h-full md:h-auto max-h-none md:max-h-[85vh] border-0 md:border md:border-[#f5f5f5]"
+			role="document"
+			on:click|stopPropagation
+			on:keydown|stopPropagation
+			on:mousedown|stopPropagation
+		>
+			<div class="flex justify-between items-center px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-3 sm:p-6 sm:pb-4">
+				<div class="min-w-0">
+					<h2 id="pending-wd-title" class="text-base font-semibold text-[#f5f5f5]">Pending Withdrawal</h2>
+					<p class="text-xs text-[#ececec] truncate">
+						{pendingDialogAccount.account_number} · {pendingDialogAccount.account_name}
+					</p>
+				</div>
+				<button
+					type="button"
+					on:click={closePendingDialog}
+					class="fac-ghost min-h-11 px-3"
+					disabled={pendingSaving}
+				>
+					Close
+				</button>
+			</div>
+			<form
+				class="px-4 sm:px-6 pb-4 space-y-3"
+				on:submit|preventDefault={submitPendingWithdrawal}
+			>
+				<label class="block text-[11px] text-[#ececec]">
+					Amount
+					<input
+						type="number"
+						min="0.01"
+						step="0.01"
+						bind:value={pendingAmount}
+						class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+						required
+					/>
+				</label>
+				<label class="block text-[11px] text-[#ececec]">
+					Note (optional)
+					<input
+						type="text"
+						maxlength={PENDING_NOTE_MAX_LENGTH}
+						bind:value={pendingNote}
+						class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-sm focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+					/>
+				</label>
+				<label class="block text-[11px] text-[#ececec]">
+					Withdrawn at (optional)
+					<input
+						type="datetime-local"
+						bind:value={pendingDate}
+						class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-sm focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+					/>
+				</label>
+				{#if pendingFormError}
+					<p class="text-xs fac-minus">{pendingFormError}</p>
+				{/if}
+				<button
+					type="submit"
+					disabled={pendingSaving}
+					class="fac-ghost w-full min-h-11"
+				>
+					{pendingSaving ? 'Saving...' : 'Add pending'}
+				</button>
+			</form>
+			<div class="px-4 sm:px-6 pb-[max(1rem,env(safe-area-inset-bottom))] overflow-y-auto">
+				<h3 class="text-xs font-semibold text-[#ececec] uppercase tracking-wider mb-2">History</h3>
+				<div class="divide-y divide-stone-700/60 border border-stone-700/60">
+					{#each pendingDialogHistory as entry (entry.id)}
+						<div class="flex items-start justify-between gap-2 px-3 py-2.5">
+							<div class="min-w-0">
+								<div class="text-sm text-amber-300 tabular-nums">{moneyLine(entry.amount, '', revealBookValues)}</div>
+								<div class="text-[11px] text-[#ececec]">{formatDateTime(entry.withdrawn_at)}</div>
+								{#if entry.note}
+									<div class="text-[11px] text-[#ececec] truncate">{entry.note}</div>
+								{/if}
+							</div>
+							<button
+								type="button"
+								on:click={() => requestPendingDelete(entry)}
+								class="min-h-9 px-2 text-xs fac-minus"
+								aria-label="Delete pending withdrawal"
+							>
+								Delete
+							</button>
+						</div>
+					{/each}
+					{#if pendingDialogHistory.length === 0}
+						<div class="px-3 py-4 text-xs text-[#ececec]">No pending withdrawals for this account.</div>
+					{/if}
+				</div>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if pendingDeleteTarget}
+	<div
+		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[70] flex items-center justify-center p-4 sm:p-6"
+		on:click={closePendingDelete}
+		on:keydown={(e) => e.key === 'Escape' && closePendingDelete()}
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="pending-delete-title"
+		tabindex="-1"
+	>
+		<div
+			class="bg-[#0a0a0a] border border-[#ff4d4d] w-full max-w-md mx-4 p-2"
+			role="document"
+			on:click|stopPropagation
+			on:keydown|stopPropagation
+			on:mousedown|stopPropagation
+		>
+			<div class="p-6">
+				<h3 id="pending-delete-title" class="text-lg font-semibold text-[#f5f5f5] mb-2">Delete pending withdrawal?</h3>
+				<p class="text-sm text-[#ececec] mb-4">
+					{pendingDeleteTarget.account_number}
+					· {moneyLine(pendingDeleteTarget.amount, '', true)}
+					{#if pendingDeleteTarget.note}
+						· {pendingDeleteTarget.note}
+					{/if}
+				</p>
+				<div class="flex items-center justify-end gap-3">
+					<button
+						type="button"
+						on:click={closePendingDelete}
+						class="min-h-11 flex-1 sm:flex-none px-4 py-2 rounded-xl bg-stone-700 text-[#f5f5f5] hover:bg-stone-600 transition-colors"
+						disabled={pendingDeleting}
+					>
+						Cancel
+					</button>
+					<button
+						type="button"
+						on:click={confirmPendingDelete}
+						disabled={pendingDeleting}
+						class="min-h-11 flex-1 sm:flex-none px-4 py-2 rounded-xl bg-red-500 text-white hover:bg-red-600 disabled:bg-stone-700 disabled:text-[#ececec] disabled:cursor-not-allowed transition-colors"
+					>
+						{pendingDeleting ? 'Deleting...' : 'Delete'}
 					</button>
 				</div>
 			</div>

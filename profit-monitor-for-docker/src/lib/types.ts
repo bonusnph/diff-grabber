@@ -43,6 +43,18 @@ export interface DashboardStats {
 	account_count: number;
 }
 
+export interface PendingWithdrawal {
+	id: string;
+	account_number: string;
+	account_name: string;
+	broker_name: string;
+	unit: number;
+	amount: number;
+	note: string;
+	withdrawn_at: string;
+	created_at: string;
+}
+
 export interface PlAlertSettings {
 	profitEnabled: boolean;
 	profitThreshold: number;
