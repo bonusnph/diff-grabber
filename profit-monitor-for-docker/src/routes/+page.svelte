@@ -512,6 +512,11 @@
 	$: adjustedProfitLoss = (stats?.profit_loss || 0) + (totalWaitingWD || 0) - (totalDeposits || 0);
 	$: adjustedProfitLossPercent =
 		initialCapital > 0 ? (adjustedProfitLoss / initialCapital) * 100 : 0;
+	$: heroAmountShown = bookValue(
+		(adjustedProfitLoss >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLoss),
+		true
+	);
+	$: heroAmountParts = splitAmount(heroAmountShown);
 
 	// Snapshot data returned from server
 	let snapshot: { value: number; kind: 'adjusted' | 'real'; timestamp: string } | null = null;
@@ -1330,6 +1335,12 @@
 		return result === '-0.00' ? '0.00' : result;
 	}
 
+	function splitAmount(formatted: string): { whole: string; frac: string } {
+		const index = formatted.lastIndexOf('.');
+		if (index === -1) return { whole: formatted, frac: '' };
+		return { whole: formatted.slice(0, index), frac: formatted.slice(index) };
+	}
+
 	function usdParen(amount: number, prefix = '', reveal = revealBookValues): string {
 		if (displayCurrency === 'USD') return '';
 		if (!reveal) return MASK;
@@ -1671,7 +1682,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				<p
 					class="fac-display text-5xl sm:text-6xl lg:text-8xl font-extrabold tracking-tight leading-none tabular-nums flex items-baseline gap-[0.18em] flex-wrap {!isDataComplete ? 'opacity-60' : ''} {Math.abs(adjustedProfitLoss) < 0.005 ? 'text-[#ececec]' : adjustedProfitLoss >= 0 ? 'fac-plus' : 'fac-minus'}"
 				>
-					<span>{bookValue((adjustedProfitLoss >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLoss), true)}</span>
+					<span class="inline-flex items-baseline whitespace-nowrap">
+						<span>{heroAmountParts.whole}</span><span class="pl-hero-frac">{heroAmountParts.frac}</span>
+					</span>
 					{#if displayCurrency !== 'USD'}
 						<span class="text-[0.28em] sm:text-[0.24em] lg:text-[0.22em] font-semibold tracking-normal text-[#ececec]">
 							{usdParen(adjustedProfitLoss, adjustedProfitLoss >= 0.005 ? '+' : '', true)}
@@ -3150,3 +3163,12 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 		</div>
 	</div>
 {/if}
+
+<style>
+	.pl-hero-frac {
+		font-size: 0.38em;
+		font-weight: 600;
+		letter-spacing: 0;
+		opacity: 0.62;
+	}
+</style>
