@@ -3,7 +3,7 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.17"
+#define SFX_SYNC_EA_VERSION "1.18"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -3515,8 +3515,23 @@ void DestroyUiButtons()
    ChartRedraw();
 }
 
+bool SyncDllImportsAllowed()
+{
+   return (IsDllsAllowed() &&
+           TerminalInfoInteger(TERMINAL_DLLS_ALLOWED) != 0 &&
+           MQLInfoInteger(MQL_DLLS_ALLOWED) != 0);
+}
+
 int OnInit()
 {
+   if(!SyncDllImportsAllowed())
+   {
+      const string msg = "[SFX-SYNC] Allow DLL imports is OFF. Enable it in Tools > Options > Expert Advisors AND EA properties (Common), then reattach.";
+      Print(msg);
+      Alert(msg);
+      return INIT_FAILED;
+   }
+
    MathSrand((int)TimeLocal());
    G_SYMBOL = Symbol();
    G_SYNC_LOG_FILE_WARNED = false;
