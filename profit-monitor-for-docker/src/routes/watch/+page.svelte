@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, onMount, tick } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import {
 		convertUsd,
 		defaultCurrencySettings,
@@ -12,7 +12,6 @@
 
 	const STALE_FORCE_REFRESH_MS = 30 * 1000;
 	const CACHE_KEY = 'pm-watch-last';
-	const RELOAD_KEY = 'pm-watch-reload-at';
 
 	type WatchSnapshot = { value: number; kind: 'adjusted' | 'real'; timestamp: string };
 
@@ -49,7 +48,6 @@
 	let lastForcedRefreshAt = 0;
 	let resumeLoading = false;
 	let refreshing = false;
-	let watchdogId: ReturnType<typeof setInterval> | null = null;
 
 	$: displayRate = currencySettings.currency === 'USD' ? 1 : fxQuote.rate;
 	$: displayCurrency = currencySettings.currency;
@@ -66,9 +64,6 @@
 	$: stale = latestUpdate > 0 && Date.now() - latestUpdate >= 5 * 60 * 1000;
 	$: countLabel = String(countdownSeconds).padStart(2, '0');
 	$: statusLabel = failed ? 'Unable to load P/L' : loading && !hasValue ? 'Loading P/L' : 'Adjusted P/L';
-	$: if (shown && amountEl) {
-		void tick().then(fitAmount);
-	}
 
 	function formatAmount(amount: number, rate: number): string {
 		return formatPlain(convertUsd(amount, rate));
@@ -116,22 +111,6 @@
 		} catch {
 			/* ignore */
 		}
-	}
-
-	function recoverIfBlank() {
-		if (!hasValue) return;
-		if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
-		const hero = document.querySelector('.hero');
-		const height = hero?.getBoundingClientRect().height ?? 0;
-		if (height >= 8) return;
-		try {
-			const last = Number(sessionStorage.getItem(RELOAD_KEY) || 0);
-			if (Date.now() - last < 15000) return;
-			sessionStorage.setItem(RELOAD_KEY, String(Date.now()));
-		} catch {
-			/* ignore */
-		}
-		location.reload();
 	}
 
 	function fitAmount() {
@@ -283,42 +262,26 @@
 		} finally {
 			resumeLoading = false;
 			startCountdown();
-			void tick().then(() => {
-				fitAmount();
-				recoverIfBlank();
-			});
+			fitAmount();
 		}
 	}
 
 	function handleVisibility() {
-		if (document.visibilityState === 'hidden') {
-			stopCountdown();
-			return;
-		}
-		startCountdown();
-		void fetchLatestOnResume();
+		if (document.visibilityState === 'visible') void fetchLatestOnResume();
 	}
 
 	function handlePageShow(event: PageTransitionEvent) {
-		if (event.persisted || document.visibilityState === 'visible') {
-			startCountdown();
-			void fetchLatestOnResume();
-		}
+		if (event.persisted) void fetchLatestOnResume();
 	}
 
 	onMount(() => {
 		document.documentElement.classList.add('watch-glance');
-		if (!hasValue) {
-			const cached = readCache();
-			if (cached) applyPayload(cached);
-			void fetchData();
-		}
-		if (document.visibilityState === 'visible') startCountdown();
+		void fetchData();
+		startCountdown();
 		document.addEventListener('visibilitychange', handleVisibility);
 		window.addEventListener('pageshow', handlePageShow);
 		window.addEventListener('resize', fitAmount);
-		watchdogId = setInterval(recoverIfBlank, 4000);
-		void tick().then(fitAmount);
+		requestAnimationFrame(fitAmount);
 
 		return () => {
 			document.documentElement.classList.remove('watch-glance');
@@ -326,24 +289,16 @@
 			window.removeEventListener('pageshow', handlePageShow);
 			window.removeEventListener('resize', fitAmount);
 			stopCountdown();
-			if (watchdogId) {
-				clearInterval(watchdogId);
-				watchdogId = null;
-			}
 		};
 	});
 
 	onDestroy(() => {
 		stopCountdown();
-		if (watchdogId) {
-			clearInterval(watchdogId);
-			watchdogId = null;
-		}
 	});
 </script>
 
 <svelte:head>
-	<title>P/L</title>
+	<title>Profit Monitor for Watch</title>
 </svelte:head>
 
 <main class="watch" aria-live="polite" aria-label={statusLabel}>
