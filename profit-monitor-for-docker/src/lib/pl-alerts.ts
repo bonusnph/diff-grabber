@@ -1,4 +1,4 @@
-import { storage } from '$lib/storage-supabase.js';
+import { storage } from '$lib/storage-postgres.js';
 import { sendAlertEmail } from '$lib/mailer.js';
 import type { EquityWarningState, PlAlertState } from '$lib/types.js';
 import { computeAdjustedProfitLoss, isSnapshotReady } from '$lib/pl-alert-model.js';

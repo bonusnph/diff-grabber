@@ -27,3 +27,6 @@ vite.config.ts.timestamp-*
 *.db-wal
 *.db-shm
 .env*.local
+scripts/*.json
+settings-seed.json
+accounts-seed.json

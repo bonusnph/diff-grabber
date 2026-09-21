@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { AccountData, OrderInfo } from '$lib/types.js';
-import { storage } from '$lib/storage-supabase.js';
+import { storage } from '$lib/storage-postgres.js';
 import { schedulePlAlertEvaluation } from '$lib/pl-alerts.js';
 
 export const POST: RequestHandler = async ({ request }) => {

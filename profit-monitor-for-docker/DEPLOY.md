@@ -31,7 +31,7 @@ Flow โดยรวม:
 | --- | --- |
 | `Dockerfile` | Build image ของแอป (SvelteKit + `adapter-node`) |
 | `docker-compose.yml` | รัน container ของแอป + `cloudflared` บน server |
-| `.env` | เก็บ `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `CLOUDFLARE_TUNNEL_TOKEN` (ห้าม commit ขึ้น git) |
+| `.env` | เก็บ `POSTGRES_PASSWORD`, `CLOUDFLARE_TUNNEL_TOKEN` และ SMTP (ห้าม commit ขึ้น git) |
 | `package.json` (`docker:release`) | build + push image ขึ้น Docker Hub แบบ multi-arch (amd64 + arm64) |
 
 > **สำคัญ:** image ต้อง build แบบ multi-platform (`linux/amd64` + `linux/arm64`) เพราะเครื่อง local ที่ build (เช่น Mac Apple Silicon) เป็น `arm64` แต่ server ส่วนใหญ่เป็น `amd64` ถ้า build ด้วย `docker build` ธรรมดาแล้ว push จะได้ image แค่ arch เดียว พอไป `docker compose pull` บน server ที่ arch ไม่ตรงจะเจอ error `no matching manifest for linux/amd64`
@@ -70,16 +70,23 @@ Server **ไม่ต้องมี** `Dockerfile` หรือซอร์ส�
 ```
 /home/profit-monitor/
 ├── docker-compose.yml
-└── .env
+├── .env
+├── settings-seed.json
+└── accounts-seed.json
 ```
 
 Copy `docker-compose.yml` จากโฟลเดอร์นี้ไปวางที่ server แล้วสร้าง `.env` โดยใส่ค่า:
 
 ```bash
-SUPABASE_URL=https://xxxxx.supabase.co
-SUPABASE_ANON_KEY=xxxxxxxxxxxxxxxxxxxx
+POSTGRES_USER=profit
+POSTGRES_PASSWORD=choose-a-long-password
+POSTGRES_DB=profit_monitor
 CLOUDFLARE_TUNNEL_TOKEN=xxxxxxxxxxxxxxxxxxxx   # ได้จากขั้นตอน Cloudflare ด้านล่าง
 ```
+
+Do not put `@`, `#`, or `/` in `POSTGRES_PASSWORD`. Compose builds `DATABASE_URL` from that value.
+
+`settings-seed.json` and `accounts-seed.json` are imported once on first boot, then ignored.
 
 **Port ที่ใช้:** `docker-compose.yml` map พอร์ต host เป็น `3300:3000` เพื่อเลี่ยงไม่ให้ชนกับ container อื่นที่ใช้ 80 / 8080 / 3306 อยู่แล้วบน server เดียวกัน (แก้เลข `3300` ได้ถ้าจำเป็น)
 

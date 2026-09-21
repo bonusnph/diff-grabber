@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { storage } from '$lib/storage-supabase.js';
+import { storage } from '$lib/storage-postgres.js';
 import { resolveFxQuote } from '$lib/fx-rate.js';
 
 export const GET: RequestHandler = async () => {

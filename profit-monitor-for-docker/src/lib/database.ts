@@ -61,7 +61,7 @@ class SQLiteStorage {
 		const insertSetting = this.db.prepare(`
 			INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)
 		`);
-		insertSetting.run('initial_capital', '60000');
+		insertSetting.run('initial_capital', '0');
 		insertSetting.run('capital_per_unit', '7500');
 
 		// Migration: Add unit column if it doesn't exist
@@ -157,7 +157,7 @@ class SQLiteStorage {
 			SELECT value FROM settings WHERE key = 'initial_capital'
 		`);
 		const result = select.get() as { value: string } | undefined;
-		return result ? parseFloat(result.value) : 60000;
+		return result ? parseFloat(result.value) : 0;
 	}
 
 	setCapitalPerUnit(amount: number): void {

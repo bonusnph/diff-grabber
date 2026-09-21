@@ -1,6 +1,25 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: profit-monitor-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-profit}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-profit_monitor}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - profit-monitor-network
+
   profit-monitor:
     # Pulled from Docker Hub — build the image locally with `yarn docker:release`
     # and push it, don't build on the server (no Dockerfile/source there).
@@ -14,14 +33,17 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - HOST=0.0.0.0
-      # Gmail SMTP for P/L alerts (set in .env):
-      # SMTP_HOST=smtp.gmail.com
-      # SMTP_PORT=587
-      # SMTP_USER=your-gmail@gmail.com
-      # SMTP_PASS=your-app-password
-      # SMTP_FROM=your-gmail@gmail.com
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-profit}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-profit_monitor}
+      - SETTINGS_SEED_PATH=/app/settings-seed.json
+      - ACCOUNTS_SEED_PATH=/app/accounts-seed.json
     env_file:
       - .env
+    volumes:
+      - ./settings-seed.json:/app/settings-seed.json:ro
+      - ./accounts-seed.json:/app/accounts-seed.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
@@ -48,6 +70,9 @@ services:
       - profit-monitor
     networks:
       - profit-monitor-network
+
+volumes:
+  postgres-data:
 
 networks:
   profit-monitor-network:

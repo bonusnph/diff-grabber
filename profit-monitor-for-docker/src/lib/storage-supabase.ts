@@ -68,7 +68,7 @@ class SupabaseStorage {
 
 		-- Insert default settings
 		INSERT INTO settings (setting_key, setting_value) VALUES 
-		('initial_capital', '60000'),
+		('initial_capital', '0'),
 		('capital_per_unit', '7500'),
 		('total_active_accounts', '16'),
 		('access_pin', '250514'),
@@ -216,16 +216,8 @@ class SupabaseStorage {
 	}
 
 	async getInitialCapital(): Promise<number> {
-		// Sum from unit_initial_capitals mapping; fallback to legacy initial_capital if not present
 		const unitCaps = await this.getUnitInitialCapitals();
-		const sum = Object.values(unitCaps || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
-		if (sum > 0) return sum;
-		const { data } = await supabase
-			.from('settings')
-			.select('setting_value')
-			.eq('setting_key', 'initial_capital')
-			.single();
-		return data ? parseFloat(data.setting_value) : 60000;
+		return Object.values(unitCaps || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
 	}
 
 	// Deprecated: per-unit capitals are used instead

@@ -23,11 +23,11 @@
 	let stats: DashboardStats = {
 		total_balance: 0,
 		profit_loss: 0,
-		initial_capital: 60000,
+		initial_capital: 0,
 		account_count: 0
 	};
 	let summaries: AccountSummary[] = [];
-    let initialCapital = 64000;
+    let initialCapital = 0;
     let unitInitialCapitals: Record<number, number> = {};
 	// totalActiveAccounts now calculated from number of units * 2
     let unitWarningEquityPercentages: Record<number, number> = {};

@@ -2,7 +2,7 @@ import type { AccountData, AccountSummary, DashboardStats } from './types.js';
 
 class InMemoryStorage {
 	private accountData: Map<string, AccountData> = new Map();
-	private initialCapital: number = 60000;
+	private initialCapital: number = 0;
 
 	addAccountData(data: AccountData): void {
 		// Add GMT+7 timestamp if not provided

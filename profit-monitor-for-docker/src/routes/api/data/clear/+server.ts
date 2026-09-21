@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { storage } from '$lib/storage-supabase.js';
+import { storage } from '$lib/storage-postgres.js';
 
 export const DELETE: RequestHandler = async () => {
 	try {
