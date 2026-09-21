@@ -2642,6 +2642,91 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                         </p>
                     </fieldset>
                 </div>
+
+				<div>
+					<fieldset>
+						<legend class="block text-sm font-medium text-[#f5f5f5] mb-2">P/L Alerts</legend>
+						<p class="text-xs text-[#ececec] mb-3">
+							Email when adjusted P/L crosses a threshold, or when a unit hits its warning equity %. Each alert sends once, then stays paused until you reset it.
+						</p>
+						<div class="space-y-3">
+							<label class="inline-flex items-center gap-2 text-sm text-[#ececec]">
+								<input
+									type="checkbox"
+									checked={draftPlAlert.equityWarningEnabled}
+									on:change={(e) => {
+										draftPlAlert = { ...draftPlAlert, equityWarningEnabled: (e.target as HTMLInputElement).checked };
+									}}
+									class="border-stone-600 bg-stone-700 text-[#f5f5f5] focus:ring-[#f5f5f5]"
+								/>
+								<span>Low equity alert</span>
+							</label>
+							<div class="flex flex-wrap items-center gap-2 text-sm text-[#ececec]">
+								<label class="inline-flex items-center gap-2">
+									<input
+										type="checkbox"
+										checked={draftPlAlert.profitEnabled}
+										on:change={(e) => {
+											draftPlAlert = { ...draftPlAlert, profitEnabled: (e.target as HTMLInputElement).checked };
+										}}
+										class="border-stone-600 bg-stone-700 text-[#f5f5f5] focus:ring-[#f5f5f5]"
+									/>
+									<span>Profit alert</span>
+								</label>
+								<input
+									type="number"
+									min="0"
+									step="100"
+									value={draftPlAlert.profitThreshold}
+									on:change={(e) => {
+										const v = parseFloat((e.target as HTMLInputElement).value);
+										draftPlAlert = { ...draftPlAlert, profitThreshold: isNaN(v) || v < 0 ? 0 : v };
+									}}
+									class="w-32 border border-stone-600 bg-stone-700 text-[#f5f5f5] px-2 py-1 text-right focus:ring-2 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+								/>
+								<span>USD</span>
+							</div>
+							<div class="flex flex-wrap items-center gap-2 text-sm text-[#ececec]">
+								<label class="inline-flex items-center gap-2">
+									<input
+										type="checkbox"
+										checked={draftPlAlert.lossEnabled}
+										on:change={(e) => {
+											draftPlAlert = { ...draftPlAlert, lossEnabled: (e.target as HTMLInputElement).checked };
+										}}
+										class="border-stone-600 bg-stone-700 text-[#f5f5f5] focus:ring-[#f5f5f5]"
+									/>
+									<span>Loss alert</span>
+								</label>
+								<input
+									type="number"
+									min="0"
+									step="100"
+									value={draftPlAlert.lossThreshold}
+									on:change={(e) => {
+										const v = parseFloat((e.target as HTMLInputElement).value);
+										draftPlAlert = { ...draftPlAlert, lossThreshold: isNaN(v) || v < 0 ? 0 : v };
+									}}
+									class="w-32 border border-stone-600 bg-stone-700 text-[#f5f5f5] px-2 py-1 text-right focus:ring-2 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+								/>
+								<span>USD</span>
+							</div>
+							<label class="block text-sm text-[#ececec]">
+								<span class="block mb-1">Recipient email</span>
+								<input
+									type="email"
+									value={draftPlAlert.recipientEmail}
+									placeholder="alerts@example.com"
+									on:change={(e) => {
+										draftPlAlert = { ...draftPlAlert, recipientEmail: (e.target as HTMLInputElement).value.trim() };
+									}}
+									class="w-full max-w-md border border-stone-600 bg-stone-700 text-[#f5f5f5] px-2 py-1 focus:ring-2 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+								/>
+							</label>
+						</div>
+					</fieldset>
+				</div>
+
                 <div>
                     <fieldset>
                         <legend class="block text-sm font-medium text-[#f5f5f5] mb-2">Unit Settings</legend>
@@ -2963,90 +3048,6 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						<p class="text-xs text-[#ececec] mt-1">
 							Stored as mapping: account_number → amount (grouped by unit for display).
 						</p>
-					</fieldset>
-				</div>
-
-				<div>
-					<fieldset>
-						<legend class="block text-sm font-medium text-[#f5f5f5] mb-2">P/L Alerts</legend>
-						<p class="text-xs text-[#ececec] mb-3">
-							Email when adjusted P/L crosses a threshold, or when a unit hits its warning equity %. Each alert sends once, then stays paused until you reset it.
-						</p>
-						<div class="space-y-3">
-							<label class="inline-flex items-center gap-2 text-sm text-[#ececec]">
-								<input
-									type="checkbox"
-									checked={draftPlAlert.equityWarningEnabled}
-									on:change={(e) => {
-										draftPlAlert = { ...draftPlAlert, equityWarningEnabled: (e.target as HTMLInputElement).checked };
-									}}
-									class="border-stone-600 bg-stone-700 text-[#f5f5f5] focus:ring-[#f5f5f5]"
-								/>
-								<span>Low equity alert</span>
-							</label>
-							<div class="flex flex-wrap items-center gap-2 text-sm text-[#ececec]">
-								<label class="inline-flex items-center gap-2">
-									<input
-										type="checkbox"
-										checked={draftPlAlert.profitEnabled}
-										on:change={(e) => {
-											draftPlAlert = { ...draftPlAlert, profitEnabled: (e.target as HTMLInputElement).checked };
-										}}
-										class="border-stone-600 bg-stone-700 text-[#f5f5f5] focus:ring-[#f5f5f5]"
-									/>
-									<span>Profit alert</span>
-								</label>
-								<input
-									type="number"
-									min="0"
-									step="100"
-									value={draftPlAlert.profitThreshold}
-									on:change={(e) => {
-										const v = parseFloat((e.target as HTMLInputElement).value);
-										draftPlAlert = { ...draftPlAlert, profitThreshold: isNaN(v) || v < 0 ? 0 : v };
-									}}
-									class="w-32 border border-stone-600 bg-stone-700 text-[#f5f5f5] px-2 py-1 text-right focus:ring-2 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
-								/>
-								<span>USD</span>
-							</div>
-							<div class="flex flex-wrap items-center gap-2 text-sm text-[#ececec]">
-								<label class="inline-flex items-center gap-2">
-									<input
-										type="checkbox"
-										checked={draftPlAlert.lossEnabled}
-										on:change={(e) => {
-											draftPlAlert = { ...draftPlAlert, lossEnabled: (e.target as HTMLInputElement).checked };
-										}}
-										class="border-stone-600 bg-stone-700 text-[#f5f5f5] focus:ring-[#f5f5f5]"
-									/>
-									<span>Loss alert</span>
-								</label>
-								<input
-									type="number"
-									min="0"
-									step="100"
-									value={draftPlAlert.lossThreshold}
-									on:change={(e) => {
-										const v = parseFloat((e.target as HTMLInputElement).value);
-										draftPlAlert = { ...draftPlAlert, lossThreshold: isNaN(v) || v < 0 ? 0 : v };
-									}}
-									class="w-32 border border-stone-600 bg-stone-700 text-[#f5f5f5] px-2 py-1 text-right focus:ring-2 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
-								/>
-								<span>USD</span>
-							</div>
-							<label class="block text-sm text-[#ececec]">
-								<span class="block mb-1">Recipient email</span>
-								<input
-									type="email"
-									value={draftPlAlert.recipientEmail}
-									placeholder="alerts@example.com"
-									on:change={(e) => {
-										draftPlAlert = { ...draftPlAlert, recipientEmail: (e.target as HTMLInputElement).value.trim() };
-									}}
-									class="w-full max-w-md border border-stone-600 bg-stone-700 text-[#f5f5f5] px-2 py-1 focus:ring-2 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
-								/>
-							</label>
-						</div>
 					</fieldset>
 				</div>
 
