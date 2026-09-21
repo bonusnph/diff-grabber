@@ -100,7 +100,7 @@ class MemoryStorage {
 				return Object.values(obj).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
 			} catch {}
 		}
-		return 60000;
+		return 0;
 	}
 
 	// Deprecated

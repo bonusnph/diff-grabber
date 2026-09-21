@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+import { existsSync, readFileSync } from 'node:fs';
 import { Pool, type QueryResultRow } from 'pg';
 import type {
 	AccountData,
@@ -20,8 +21,7 @@ import {
 import { defaultEquityWarningState, normalizeEquityWarningState } from './equity-warning-model.js';
 import { defaultCurrencySettings, normalizeCurrencySettings } from './currency.js';
 
-const DEFAULT_UNIT_MAPPINGS =
-	'{"1":"neex-sell","2":"neex-buy","3":"neex-avg-sell","4":"neex-avg-buy","5":"xs-sell","6":"xs-buy","7":"xs-avg-sell","8":"xs-avg-buy"}';
+const DEFAULT_UNIT_MAPPINGS = '{}';
 
 function asNumber(value: unknown, fallback = 0): number {
 	if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -175,18 +175,107 @@ class PostgresStorage {
 			FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()
 		`);
 
+		await this.seedFromSupabaseDump(pool);
+
 		await pool.query(
 			`
 			INSERT INTO settings (setting_key, setting_value) VALUES
 				('initial_capital', '0'),
-				('capital_per_unit', '7500'),
-				('total_active_accounts', '16'),
+				('capital_per_unit', '0'),
+				('total_active_accounts', '0'),
 				('access_pin', '250514'),
 				('unit_mappings', $1)
 			ON CONFLICT (setting_key) DO NOTHING
 			`,
 			[DEFAULT_UNIT_MAPPINGS]
 		);
+	}
+
+	private async seedFromSupabaseDump(pool: Pool): Promise<void> {
+		const flag = await pool.query<{ setting_value: string | null }>(
+			`SELECT setting_value FROM settings WHERE setting_key = 'migrated_from_supabase'`
+		);
+		if (flag.rows[0]?.setting_value) return;
+
+		const settingsPath = process.env.SETTINGS_SEED_PATH || '/app/settings-seed.json';
+		const accountsPath = process.env.ACCOUNTS_SEED_PATH || '/app/accounts-seed.json';
+		let imported = false;
+
+		if (existsSync(settingsPath)) {
+			const rows = JSON.parse(readFileSync(settingsPath, 'utf8')) as Array<{
+				setting_key?: string;
+				setting_value?: string | null;
+			}>;
+			if (Array.isArray(rows)) {
+				for (const row of rows) {
+					if (!row?.setting_key) continue;
+					await pool.query(
+						`
+						INSERT INTO settings (setting_key, setting_value, updated_at)
+						VALUES ($1, $2, NOW())
+						ON CONFLICT (setting_key)
+						DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()
+						`,
+						[row.setting_key, row.setting_value ?? '']
+					);
+				}
+				imported = true;
+			}
+		}
+
+		if (existsSync(accountsPath)) {
+			const rows = JSON.parse(readFileSync(accountsPath, 'utf8')) as Array<Record<string, unknown>>;
+			if (Array.isArray(rows)) {
+				for (const row of rows) {
+					if (!row?.account_number) continue;
+					await pool.query(
+						`
+						INSERT INTO accounts (
+							account_number, account_name, broker_name, balance, equity, unit,
+							timestamp, position_side, position_price, position_size, position_orders
+						)
+						VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+						ON CONFLICT (account_number) DO UPDATE SET
+							account_name = EXCLUDED.account_name,
+							broker_name = EXCLUDED.broker_name,
+							balance = EXCLUDED.balance,
+							equity = EXCLUDED.equity,
+							unit = EXCLUDED.unit,
+							timestamp = EXCLUDED.timestamp,
+							position_side = EXCLUDED.position_side,
+							position_price = EXCLUDED.position_price,
+							position_size = EXCLUDED.position_size,
+							position_orders = EXCLUDED.position_orders,
+							updated_at = NOW()
+						`,
+						[
+							String(row.account_number),
+							String(row.account_name ?? ''),
+							String(row.broker_name ?? ''),
+							asNumber(row.balance),
+							asNumber(row.equity),
+							asNumber(row.unit, 1),
+							asTimestamp(row.timestamp),
+							row.position_side ?? 'UNKNOWN',
+							asNumber(row.position_price),
+							asNumber(row.position_size),
+							JSON.stringify(row.position_orders ?? [])
+						]
+					);
+				}
+				imported = true;
+			}
+		}
+
+		if (imported) {
+			await pool.query(
+				`
+				INSERT INTO settings (setting_key, setting_value, updated_at)
+				VALUES ('migrated_from_supabase', NOW()::text, NOW())
+				ON CONFLICT (setting_key) DO NOTHING
+				`
+			);
+		}
 	}
 
 	private async getSetting(key: string): Promise<string | null> {
@@ -288,10 +377,7 @@ class PostgresStorage {
 
 	async getInitialCapital(): Promise<number> {
 		const unitCaps = await this.getUnitInitialCapitals();
-		const sum = Object.values(unitCaps || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
-		if (sum > 0) return sum;
-		const legacy = await this.getSetting('initial_capital');
-		return legacy ? parseFloat(legacy) : 0;
+		return Object.values(unitCaps || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
 	}
 
 	async setCapitalPerUnit(_amount: number): Promise<void> {}
@@ -461,7 +547,7 @@ class PostgresStorage {
 
 	async getTotalActiveAccounts(): Promise<number> {
 		const value = await this.getSetting('total_active_accounts');
-		return value ? parseInt(value) : 16;
+		return value ? parseInt(value) : 0;
 	}
 
 	async setUnitMappings(mappings: Record<number, string>): Promise<void> {

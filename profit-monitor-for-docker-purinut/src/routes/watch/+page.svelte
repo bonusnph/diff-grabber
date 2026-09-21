@@ -306,7 +306,7 @@
 </script>
 
 <svelte:head>
-	<title>Purinut - Monitor</title>
+	<title>Profit Monitor for Watch</title>
 </svelte:head>
 
 <main class="watch" aria-live="polite" aria-label={statusLabel}>

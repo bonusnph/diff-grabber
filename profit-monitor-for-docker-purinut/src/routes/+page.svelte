@@ -27,7 +27,7 @@
 		account_count: 0
 	};
 	let summaries: AccountSummary[] = [];
-    let initialCapital = 64000;
+    let initialCapital = 0;
     let unitInitialCapitals: Record<number, number> = {};
 	// totalActiveAccounts now calculated from number of units * 2
     let unitWarningEquityPercentages: Record<number, number> = {};
@@ -1332,7 +1332,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 </script>
 
 <svelte:head>
-	<title>Purinut - Monitor</title>
+	<title>Profit Monitor Dashboard</title>
 	<meta
 		name="viewport"
 		content="width=device-width, initial-scale=1, viewport-fit=cover"

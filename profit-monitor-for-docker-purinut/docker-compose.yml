@@ -30,6 +30,8 @@ services:
       PROTOCOL_HEADER: x-forwarded-proto
       HOST_HEADER: host
       DATABASE_URL: postgresql://${POSTGRES_USER:-profit}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-profit_monitor}
+      SETTINGS_SEED_PATH: /app/settings-seed.json
+      ACCOUNTS_SEED_PATH: /app/accounts-seed.json
     env_file:
       - .env
     depends_on:
