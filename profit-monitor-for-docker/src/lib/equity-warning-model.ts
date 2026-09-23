@@ -56,6 +56,49 @@ export function isEquityWarningPaused(state: EquityWarningState, unit: number): 
 	return typeof sentAt === 'string' && sentAt.length > 0;
 }
 
+export type EquityMeterZone = 'unset' | 'breach' | 'near' | 'ok' | 'over';
+
+export interface EquityMeter {
+	zone: EquityMeterZone;
+	/** Fill of the main chamber, 0–100. 100 means equity is at the target. */
+	fillPct: number;
+	/** Warning tick position on the main chamber, 0–100. */
+	warnPct: number;
+	/** Fill of the overflow lip, 0–100. 100 means excess is at least one full target. */
+	overPct: number;
+	/** Non-negative amount for the caption: depth past warning, cushion to warning, surplus, or gap to target. */
+	mark: number;
+}
+
+const EQUITY_METER_NEAR_BAND = 0.15;
+
+export function equityMeter(
+	equity: number,
+	unitCapital: number,
+	warnPct: number | undefined
+): EquityMeter {
+	const target = getUnitTargetEquity(unitCapital);
+	const tick = getUnitWarningPct(warnPct);
+	if (!(target > 0) || !Number.isFinite(equity)) {
+		return { zone: 'unset', fillPct: 0, warnPct: tick, overPct: 0, mark: 0 };
+	}
+	const warn = getWarningThreshold(unitCapital, warnPct);
+	const over = Math.max(0, equity - target);
+	const fillPct = Math.max(0, Math.min(100, (Math.min(Math.max(equity, 0), target) / target) * 100));
+	const overPct = Math.max(0, Math.min(100, (over / target) * 100));
+	if (isLowEquityWarning(equity, unitCapital, warnPct)) {
+		return { zone: 'breach', fillPct, warnPct: tick, overPct: 0, mark: Math.max(0, warn - equity) };
+	}
+	if (over > 0.005) {
+		return { zone: 'over', fillPct: 100, warnPct: tick, overPct, mark: over };
+	}
+	const cushion = Math.max(0, equity - warn);
+	if (cushion / target < EQUITY_METER_NEAR_BAND) {
+		return { zone: 'near', fillPct, warnPct: tick, overPct: 0, mark: cushion };
+	}
+	return { zone: 'ok', fillPct, warnPct: tick, overPct: 0, mark: Math.max(0, target - equity) };
+}
+
 export function findLowEquityAccounts(
 	accounts: AccountSummary[],
 	unitCapital: number,

@@ -8,6 +8,8 @@
 		defaultEquityWarningState,
 		getUnitTargetEquity as targetEquityFromCap,
 		getUnitWarningPct as warnPctFromValue,
+		equityMeter,
+		getWarningThreshold,
 		isEquityWarningPaused,
 		isLowEquityWarning as isLowEquityByValues,
 		normalizeEquityWarningState
@@ -1896,33 +1898,67 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 									</div>
 								{/if}
 
-								<!-- Row 3: Broker D/W breakdown (compact) -->
-								{#if true}
-									{@const targetEquity = getUnitTargetEquity(unit)}
-									{@const sumsByBroker = (() => {
-										const map: Record<string, { d: number; w: number }> = {};
-										for (const a of visibleAccounts || []) {
-											const broker = a.broker_name || '';
-											if (!map[broker]) map[broker] = { d: 0, w: 0 };
-											const diff = a.latest_equity - targetEquity;
-											if (diff >= 0) map[broker].w += diff;
-											else map[broker].d += -diff;
-										}
-										return map;
-									})()}
-									{@const nonZeroEntries = Object.entries(sumsByBroker).filter(([_, s]) => (s?.d || 0) > 0 || (s?.w || 0) > 0)}
-									{#if nonZeroEntries.length > 0}
-										<div class="flex items-center gap-1.5 mt-1 flex-wrap">
-											{#each nonZeroEntries as [broker, s]}
-												<div class="flex items-center gap-1 text-[10px]">
-													<span class="text-[#ececec]">{bookBroker(broker, revealBookValues)}</span>
-													{#if s.d > 0}<span class="fac-plus font-medium">D{moneyLine(s.d, '', revealBookValues)}</span>{/if}
-													{#if s.w > 0}<span class="fac-minus font-medium">W{moneyLine(s.w, '', revealBookValues)}</span>{/if}
+								<!-- Row 3: Equity tube per broker. Main chamber is 0 → target; tick is the warning line; lip is surplus past target. -->
+								<div class="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
+									{#each visibleAccounts as account (account.account_number)}
+										{@const tube = equityMeter(account.latest_equity, unitInitialCapitals[unit] ?? 0, unitWarningEquityPercentages[unit])}
+										{@const sharedBroker = visibleAccounts.filter((a) => a.broker_name === account.broker_name).length > 1}
+										{@const brokerLabel = bookBroker(account.broker_name, revealBookValues) + (revealBookValues && sharedBroker ? ' ' + account.account_number.slice(-4) : '')}
+										{@const fillClass = tube.zone === 'breach' ? 'is-breach' : tube.zone === 'near' ? 'is-near' : tube.zone === 'unset' ? '' : 'is-ok'}
+										<div
+											class="min-w-0"
+											title={revealBookValues
+												? `${account.broker_name} equity ${formatNumber(account.latest_equity)} · target ${formatNumber(getUnitTargetEquity(unit))} · warning ${formatNumber(getWarningThreshold(unitInitialCapitals[unit] ?? 0, unitWarningEquityPercentages[unit]))}`
+												: brokerLabel}
+										>
+											<div class="flex items-baseline justify-between gap-2 text-[10px] leading-none mb-1">
+												<span class="text-[#ececec] truncate">{brokerLabel}</span>
+												<span class="shrink-0 tabular-nums font-medium">
+													{#if tube.zone === 'breach'}
+														<span class="fac-minus">−{moneyLine(tube.mark, '', revealBookValues)} past warn</span>
+													{:else if tube.zone === 'near'}
+														<span class="fac-warn">{moneyLine(tube.mark, '', revealBookValues)} to warn</span>
+													{:else if tube.zone === 'over'}
+														<span class="fac-minus">W{moneyLine(tube.mark, '', revealBookValues)}</span>
+													{:else if tube.zone === 'ok' && tube.mark > 0.005}
+														<span class="fac-plus">D{moneyLine(tube.mark, '', revealBookValues)}</span>
+													{:else if tube.zone === 'unset'}
+														<span class="text-[#ececec]">set capital</span>
+													{:else}
+														<span class="text-[#ececec]">at target</span>
+													{/if}
+												</span>
+											</div>
+											<div
+												class="fac-tube"
+												role="img"
+												aria-label={tube.zone === 'breach'
+													? `${brokerLabel} equity below warning`
+													: tube.zone === 'near'
+														? `${brokerLabel} equity near warning`
+														: tube.zone === 'over'
+															? `${brokerLabel} equity past target`
+															: tube.zone === 'unset'
+																? `${brokerLabel} equity, no target`
+																: `${brokerLabel} equity`}
+											>
+												<div class="fac-tube-main">
+													<div class="fac-tube-clip">
+														<div class="fac-tube-fill {fillClass}" style="transform: scaleX({tube.fillPct / 100})"></div>
+													</div>
+													{#if tube.zone !== 'unset'}
+														<div class="fac-tube-warn" style="left: {tube.warnPct}%" title="Warning"></div>
+													{/if}
 												</div>
-											{/each}
+												<div class="fac-tube-over" title="Past target">
+													<div class="fac-tube-clip">
+														<div class="fac-tube-over-fill" style="transform: scaleX({tube.overPct / 100})"></div>
+													</div>
+												</div>
+											</div>
 										</div>
-									{/if}
-								{/if}
+									{/each}
+								</div>
 							</div>
 							
 							{#if unitVisibility[unit] !== false}
