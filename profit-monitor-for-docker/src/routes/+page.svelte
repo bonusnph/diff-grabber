@@ -1965,7 +1965,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								{/if}
 
 								<!-- Row 3: Equity tube per broker. Cash to move sits in one column, clear of unit P/L. -->
-								<div class="mt-2 grid grid-cols-[minmax(4.75rem,7.25rem)_max-content_minmax(0,1fr)] gap-y-1.5">
+								<div class="mt-2 grid grid-cols-[max-content_max-content_minmax(0,1fr)] gap-y-1.5">
 									{#each visibleAccounts as account (account.account_number)}
 										{@const tube = equityMeter(account.latest_equity, unitInitialCapitals[unit] ?? 0, unitWarningEquityPercentages[unit])}
 										{@const sharedBroker = visibleAccounts.filter((a) => a.broker_name === account.broker_name).length > 1}
