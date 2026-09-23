@@ -1979,10 +1979,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										>
 											<span class="min-w-0 truncate text-[10px] leading-none text-[#ececec]">{brokerLabel}</span>
 											<span class="text-xs leading-none tabular-nums font-medium whitespace-nowrap">
-												{#if tube.zone === 'breach'}
+												{#if tube.zone === 'breach' || tube.zone === 'near'}
 													<span class="fac-chip-plus">D {moneyLine(Math.max(0, getUnitTargetEquity(unit) - account.latest_equity), '', revealBookValues)}</span>
-												{:else if tube.zone === 'near'}
-													<span class="fac-warn">{moneyLine(tube.mark, '', revealBookValues)} to warn</span>
 												{:else if tube.zone === 'over'}
 													<span class="fac-chip-minus">W {moneyLine(tube.mark, '', revealBookValues)}</span>
 												{:else if tube.zone === 'ok' && tube.mark > 0.005}
