@@ -64,6 +64,11 @@
 	let pendingSaving = false;
 	let pendingDeleteTarget: PendingWithdrawal | null = null;
 	let pendingDeleting = false;
+	let noteAdd: { unit: number; side: 'wd' | 'dp' } | null = null;
+	let noteAddAmount = '';
+	let noteAddSaving = false;
+	let noteAddError = '';
+	let noteAddInput: HTMLInputElement | null = null;
 	let loading = true;
 	let pollingInterval = 5; // seconds
 	let intervalId: ReturnType<typeof setInterval> | null = null;
@@ -771,6 +776,69 @@
 		const saved = await saveUnitNotes();
 		if (!saved || next === previous) return;
 		walletPrompt = { kind: 'dp-note', unit, previous, next };
+	}
+
+	function parseNoteAddAmount(raw: string | number): number {
+		const text = String(raw ?? '').trim();
+		const parsed = parseFloat(text);
+		if (!text || !Number.isFinite(parsed) || parsed <= 0) return 0;
+		return roundMoney(parsed);
+	}
+
+	async function openNoteAdd(unit: number, side: 'wd' | 'dp') {
+		noteAdd = { unit, side };
+		noteAddAmount = '';
+		noteAddError = '';
+		await tick();
+		noteAddInput?.focus();
+	}
+
+	function closeNoteAdd() {
+		if (noteAddSaving) return;
+		noteAdd = null;
+		noteAddAmount = '';
+		noteAddError = '';
+	}
+
+	$: noteAddCurrent = noteAdd
+		? unitNoteAmount(noteAdd.side === 'wd' ? unitWithdrawals : unitDeposits, noteAdd.unit)
+		: 0;
+	$: noteAddDelta = parseNoteAddAmount(noteAddAmount);
+	$: noteAddNext = roundMoney(noteAddCurrent + noteAddDelta);
+
+	async function submitNoteAdd() {
+		if (!noteAdd || noteAddSaving) return;
+		const delta = parseNoteAddAmount(noteAddAmount);
+		if (delta <= 0) {
+			noteAddError = 'Enter an amount greater than 0';
+			return;
+		}
+		const { unit, side } = noteAdd;
+		const previous = unitNoteAmount(side === 'wd' ? unitWithdrawals : unitDeposits, unit);
+		const next = roundMoney(previous + delta);
+		noteAddSaving = true;
+		noteAddError = '';
+		if (side === 'wd') {
+			unitWithdrawals = { ...unitWithdrawals, [unit]: next };
+		} else {
+			unitDeposits = { ...unitDeposits, [unit]: next };
+		}
+		const saved = await saveUnitNotes();
+		noteAddSaving = false;
+		if (!saved) {
+			if (side === 'wd') {
+				unitWithdrawals = { ...unitWithdrawals, [unit]: previous };
+			} else {
+				unitDeposits = { ...unitDeposits, [unit]: previous };
+			}
+			noteAddError = 'Could not save';
+			return;
+		}
+		noteAdd = null;
+		noteAddAmount = '';
+		if (side === 'dp' && next !== previous) {
+			walletPrompt = { kind: 'dp-note', unit, previous, next };
+		}
 	}
 
 	function requestSettingsDpClear(unit: number) {
@@ -1565,14 +1633,12 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				</p>
 			</div>
 			{#if totalWaitingWD !== 0 || totalDeposits !== 0}
-				<p class="text-sm mt-2 tracking-tight text-[#ececec]">
-					Total P/L
-					<span class={revealBookValues ? (stats.profit_loss >= 0 ? 'fac-plus' : 'fac-minus') : ''}>{moneyLine(stats.profit_loss, stats.profit_loss >= 0 ? '+' : '', revealBookValues)}</span>
+				<p class="text-sm mt-2 tracking-tight text-[#ececec] flex flex-wrap gap-x-4">
 					{#if totalWaitingWD !== 0}
-						&nbsp; WD <span class={revealBookValues ? (totalWaitingWD >= 0 ? 'fac-plus' : 'fac-minus') : ''}>{moneyLine(totalWaitingWD, totalWaitingWD >= 0 ? '+' : '', revealBookValues)}</span>
+						<span>SUM WD <span class={revealBookValues ? (totalWaitingWD >= 0 ? 'fac-plus' : 'fac-minus') : ''}>{moneyLine(totalWaitingWD, totalWaitingWD >= 0 ? '+' : '', revealBookValues)}</span></span>
 					{/if}
 					{#if totalDeposits !== 0}
-						&nbsp; DP <span class={revealBookValues ? 'fac-minus' : ''}>{moneyLine(totalDeposits, '−', revealBookValues)}</span>
+						<span>SUM DP <span class={revealBookValues ? 'fac-minus' : ''}>{moneyLine(totalDeposits, '−', revealBookValues)}</span></span>
 					{/if}
 				</p>
 			{/if}
@@ -1898,39 +1964,37 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 									</div>
 								{/if}
 
-								<!-- Row 3: Equity tube per broker. Main chamber is 0 → target; tick is the warning line; lip is surplus past target. -->
-								<div class="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
+								<!-- Row 3: Equity tube per broker. Cash to move sits in one column, clear of unit P/L. -->
+								<div class="mt-2 grid grid-cols-[minmax(4.75rem,7.25rem)_max-content_minmax(0,1fr)] gap-y-1.5">
 									{#each visibleAccounts as account (account.account_number)}
 										{@const tube = equityMeter(account.latest_equity, unitInitialCapitals[unit] ?? 0, unitWarningEquityPercentages[unit])}
 										{@const sharedBroker = visibleAccounts.filter((a) => a.broker_name === account.broker_name).length > 1}
 										{@const brokerLabel = bookBroker(account.broker_name, revealBookValues) + (revealBookValues && sharedBroker ? ' ' + account.account_number.slice(-4) : '')}
 										{@const fillClass = tube.zone === 'breach' ? 'is-breach' : tube.zone === 'near' ? 'is-near' : tube.zone === 'unset' ? '' : 'is-ok'}
 										<div
-											class="min-w-0"
+											class="col-span-3 grid grid-cols-subgrid items-center gap-x-2"
 											title={revealBookValues
 												? `${account.broker_name} equity ${formatNumber(account.latest_equity)} · target ${formatNumber(getUnitTargetEquity(unit))} · warning ${formatNumber(getWarningThreshold(unitInitialCapitals[unit] ?? 0, unitWarningEquityPercentages[unit]))}`
 												: brokerLabel}
 										>
-											<div class="flex items-baseline justify-between gap-2 text-[10px] leading-none mb-1">
-												<span class="text-[#ececec] truncate">{brokerLabel}</span>
-												<span class="shrink-0 tabular-nums font-medium">
-													{#if tube.zone === 'breach'}
-														<span class="fac-minus">−{moneyLine(tube.mark, '', revealBookValues)} past warn</span>
-													{:else if tube.zone === 'near'}
-														<span class="fac-warn">{moneyLine(tube.mark, '', revealBookValues)} to warn</span>
-													{:else if tube.zone === 'over'}
-														<span class="fac-minus">W{moneyLine(tube.mark, '', revealBookValues)}</span>
-													{:else if tube.zone === 'ok' && tube.mark > 0.005}
-														<span class="fac-plus">D{moneyLine(tube.mark, '', revealBookValues)}</span>
-													{:else if tube.zone === 'unset'}
-														<span class="text-[#ececec]">set capital</span>
-													{:else}
-														<span class="text-[#ececec]">at target</span>
-													{/if}
-												</span>
-											</div>
+											<span class="min-w-0 truncate text-[10px] leading-none text-[#ececec]">{brokerLabel}</span>
+											<span class="text-xs leading-none tabular-nums font-medium whitespace-nowrap">
+												{#if tube.zone === 'breach'}
+													<span class="fac-minus">−{moneyLine(tube.mark, '', revealBookValues)} past warn</span>
+												{:else if tube.zone === 'near'}
+													<span class="fac-warn">{moneyLine(tube.mark, '', revealBookValues)} to warn</span>
+												{:else if tube.zone === 'over'}
+													<span class="fac-chip-minus">W {moneyLine(tube.mark, '', revealBookValues)}</span>
+												{:else if tube.zone === 'ok' && tube.mark > 0.005}
+													<span class="fac-chip-plus">D {moneyLine(tube.mark, '', revealBookValues)}</span>
+												{:else if tube.zone === 'unset'}
+													<span class="text-[#ececec]">set capital</span>
+												{:else}
+													<span class="text-[#ececec]">at target</span>
+												{/if}
+											</span>
 											<div
-												class="fac-tube"
+												class="fac-tube min-w-0"
 												role="img"
 												aria-label={tube.zone === 'breach'
 													? `${brokerLabel} equity below warning`
@@ -1964,38 +2028,60 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							{#if unitVisibility[unit] !== false}
 							<div class="px-4 py-3 border-t border-stone-700/50 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
 								<div class="grid grid-cols-2 gap-3 sm:flex sm:items-end">
-									<label class="block text-[11px] text-[#ececec]">
+									<div class="block text-[11px] text-[#ececec]">
 										WD Note (+)
-										{#if revealBookValues}
-											<input
-												type="number"
-												min="0"
-												step="0.01"
-												value={unitNoteAmount(unitWithdrawals, unit)}
-												on:change={(e) => handleUnitWithdrawalChange(unit, e)}
-												class="mt-1 w-full sm:w-36 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm tabular-nums focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
-												aria-label={`WD Note for unit ${unit}`}
-											/>
-										{:else}
-											<div class="mt-1 w-full sm:w-36 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm leading-[2.75rem]">{MASK}</div>
-										{/if}
-									</label>
-									<label class="block text-[11px] text-[#ececec]">
+										<div class="mt-1 flex items-center gap-1.5">
+											{#if revealBookValues}
+												<input
+													type="number"
+													min="0"
+													step="0.01"
+													value={unitNoteAmount(unitWithdrawals, unit)}
+													on:change={(e) => handleUnitWithdrawalChange(unit, e)}
+													class="w-full sm:w-36 min-w-0 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm tabular-nums focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+													aria-label={`WD Note for unit ${unit}`}
+												/>
+												<button
+													type="button"
+													on:click={() => openNoteAdd(unit, 'wd')}
+													class="fac-ghost shrink-0 px-3 text-xs"
+													title="Add this round to WD Note"
+													aria-label={`Add this round to WD Note for unit ${unit}`}
+												>
+													Add
+												</button>
+											{:else}
+												<div class="w-full sm:w-36 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm leading-[2.75rem]">{MASK}</div>
+											{/if}
+										</div>
+									</div>
+									<div class="block text-[11px] text-[#ececec]">
 										DP Note (-)
-										{#if revealBookValues}
-											<input
-												type="number"
-												min="0"
-												step="0.01"
-												value={unitNoteAmount(unitDeposits, unit)}
-												on:change={(e) => handleUnitDepositChange(unit, e)}
-												class="mt-1 w-full sm:w-36 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm tabular-nums focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
-												aria-label={`DP Note for unit ${unit}`}
-											/>
-										{:else}
-											<div class="mt-1 w-full sm:w-36 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm leading-[2.75rem]">{MASK}</div>
-										{/if}
-									</label>
+										<div class="mt-1 flex items-center gap-1.5">
+											{#if revealBookValues}
+												<input
+													type="number"
+													min="0"
+													step="0.01"
+													value={unitNoteAmount(unitDeposits, unit)}
+													on:change={(e) => handleUnitDepositChange(unit, e)}
+													class="w-full sm:w-36 min-w-0 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm tabular-nums focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+													aria-label={`DP Note for unit ${unit}`}
+												/>
+												<button
+													type="button"
+													on:click={() => openNoteAdd(unit, 'dp')}
+													class="fac-ghost shrink-0 px-3 text-xs"
+													title="Add this round to DP Note"
+													aria-label={`Add this round to DP Note for unit ${unit}`}
+												>
+													Add
+												</button>
+											{:else}
+												<div class="w-full sm:w-36 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm leading-[2.75rem]">{MASK}</div>
+											{/if}
+										</div>
+									</div>
 								</div>
 								<div class="flex items-center gap-2 flex-wrap">
 									{#if isUnitNotNetted(unit)}
@@ -3292,6 +3378,84 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						{pendingDeleting ? 'Deleting...' : 'Delete and add to Wallet'}
 					</button>
 				</div>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if noteAdd}
+	<div
+		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4 sm:p-6"
+		on:click={closeNoteAdd}
+		on:keydown={(e) => e.key === 'Escape' && closeNoteAdd()}
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="note-add-title"
+		tabindex="-1"
+	>
+		<div
+			class="bg-[#0a0a0a] border border-[#f5f5f5] w-full max-w-md mx-4 p-2"
+			role="document"
+			on:click|stopPropagation
+			on:keydown|stopPropagation
+			on:mousedown|stopPropagation
+		>
+			<div class="p-6 relative">
+				<button
+					type="button"
+					on:click={closeNoteAdd}
+					disabled={noteAddSaving}
+					class="absolute top-4 right-4 min-h-11 min-w-11 inline-flex items-center justify-center text-[#ececec] hover:text-[#f5f5f5]"
+					aria-label="Close"
+				>
+					<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+					</svg>
+				</button>
+				<h3 id="note-add-title" class="text-lg font-semibold text-[#f5f5f5] mb-2 pr-10">
+					Add to {noteAdd.side === 'wd' ? 'WD Note' : 'DP Note'}
+				</h3>
+				<p class="text-sm text-[#ececec] mb-4">
+					Unit {noteAdd.unit === 0 ? 'Unknown' : noteAdd.unit}
+					· now {formatNumber(noteAddCurrent, false)}
+				</p>
+				<form on:submit|preventDefault={submitNoteAdd}>
+					<label class="block text-[11px] text-[#ececec]">
+						This round
+						<input
+							type="number"
+							min="0.01"
+							step="0.01"
+							bind:this={noteAddInput}
+							bind:value={noteAddAmount}
+							class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm tabular-nums focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+							aria-label="Amount to add this round"
+						/>
+					</label>
+					<p class="text-sm text-[#f5f5f5] mt-3 tabular-nums">
+						{formatNumber(noteAddCurrent, false)} + {formatNumber(noteAddDelta, false)} = {formatNumber(noteAddNext, false)}
+					</p>
+					{#if noteAddError}
+						<p class="text-xs fac-minus mt-2">{noteAddError}</p>
+					{/if}
+					<div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3 mt-4">
+						<button
+							type="button"
+							on:click={closeNoteAdd}
+							disabled={noteAddSaving}
+							class="min-h-11 px-4 py-2 rounded-xl bg-stone-700 text-[#f5f5f5] hover:bg-stone-600 disabled:opacity-50 transition-colors"
+						>
+							Cancel
+						</button>
+						<button
+							type="submit"
+							disabled={noteAddSaving || noteAddDelta <= 0}
+							class="min-h-11 px-4 py-2 rounded-xl bg-[#f5f5f5] text-[#0a0a0a] hover:bg-white disabled:opacity-50 transition-colors"
+						>
+							{noteAddSaving ? 'Saving...' : 'Add'}
+						</button>
+					</div>
+				</form>
 			</div>
 		</div>
 	</div>
