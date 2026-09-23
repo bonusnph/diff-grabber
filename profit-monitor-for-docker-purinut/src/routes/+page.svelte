@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
 	import type { AccountSummary, CurrencySettings, DashboardStats, EquityWarningState, FxQuote, OrderInfo, PendingWithdrawal, PlAlertSettings, PlAlertState } from '$lib/types.js';
 	import { PENDING_NOTE_MAX_LENGTH } from '$lib/pending-withdrawal-model.js';
 	import { defaultPlAlertSettings, defaultPlAlertState } from '$lib/pl-alert-model.js';
@@ -1092,10 +1092,6 @@
         );
     }
 
-	function isEquityUnitPaused(unit: number): boolean {
-		return isEquityWarningPaused(equityWarningState, unit);
-	}
-
 	function applyCurrencyPayload(data: { currency?: unknown; fx?: FxQuote | null }) {
 		if (data.currency) {
 			currencySettings = normalizeCurrencySettings(data.currency);
@@ -1391,6 +1387,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 	async function resetEquityWarning(unit: number) {
 		if (resettingEquityUnit !== null) return;
 		resettingEquityUnit = unit;
+		await tick();
 		try {
 			const response = await fetch('/api/alerts/reset', {
 				method: 'POST',
@@ -1741,6 +1738,26 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 
 		<!-- Unit Groups -->
 		<div class="space-y-3">
+					{#snippet equityResetButton(state: EquityWarningState, unit: number, resetting: number | null)}
+						{#if plAlertSettings.equityWarningEnabled && isEquityWarningPaused(state, unit)}
+							<button
+								type="button"
+								on:click={() => resetEquityWarning(unit)}
+								class="inline-flex w-full min-h-12 items-center gap-2 px-4 mb-1 fac-display text-lg sm:text-xl font-extrabold tracking-tight bg-[#ffcc33] text-[#0a0a0a] border border-[#ffcc33] transition-opacity duration-150 ease-out hover:bg-[#f5f5f5] hover:border-[#f5f5f5] active:opacity-60 disabled:opacity-45 disabled:cursor-wait disabled:hover:bg-[#ffcc33] disabled:hover:border-[#ffcc33]"
+								disabled={resetting !== null}
+								aria-busy={resetting === unit}
+							>
+								{#if resetting === unit}
+									<svg class="h-5 w-5 shrink-0 motion-safe:animate-spin" viewBox="0 0 24 24" aria-hidden="true">
+										<path fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M12 3a9 9 0 0 1 9 9" />
+									</svg>
+									RESETTING...
+								{:else}
+									RESET EQUITY ALERT
+								{/if}
+							</button>
+						{/if}
+					{/snippet}
 
 					{#each Object.entries(unitGroups) as [unitStr, accounts]}
 						{@const unit = parseInt(unitStr)}
@@ -1759,15 +1776,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						
 						{#if visibleAccounts.length > 0}
 						<div class="py-3 {unitUnmatched.length > 0 ? 'fac-unit-solo' : unitHasOpenTrades(unitPairs, unitUnmatched) ? 'fac-unit-open' : ''}">
-							{#if plAlertSettings.equityWarningEnabled && isEquityUnitPaused(unit)}
-								<button
-									on:click={() => resetEquityWarning(unit)}
-									class="w-full min-h-12 px-4 mb-1 fac-display text-lg sm:text-xl font-extrabold tracking-tight bg-[#ffcc33] text-[#0a0a0a] border border-[#ffcc33] hover:bg-[#f5f5f5] hover:border-[#f5f5f5] disabled:opacity-45 disabled:cursor-not-allowed"
-									disabled={resettingEquityUnit !== null}
-								>
-									{resettingEquityUnit === unit ? 'RESETTING...' : 'RESET EQUITY ALERT'}
-								</button>
-							{/if}
+							{@render equityResetButton(equityWarningState, unit, resettingEquityUnit)}
 							<!-- Unit Header Row 1: Name + badges -->
 							<div 
 								class="px-4 py-2.5 cursor-pointer transition-colors {accounts.some(isLowEquityWarning) ? 'bg-red-900/20 hover:bg-red-900/30' : 'hover:bg-stone-700/50'}"
