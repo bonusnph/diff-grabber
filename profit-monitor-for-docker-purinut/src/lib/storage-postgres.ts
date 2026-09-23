@@ -10,10 +10,12 @@ import type {
 	CurrencySettings,
 	DashboardStats,
 	EquityWarningState,
+	ExternalWallet,
 	PendingWithdrawal,
 	PlAlertSettings,
 	PlAlertState
 } from './types.js';
+import { normalizeExternalWallet } from './external-wallet-model.js';
 import {
 	defaultPlAlertSettings,
 	defaultPlAlertState,
@@ -63,6 +65,28 @@ function parseJson<T>(raw: string | null, fallback: T): T {
 		console.error('Error parsing stored JSON:', error);
 		return fallback;
 	}
+}
+
+function roundMoney(value: number): number {
+	return Math.round(value * 100) / 100;
+}
+
+function noteAmount(raw: unknown): number {
+	const value = typeof raw === 'number' ? raw : typeof raw === 'string' && raw !== '' ? Number(raw) : NaN;
+	if (!Number.isFinite(value) || value <= 0) return 0;
+	return roundMoney(value);
+}
+
+function normalizeUnitNoteMap(raw: unknown): Record<number, number> {
+	if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+	const normalized: Record<number, number> = {};
+	for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+		const unit = Number(key);
+		const amount = noteAmount(value);
+		if (!Number.isInteger(unit) || amount <= 0) continue;
+		normalized[unit] = amount;
+	}
+	return normalized;
 }
 
 function mapAccountRow(record: QueryResultRow): AccountData {
@@ -407,8 +431,8 @@ class PostgresStorage {
 	> {
 		const groupedAccounts = await this.getAccountsByUnit();
 		const unitInitialCaps = await this.getUnitInitialCapitals();
-		const accountWithdrawals = await this.getAccountWithdrawals();
-		const accountDeposits = await this.getAccountDeposits();
+		const unitWithdrawals = await this.getUnitWithdrawals();
+		const unitDeposits = await this.getUnitDeposits();
 		const stats: Array<{
 			unit: number;
 			totalBalance: number;
@@ -419,14 +443,8 @@ class PostgresStorage {
 		Object.entries(groupedAccounts).forEach(([unitStr, accounts]) => {
 			const unit = parseInt(unitStr);
 			const totalBalance = accounts.reduce((sum, account) => sum + account.latest_balance, 0);
-			const withdrawalAdjust = accounts.reduce(
-				(sum, acc) => sum + (accountWithdrawals[acc.account_number] ?? 0),
-				0
-			);
-			const depositAdjust = accounts.reduce(
-				(sum, acc) => sum + (accountDeposits[acc.account_number] ?? 0),
-				0
-			);
+			const withdrawalAdjust = unitWithdrawals[unit] ?? 0;
+			const depositAdjust = unitDeposits[unit] ?? 0;
 			const unitCap = unitInitialCaps[unit] ?? 0;
 
 			stats.push({
@@ -514,12 +532,101 @@ class PostgresStorage {
 		return null;
 	}
 
+	private notesMigration: Promise<void> | null = null;
+
+	private migrateAccountNotesToUnits(): Promise<void> {
+		if (!this.notesMigration) {
+			this.notesMigration = this.runAccountNotesMigration().catch((error) => {
+				this.notesMigration = null;
+				throw error;
+			});
+		}
+		return this.notesMigration;
+	}
+
+	private async runAccountNotesMigration(): Promise<void> {
+		if ((await this.getSetting('notes_scoped_to_unit')) === '1') return;
+
+		const accountWithdrawals = parseJson<Record<string, unknown>>(
+			await this.getSetting('account_withdrawals'),
+			{}
+		);
+		const accountDeposits = parseJson<Record<string, unknown>>(
+			await this.getSetting('account_deposits'),
+			{}
+		);
+		const hasAccountNotes =
+			Object.values(accountWithdrawals).some((value) => noteAmount(value) > 0) ||
+			Object.values(accountDeposits).some((value) => noteAmount(value) > 0);
+
+		if (hasAccountNotes) {
+			const summaries = await this.getAccountSummaries();
+			const unitByAccount = new Map(
+				summaries.map((account) => [account.account_number, account.unit || 0])
+			);
+			const rolledWithdrawals: Record<number, number> = {};
+			const rolledDeposits: Record<number, number> = {};
+			for (const [accountNumber, raw] of Object.entries(accountWithdrawals)) {
+				const amount = noteAmount(raw);
+				if (amount <= 0) continue;
+				const unit = unitByAccount.get(accountNumber) ?? 0;
+				rolledWithdrawals[unit] = roundMoney((rolledWithdrawals[unit] ?? 0) + amount);
+			}
+			for (const [accountNumber, raw] of Object.entries(accountDeposits)) {
+				const amount = noteAmount(raw);
+				if (amount <= 0) continue;
+				const unit = unitByAccount.get(accountNumber) ?? 0;
+				rolledDeposits[unit] = roundMoney((rolledDeposits[unit] ?? 0) + amount);
+			}
+
+			const mergedWithdrawals = normalizeUnitNoteMap(
+				parseJson(await this.getSetting('unit_withdrawals'), {})
+			);
+			for (const [unit, amount] of Object.entries(rolledWithdrawals)) {
+				mergedWithdrawals[Number(unit)] = amount;
+			}
+			await this.setSetting('unit_withdrawals', JSON.stringify(mergedWithdrawals));
+			await this.setSetting('unit_deposits', JSON.stringify(rolledDeposits));
+			await this.setSetting('account_withdrawals', '{}');
+			await this.setSetting('account_deposits', '{}');
+		}
+
+		await this.setSetting('notes_scoped_to_unit', '1');
+	}
+
 	async setUnitWithdrawals(mappings: Record<number, number>): Promise<void> {
-		await this.setSetting('unit_withdrawals', JSON.stringify(mappings));
+		await this.setSetting('unit_withdrawals', JSON.stringify(normalizeUnitNoteMap(mappings)));
 	}
 
 	async getUnitWithdrawals(): Promise<Record<number, number>> {
-		return parseJson(await this.getSetting('unit_withdrawals'), {});
+		await this.migrateAccountNotesToUnits();
+		return normalizeUnitNoteMap(parseJson(await this.getSetting('unit_withdrawals'), {}));
+	}
+
+	async setUnitDeposits(mappings: Record<number, number>): Promise<void> {
+		await this.setSetting('unit_deposits', JSON.stringify(normalizeUnitNoteMap(mappings)));
+	}
+
+	async getUnitDeposits(): Promise<Record<number, number>> {
+		await this.migrateAccountNotesToUnits();
+		return normalizeUnitNoteMap(parseJson(await this.getSetting('unit_deposits'), {}));
+	}
+
+	async setExternalWallet(wallet: ExternalWallet): Promise<void> {
+		const next = normalizeExternalWallet(wallet);
+		const current = await this.getExternalWallet();
+		const balanceChanged = next.balance !== current.balance;
+		const nameOnly = !balanceChanged && next.name !== current.name;
+		if (!nameOnly && (balanceChanged || next.updated_at)) {
+			next.updated_at = new Date().toISOString();
+		} else {
+			next.updated_at = current.updated_at;
+		}
+		await this.setSetting('external_wallet', JSON.stringify(next));
+	}
+
+	async getExternalWallet(): Promise<ExternalWallet> {
+		return normalizeExternalWallet(parseJson(await this.getSetting('external_wallet'), null));
 	}
 
 	async getAccountHistory(accountNumber: string, limit: number = 100): Promise<AccountData[]> {

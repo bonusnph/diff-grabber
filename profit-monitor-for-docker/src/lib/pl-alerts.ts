@@ -56,8 +56,8 @@ async function evaluatePlAlerts(): Promise<void> {
 	}
 
 	const stats = await storage.getDashboardStats();
-	const withdrawals = await storage.getAccountWithdrawals();
-	const deposits = await storage.getAccountDeposits();
+	const withdrawals = await storage.getUnitWithdrawals();
+	const deposits = await storage.getUnitDeposits();
 	const adjusted = computeAdjustedProfitLoss(stats.profit_loss, withdrawals, deposits);
 	const state = await storage.getPlAlertState();
 	console.log(

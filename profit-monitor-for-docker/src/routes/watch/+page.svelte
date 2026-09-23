@@ -19,6 +19,8 @@
 	type WatchPayload = {
 		stats?: { profit_loss?: number; initial_capital?: number };
 		summaries?: Array<{ last_update?: string }>;
+		unitWithdrawals?: Record<number, number>;
+		unitDeposits?: Record<number, number>;
 		accountWithdrawals?: Record<string, number>;
 		accountDeposits?: Record<string, number>;
 		unitGroups?: Record<string, AccountSummary[]>;
@@ -146,8 +148,8 @@
 		}
 		adjusted = computeAdjustedProfitLoss(
 			payload.stats?.profit_loss || 0,
-			payload.accountWithdrawals || {},
-			payload.accountDeposits || {}
+			payload.unitWithdrawals || payload.accountWithdrawals || {},
+			payload.unitDeposits || payload.accountDeposits || {}
 		);
 		initialCapital =
 			typeof payload.stats?.initial_capital === 'number' ? payload.stats.initial_capital : 0;

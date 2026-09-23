@@ -9,9 +9,10 @@ export const GET: RequestHandler = async () => {
 		const summaries = await storage.getAccountSummaries();
 		const unitGroups = await storage.getAccountsByUnit();
 		const unitStats = await storage.getUnitStats();
-		const accountWithdrawals = await storage.getAccountWithdrawals();
-		const accountDeposits = await storage.getAccountDeposits();
+		const unitWithdrawals = await storage.getUnitWithdrawals();
+		const unitDeposits = await storage.getUnitDeposits();
 		const pendingWithdrawals = await storage.getPendingWithdrawals();
+		const externalWallet = await storage.getExternalWallet();
 		const snapshot = await storage.getSnapshotPL();
 		const plAlertState = await storage.getPlAlertState();
 		const plAlertSettings = await storage.getPlAlertSettings();
@@ -20,8 +21,8 @@ export const GET: RequestHandler = async () => {
 		const fx = await resolveFxQuote(currency);
 		
 		const currentAdjusted = (() => {
-			const totalWaitingWD = Object.values(accountWithdrawals || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
-			const totalDeposits = Object.values(accountDeposits || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
+			const totalWaitingWD = Object.values(unitWithdrawals || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
+			const totalDeposits = Object.values(unitDeposits || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
 			return (stats?.profit_loss || 0) + (totalWaitingWD || 0) - (totalDeposits || 0);
 		})();
 		const snapshotDelta = snapshot
@@ -33,9 +34,10 @@ export const GET: RequestHandler = async () => {
 			summaries,
 			unitGroups,
 			unitStats,
-			accountWithdrawals,
-			accountDeposits,
+			unitWithdrawals,
+			unitDeposits,
 			pendingWithdrawals,
+			externalWallet,
 			snapshot: snapshot ? { kind: snapshot.kind, value: snapshot.value, timestamp: snapshot.timestamp } : null,
 			snapshotDelta,
 			plAlert: {

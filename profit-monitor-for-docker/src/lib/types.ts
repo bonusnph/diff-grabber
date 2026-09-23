@@ -43,6 +43,12 @@ export interface DashboardStats {
 	account_count: number;
 }
 
+export interface ExternalWallet {
+	name: string;
+	balance: number;
+	updated_at: string;
+}
+
 export interface PendingWithdrawal {
 	id: string;
 	account_number: string;

@@ -4,7 +4,20 @@ import { storage } from '$lib/storage-postgres.js';
 import { schedulePlAlertEvaluation } from '$lib/pl-alerts.js';
 import { normalizePlAlertSettings } from '$lib/pl-alert-model.js';
 import { normalizeCurrencySettings } from '$lib/currency.js';
+import { normalizeExternalWallet } from '$lib/external-wallet-model.js';
 import { resolveFxQuote } from '$lib/fx-rate.js';
+
+function normalizeUnitNotes(raw: unknown): Record<number, number> | null {
+	if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+	const normalized: Record<number, number> = {};
+	for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+		const unit = Number(key);
+		const amount = typeof value === 'number' ? value : Number(value);
+		if (!Number.isInteger(unit) || !Number.isFinite(amount) || amount <= 0) continue;
+		normalized[unit] = Math.round(amount * 100) / 100;
+	}
+	return normalized;
+}
 
 async function settingsPayload() {
 	const currency = await storage.getCurrencySettings();
@@ -16,8 +29,8 @@ async function settingsPayload() {
 		unit_mappings: await storage.getUnitMappings(),
 		unit_broker_min_margins: await storage.getUnitBrokerMinMargins(),
 		unit_withdrawals: await storage.getUnitWithdrawals(),
-		account_withdrawals: await storage.getAccountWithdrawals(),
-		account_deposits: await storage.getAccountDeposits(),
+		unit_deposits: await storage.getUnitDeposits(),
+		external_wallet: await storage.getExternalWallet(),
 		snapshot: await storage.getSnapshotPL(),
 		pl_alert: await storage.getPlAlertSettings(),
 		pl_alert_state: await storage.getPlAlertState(),
@@ -33,7 +46,7 @@ export const GET: RequestHandler = async () => {
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
-		const { initial_capital, unit_initial_capitals, total_active_accounts, unit_warning_equity_percentages, unit_mappings, unit_broker_min_margins, unit_withdrawals, account_withdrawals, account_deposits, snapshot, clear_snapshot, pl_alert, currency } = await request.json();
+		const { initial_capital, unit_initial_capitals, total_active_accounts, unit_warning_equity_percentages, unit_mappings, unit_broker_min_margins, unit_withdrawals, unit_deposits, external_wallet, snapshot, clear_snapshot, pl_alert, currency } = await request.json();
 		// Snapshot operations (optional)
 		if (clear_snapshot === true) {
 			console.log('Clearing snapshot from database...');
@@ -118,29 +131,26 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 
 		if (unit_withdrawals !== undefined) {
-			if (typeof unit_withdrawals !== 'object' || Array.isArray(unit_withdrawals)) {
+			const normalized = normalizeUnitNotes(unit_withdrawals);
+			if (!normalized) {
 				return json({ error: 'Invalid unit withdrawals' }, { status: 400 });
-			}
-			const normalized: Record<number, number> = {};
-			for (const [k, v] of Object.entries(unit_withdrawals)) {
-				const unit = parseInt(k as string);
-				const num = typeof v === 'number' && isFinite(v) ? v : 0;
-				if (!isNaN(unit)) normalized[unit] = num;
 			}
 			await storage.setUnitWithdrawals(normalized);
 		}
 
-		if (account_withdrawals !== undefined) {
-			if (typeof account_withdrawals !== 'object' || Array.isArray(account_withdrawals)) {
-				return json({ error: 'Invalid account withdrawals' }, { status: 400 });
+		if (unit_deposits !== undefined) {
+			const normalized = normalizeUnitNotes(unit_deposits);
+			if (!normalized) {
+				return json({ error: 'Invalid unit deposits' }, { status: 400 });
 			}
-			const normalizedAcc: Record<string, number> = {};
-			for (const [k, v] of Object.entries(account_withdrawals)) {
-				const key = String(k);
-				const num = typeof v === 'number' && isFinite(v) ? v : 0;
-				normalizedAcc[key] = num;
+			await storage.setUnitDeposits(normalized);
+		}
+
+		if (external_wallet !== undefined) {
+			if (typeof external_wallet !== 'object' || external_wallet === null || Array.isArray(external_wallet)) {
+				return json({ error: 'Invalid external wallet' }, { status: 400 });
 			}
-			await storage.setAccountWithdrawals(normalizedAcc);
+			await storage.setExternalWallet(normalizeExternalWallet(external_wallet));
 		}
 
 		if (pl_alert !== undefined) {
@@ -165,19 +175,6 @@ export const POST: RequestHandler = async ({ request }) => {
 			await storage.setCurrencySettings(normalizeCurrencySettings(currency));
 		}
 
-		if (account_deposits !== undefined) {
-			if (typeof account_deposits !== 'object' || Array.isArray(account_deposits)) {
-				return json({ error: 'Invalid account deposits' }, { status: 400 });
-			}
-			const normalizedDep: Record<string, number> = {};
-			for (const [k, v] of Object.entries(account_deposits)) {
-				const key = String(k);
-				const num = typeof v === 'number' && isFinite(v) ? v : 0;
-				normalizedDep[key] = num;
-			}
-			await storage.setAccountDeposits(normalizedDep);
-		}
-		
 		return json({
 			status: 'success',
 			...(await settingsPayload())

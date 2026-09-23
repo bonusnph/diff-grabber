@@ -64,18 +64,17 @@ export function isSnapshotReady(summaries: AccountSummary[]): boolean {
 	return keys.every((key) => key === keys[0]);
 }
 
+function sumNoteValues(notes: Record<string, number> | Record<number, number> | null | undefined): number {
+	return Object.values(notes || {}).reduce(
+		(sum, value) => sum + (typeof value === 'number' && Number.isFinite(value) ? value : 0),
+		0
+	);
+}
+
 export function computeAdjustedProfitLoss(
 	profitLoss: number,
-	withdrawals: Record<string, number>,
-	deposits: Record<string, number>
+	withdrawals: Record<string, number> | Record<number, number>,
+	deposits: Record<string, number> | Record<number, number>
 ): number {
-	const waitingWd = Object.values(withdrawals || {}).reduce(
-		(sum, value) => sum + (typeof value === 'number' && Number.isFinite(value) ? value : 0),
-		0
-	);
-	const totalDeposits = Object.values(deposits || {}).reduce(
-		(sum, value) => sum + (typeof value === 'number' && Number.isFinite(value) ? value : 0),
-		0
-	);
-	return profitLoss + waitingWd - totalDeposits;
+	return profitLoss + sumNoteValues(withdrawals) - sumNoteValues(deposits);
 }

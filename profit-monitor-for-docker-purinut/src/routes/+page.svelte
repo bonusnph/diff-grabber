@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
-	import type { AccountSummary, CurrencySettings, DashboardStats, EquityWarningState, FxQuote, OrderInfo, PendingWithdrawal, PlAlertSettings, PlAlertState } from '$lib/types.js';
+	import type { AccountSummary, CurrencySettings, DashboardStats, EquityWarningState, ExternalWallet, FxQuote, OrderInfo, PendingWithdrawal, PlAlertSettings, PlAlertState } from '$lib/types.js';
+	import { EXTERNAL_WALLET_NAME_MAX, defaultExternalWallet, normalizeExternalWallet, roundMoney } from '$lib/external-wallet-model.js';
 	import { PENDING_NOTE_MAX_LENGTH } from '$lib/pending-withdrawal-model.js';
 	import { defaultPlAlertSettings, defaultPlAlertState } from '$lib/pl-alert-model.js';
 	import {
@@ -42,8 +43,16 @@
 		accountCount: number;
 	}> = [];
 	let unitWithdrawals: Record<number, number> = {};
-	let accountWithdrawals: Record<string, number> = {};
-	let accountDeposits: Record<string, number> = {};
+	let unitDeposits: Record<number, number> = {};
+	let externalWallet: ExternalWallet = defaultExternalWallet();
+	let settingsWalletCredit = 0;
+	let walletPrompt: { kind: 'dp-note' | 'settings-dp'; unit: number; previous: number; next: number } | null = null;
+	let walletPromptSaving = false;
+	let walletNameEditing = false;
+	let walletNameDraft = '';
+	let walletAdjustOpen = false;
+	let walletAdjustValue = '';
+	let walletAdjustSaving = false;
 	let pendingWithdrawals: PendingWithdrawal[] = [];
 	let pendingDialogAccount: AccountSummary | null = null;
 	let pendingAmount = '';
@@ -241,8 +250,8 @@
 	let draftWarns: Record<number, number> = {};
 	let draftMappings: Record<number, string> = {};
 	let draftBrokerMargins: Record<number, Record<string, number>> = {};
-	let draftWithdrawals: Record<string, number> = {};
-	let draftDeposits: Record<string, number> = {};
+	let draftWithdrawals: Record<number, number> = {};
+	let draftDeposits: Record<number, number> = {};
 
 	// Dynamic Unit Settings editing (Initial Capital & Warn %)
 	let newUnitSettingNumber: string = '';
@@ -259,14 +268,18 @@
 		draftWarns = { ...unitWarningEquityPercentages };
 		draftMappings = { ...unitMappings };
 		draftBrokerMargins = cloneJson(unitBrokerMinMargins || {});
-		draftWithdrawals = { ...accountWithdrawals };
-		draftDeposits = { ...accountDeposits };
+		draftWithdrawals = { ...unitWithdrawals };
+		draftDeposits = { ...unitDeposits };
+		settingsWalletCredit = 0;
+		if (walletPrompt?.kind === 'settings-dp') walletPrompt = null;
 		draftPlAlert = { ...plAlertSettings };
 		draftCurrency = { ...currencySettings };
 		showSettingsModal = true;
 	}
 
 	function closeSettings() {
+		settingsWalletCredit = 0;
+		if (walletPrompt?.kind === 'settings-dp') walletPrompt = null;
 		showSettingsModal = false;
 	}
 
@@ -335,12 +348,12 @@
 	}
 
     $: profitLossPercent = initialCapital > 0 ? (stats.profit_loss / initialCapital) * 100 : 0;
-	$: totalWaitingWD = Object.values(accountWithdrawals || {}).reduce(
+    $: totalWaitingWD = Object.values(unitWithdrawals || {}).reduce(
 		(sum, v) => sum + (typeof v === 'number' ? v : 0),
 		0
 	);
 
-	$: totalDeposits = Object.values(accountDeposits || {}).reduce(
+	$: totalDeposits = Object.values(unitDeposits || {}).reduce(
 		(sum, v) => sum + (typeof v === 'number' ? v : 0),
 		0
 	);
@@ -432,8 +445,9 @@
 				summaries = data.summaries;
 				unitGroups = data.unitGroups || {};
 				unitStats = data.unitStats || [];
-				accountWithdrawals = data.accountWithdrawals || {};
-				accountDeposits = data.accountDeposits || {};
+				unitWithdrawals = data.unitWithdrawals || {};
+				unitDeposits = data.unitDeposits || {};
+				if (data.externalWallet) externalWallet = normalizeExternalWallet(data.externalWallet);
 				pendingWithdrawals = Array.isArray(data.pendingWithdrawals) ? data.pendingWithdrawals : [];
 				latestUpdate = (summaries || []).reduce((latest, a) => {
 					const t = new Date(a.last_update).getTime();
@@ -553,7 +567,8 @@
 			unitMappings = data.unit_mappings || {};
 			unitBrokerMinMargins = data.unit_broker_min_margins || {};
 			unitWithdrawals = data.unit_withdrawals || {};
-			accountDeposits = data.account_deposits || {};
+			unitDeposits = data.unit_deposits || {};
+			if (data.external_wallet) externalWallet = normalizeExternalWallet(data.external_wallet);
 			plAlertSettings = data.pl_alert || defaultPlAlertSettings();
 			plAlertState = data.pl_alert_state || defaultPlAlertState();
 			equityWarningState = normalizeEquityWarningState(data.equity_warning_state);
@@ -682,103 +697,155 @@
 		}
 	}
 
-	async function updateUnitWithdrawals() {
+	function parseNoteInput(event: Event): number {
+		const input = event.target as HTMLInputElement;
+		const raw = input.value.trim();
+		const parsed = parseFloat(raw);
+		if (!raw || isNaN(parsed) || parsed < 0) return 0;
+		return Math.round(parsed * 100) / 100;
+	}
+
+	function unitNoteAmount(notes: Record<number, number>, unit: number): number {
+		const value = notes?.[unit];
+		return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+	}
+
+	async function saveUnitNotes(): Promise<boolean> {
 		try {
 			const response = await fetch('/api/settings', {
 				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({ unit_withdrawals: unitWithdrawals })
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					unit_withdrawals: unitWithdrawals,
+					unit_deposits: unitDeposits
+				})
 			});
 
 			if (response.ok) {
 				const data = await response.json();
-				unitWithdrawals = data.unit_withdrawals || unitWithdrawals;
-				// Refresh unitStats and totals to reflect adjustment in backend
+				unitWithdrawals = data.unit_withdrawals || {};
+				unitDeposits = data.unit_deposits || {};
+				if (data.external_wallet) externalWallet = normalizeExternalWallet(data.external_wallet);
 				await fetchData();
+				return true;
 			}
 		} catch (error) {
-			console.error('Error updating unit withdrawals:', error);
+			console.error('Error updating unit notes:', error);
 		}
+		return false;
 	}
 
-	function handleWithdrawalChange(unit: number, event: Event) {
-		const input = event.target as HTMLInputElement;
-		const raw = input.value.trim();
-		const parsed = parseFloat(raw);
-		const value = !raw ? 0 : isNaN(parsed) || parsed < 0 ? 0 : parsed;
-		unitWithdrawals = { ...unitWithdrawals, [unit]: value };
-		updateUnitWithdrawals();
-	}
-
-	async function updateAccountWithdrawals() {
+	async function saveExternalWallet() {
 		try {
 			const response = await fetch('/api/settings', {
 				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({ account_withdrawals: accountWithdrawals })
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ external_wallet: externalWallet })
 			});
-
 			if (response.ok) {
 				const data = await response.json();
-				accountWithdrawals = data.account_withdrawals || accountWithdrawals;
+				externalWallet = normalizeExternalWallet(data.external_wallet);
 				await fetchData();
 			}
 		} catch (error) {
-			console.error('Error updating account withdrawals:', error);
+			console.error('Error updating external wallet:', error);
 		}
 	}
 
-	async function updateAccountDeposits() {
-		try {
-			const response = await fetch('/api/settings', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({ account_deposits: accountDeposits })
-			});
+	function walletEffect(previous: number, next: number): number {
+		return roundMoney(previous - next);
+	}
 
-			if (response.ok) {
-				const data = await response.json();
-				accountDeposits = data.account_deposits || accountDeposits;
-				await fetchData();
-			}
-		} catch (error) {
-			console.error('Error updating account deposits:', error);
+	function handleUnitWithdrawalChange(unit: number, event: Event) {
+		unitWithdrawals = { ...unitWithdrawals, [unit]: parseNoteInput(event) };
+		void saveUnitNotes();
+	}
+
+	async function handleUnitDepositChange(unit: number, event: Event) {
+		const previous = unitNoteAmount(unitDeposits, unit);
+		const next = parseNoteInput(event);
+		if (next === previous) return;
+		unitDeposits = { ...unitDeposits, [unit]: next };
+		const saved = await saveUnitNotes();
+		if (!saved || next === previous) return;
+		walletPrompt = { kind: 'dp-note', unit, previous, next };
+	}
+
+	function requestSettingsDpClear(unit: number) {
+		const previous = unitNoteAmount(draftDeposits, unit);
+		if (previous <= 0) return;
+		walletPrompt = { kind: 'settings-dp', unit, previous, next: 0 };
+	}
+
+	function dismissWalletPrompt() {
+		if (walletPromptSaving) return;
+		walletPrompt = null;
+	}
+
+	async function confirmWalletPrompt(applyToWallet: boolean) {
+		if (!walletPrompt || walletPromptSaving) return;
+		const prompt = walletPrompt;
+		const effect = walletEffect(prompt.previous, prompt.next);
+		if (prompt.kind === 'settings-dp') {
+			draftDeposits = { ...draftDeposits, [prompt.unit]: 0 };
+			if (applyToWallet) settingsWalletCredit = roundMoney(settingsWalletCredit + effect);
+			walletPrompt = null;
+			return;
 		}
+		walletPrompt = null;
+		if (!applyToWallet || effect === 0) return;
+		walletPromptSaving = true;
+		externalWallet = {
+			...externalWallet,
+			balance: roundMoney(externalWallet.balance + effect),
+			updated_at: new Date().toISOString()
+		};
+		await saveExternalWallet();
+		walletPromptSaving = false;
 	}
 
-	function handleAccountWithdrawalChange(accountNumber: string, event: Event) {
-		const input = event.target as HTMLInputElement;
-		const raw = input.value.trim();
-		const parsed = parseFloat(raw);
-		const value = !raw ? 0 : isNaN(parsed) || parsed < 0 ? 0 : parsed;
-		accountWithdrawals = { ...accountWithdrawals, [accountNumber]: value };
-		updateAccountWithdrawals();
+	function startWalletNameEdit() {
+		walletNameDraft = externalWallet.name;
+		walletNameEditing = true;
 	}
 
-	function removeAccountWithdrawal(accountNumber: string) {
-		accountWithdrawals = { ...accountWithdrawals, [accountNumber]: 0 };
-		updateAccountWithdrawals();
+	function cancelWalletNameEdit() {
+		walletNameEditing = false;
+		walletNameDraft = '';
 	}
 
-	function handleAccountDepositChange(accountNumber: string, event: Event) {
-		const input = event.target as HTMLInputElement;
-		const raw = input.value.trim();
-		const parsed = parseFloat(raw);
-		const value = !raw ? 0 : isNaN(parsed) || parsed < 0 ? 0 : parsed;
-
-		accountDeposits = { ...accountDeposits, [accountNumber]: value };
-		updateAccountDeposits();
+	function commitWalletName() {
+		const name = walletNameDraft.trim().slice(0, EXTERNAL_WALLET_NAME_MAX) || 'Wallet';
+		walletNameEditing = false;
+		walletNameDraft = '';
+		if (name === externalWallet.name) return;
+		externalWallet = { ...externalWallet, name };
+		void saveExternalWallet();
 	}
 
-	function removeAccountDeposit(accountNumber: string) {
-		accountDeposits = { ...accountDeposits, [accountNumber]: 0 };
-		updateAccountDeposits();
+	function openWalletAdjust() {
+		walletAdjustValue = String(externalWallet.balance);
+		walletAdjustOpen = true;
+	}
+
+	function closeWalletAdjust() {
+		if (walletAdjustSaving) return;
+		walletAdjustOpen = false;
+	}
+
+	async function applyWalletAdjust() {
+		if (walletAdjustSaving) return;
+		const parsed = parseFloat(walletAdjustValue);
+		if (!Number.isFinite(parsed)) return;
+		walletAdjustSaving = true;
+		externalWallet = {
+			...externalWallet,
+			balance: roundMoney(parsed),
+			updated_at: new Date().toISOString()
+		};
+		await saveExternalWallet();
+		walletAdjustSaving = false;
+		walletAdjustOpen = false;
 	}
 
 	let adjustingPLUnits: Set<number> = new Set();
@@ -787,237 +854,124 @@
 	async function adjustUnitPLToZero(unit: number) {
 		const stat = unitStats.find((s) => s.unit === unit);
 		if (!stat || Math.abs(stat.profitLoss) < 0.01) return;
-
-		const accounts = unitGroups[unit] || [];
-		if (accounts.length === 0) return;
+		if ((unitGroups[unit] || []).length === 0) return;
 
 		const direction = stat.profitLoss > 0 ? 'DP Note' : 'WD Note';
-		if (!confirm(`Zero P/L for Unit ${unit}?\n\nP/L: ${moneyLine(stat.profitLoss, '', true)}\nWill add ${moneyLine(Math.abs(stat.profitLoss), '', true)} to ${direction} of account ${accounts[0].account_number}`)) return;
+		const amount = Math.abs(Math.round(stat.profitLoss * 100) / 100);
+		if (!confirm(`Zero P/L for Unit ${unit}?\n\nP/L: ${moneyLine(stat.profitLoss, '', true)}\nWill add ${moneyLine(amount, '', true)} to this group's ${direction}`)) return;
 
 		adjustingPLUnits = new Set([...adjustingPLUnits, unit]);
-		const firstAccount = accounts[0].account_number;
 		const pl = Math.round(stat.profitLoss * 100) / 100;
-
 		if (pl > 0) {
-			accountDeposits = {
-				...accountDeposits,
-				[firstAccount]: Math.round(((accountDeposits[firstAccount] ?? 0) + pl) * 100) / 100
+			unitDeposits = {
+				...unitDeposits,
+				[unit]: Math.round((unitNoteAmount(unitDeposits, unit) + pl) * 100) / 100
 			};
-			await updateAccountDeposits();
 		} else {
-			accountWithdrawals = {
-				...accountWithdrawals,
-				[firstAccount]: Math.round(((accountWithdrawals[firstAccount] ?? 0) + Math.abs(pl)) * 100) / 100
+			unitWithdrawals = {
+				...unitWithdrawals,
+				[unit]: Math.round((unitNoteAmount(unitWithdrawals, unit) + Math.abs(pl)) * 100) / 100
 			};
-			await updateAccountWithdrawals();
 		}
-
+		await saveUnitNotes();
 		adjustingPLUnits = new Set([...adjustingPLUnits].filter((u) => u !== unit));
 	}
 
 	async function adjustAllGroupsPL() {
-		const affectedUnits = unitStats.filter((s) => Math.abs(s.profitLoss) >= 0.01);
+		const affectedUnits = unitStats.filter((s) => Math.abs(s.profitLoss) >= 0.01 && (unitGroups[s.unit] || []).length > 0);
 		if (affectedUnits.length === 0) return;
 
 		const summary = affectedUnits.map((s) => `  Unit ${s.unit}: P/L ${moneyLine(s.profitLoss, s.profitLoss >= 0 ? '+' : '', true)}`).join('\n');
-		if (!confirm(`Zero P/L for all groups?\n\n${summary}\n\nThis will adjust WD/DP Notes for ${affectedUnits.length} group(s).`)) return;
+		if (!confirm(`Zero P/L for all groups?\n\n${summary}\n\nThis will adjust each group's WD/DP Note.`)) return;
 
 		adjustingAllPL = true;
-		const wdUpdates: Record<string, number> = {};
-		const dpUpdates: Record<string, number> = {};
-
-		for (const stat of unitStats) {
-			if (Math.abs(stat.profitLoss) < 0.01) continue;
-			const accounts = unitGroups[stat.unit] || [];
-			if (accounts.length === 0) continue;
-
-			const firstAccount = accounts[0].account_number;
+		const nextWD = { ...unitWithdrawals };
+		const nextDP = { ...unitDeposits };
+		for (const stat of affectedUnits) {
 			const pl = Math.round(stat.profitLoss * 100) / 100;
 			if (pl > 0) {
-				dpUpdates[firstAccount] = Math.round(((accountDeposits[firstAccount] ?? 0) + pl) * 100) / 100;
+				nextDP[stat.unit] = Math.round((unitNoteAmount(nextDP, stat.unit) + pl) * 100) / 100;
 			} else if (pl < 0) {
-				wdUpdates[firstAccount] = Math.round(((accountWithdrawals[firstAccount] ?? 0) + Math.abs(pl)) * 100) / 100;
+				nextWD[stat.unit] = Math.round((unitNoteAmount(nextWD, stat.unit) + Math.abs(pl)) * 100) / 100;
 			}
 		}
-
-		if (Object.keys(dpUpdates).length > 0) {
-			accountDeposits = { ...accountDeposits, ...dpUpdates };
-		}
-		if (Object.keys(wdUpdates).length > 0) {
-			accountWithdrawals = { ...accountWithdrawals, ...wdUpdates };
-		}
-		if (Object.keys(dpUpdates).length > 0 || Object.keys(wdUpdates).length > 0) {
-			await updateAccountWithdrawalsAndDeposits();
-		}
-
+		unitWithdrawals = nextWD;
+		unitDeposits = nextDP;
+		await saveUnitNotes();
 		adjustingAllPL = false;
 	}
 
 	let consolidatingUnits: Set<number> = new Set();
 	let consolidatingAll = false;
 
-	function getGroupWDDPSummary(unit: number) {
-		const accounts = unitGroups[unit] || [];
-		let totalWD = 0;
-		let totalDP = 0;
-		let maxWDAccount = '';
-		let maxWDValue = 0;
-
-		for (const a of accounts) {
-			const wd = accountWithdrawals[a.account_number] ?? 0;
-			const dp = accountDeposits[a.account_number] ?? 0;
-			totalWD += wd;
-			totalDP += dp;
-			if (wd > maxWDValue) {
-				maxWDValue = wd;
-				maxWDAccount = a.account_number;
-			}
-		}
-
-		if (!maxWDAccount && accounts.length > 0) maxWDAccount = accounts[0].account_number;
-
-		const net = Math.round((totalWD - totalDP) * 100) / 100;
-		return { accounts, totalWD, totalDP, net, maxWDAccount };
+	function unitNoteNet(unit: number, withdrawals = unitWithdrawals, deposits = unitDeposits) {
+		const totalWD = unitNoteAmount(withdrawals, unit);
+		const totalDP = unitNoteAmount(deposits, unit);
+		return {
+			totalWD,
+			totalDP,
+			net: Math.round((totalWD - totalDP) * 100) / 100
+		};
 	}
 
-	function isGroupNotNetted(unitAccounts: AccountSummary[]): boolean {
-		const nonZeroCount = unitAccounts.filter((a) => (accountWithdrawals[a.account_number] ?? 0) > 0 || (accountDeposits[a.account_number] ?? 0) > 0).length;
-		if (nonZeroCount > 1) return true;
-		return unitAccounts.some((a) => (accountWithdrawals[a.account_number] ?? 0) > 0 && (accountDeposits[a.account_number] ?? 0) > 0);
+	function isUnitNotNetted(unit: number, withdrawals = unitWithdrawals, deposits = unitDeposits): boolean {
+		const { totalWD, totalDP } = unitNoteNet(unit, withdrawals, deposits);
+		return totalWD > 0 && totalDP > 0;
+	}
+
+	function applyUnitNet(unit: number, withdrawals: Record<number, number>, deposits: Record<number, number>) {
+		const { net } = unitNoteNet(unit, withdrawals, deposits);
+		withdrawals[unit] = net > 0 ? net : 0;
+		deposits[unit] = net < 0 ? Math.abs(net) : 0;
 	}
 
 	async function consolidateGroupWDDP(unit: number) {
-		const { accounts, totalWD, totalDP, net, maxWDAccount } = getGroupWDDPSummary(unit);
-		if (accounts.length === 0 || !isGroupNotNetted(accounts)) return;
-
-		const lines = accounts
-			.filter((a) => (accountWithdrawals[a.account_number] ?? 0) > 0 || (accountDeposits[a.account_number] ?? 0) > 0)
-			.map((a) => `  ${a.account_number}: WD ${moneyLine(accountWithdrawals[a.account_number] ?? 0, '', true)}, DP ${moneyLine(accountDeposits[a.account_number] ?? 0, '', true)}`)
-			.join('\n');
+		if ((unitGroups[unit] || []).length === 0 || !isUnitNotNetted(unit)) return;
+		const { totalWD, totalDP, net } = unitNoteNet(unit);
 		const resultLine = net > 0
-			? `Net WD: ${moneyLine(net, '', true)} -> ${maxWDAccount}`
+			? `Net WD: ${moneyLine(net, '', true)}`
 			: net < 0
-				? `Net DP: ${moneyLine(Math.abs(net), '', true)} -> ${accounts[0].account_number}`
-				: 'Net: 0 (all cleared)';
-
-		if (!confirm(`Consolidate WD/DP for Unit ${unit}?\n\nCurrent:\n${lines}\n\nResult:\n  ${resultLine}\n  All other WD/DP cleared to 0`)) return;
+				? `Net DP: ${moneyLine(Math.abs(net), '', true)}`
+				: 'Net: 0 (both cleared)';
+		if (!confirm(`Simplify WD/DP for Unit ${unit}?\n\nWD: ${moneyLine(totalWD, '', true)}\nDP: ${moneyLine(totalDP, '', true)}\n\nResult:\n  ${resultLine}`)) return;
 
 		consolidatingUnits = new Set([...consolidatingUnits, unit]);
-		await applyConsolidation(accounts, net, maxWDAccount);
+		const nextWD = { ...unitWithdrawals };
+		const nextDP = { ...unitDeposits };
+		applyUnitNet(unit, nextWD, nextDP);
+		unitWithdrawals = nextWD;
+		unitDeposits = nextDP;
+		await saveUnitNotes();
 		consolidatingUnits = new Set([...consolidatingUnits].filter((u) => u !== unit));
 	}
 
 	async function consolidateAllGroupsWDDP() {
-		const groups: Array<{ unit: number; totalWD: number; totalDP: number; net: number; maxWDAccount: string; accounts: typeof summaries }> = [];
-
-		for (const [unitStr] of Object.entries(unitGroups)) {
-			const unit = parseInt(unitStr);
-			const summary = getGroupWDDPSummary(unit);
-			if (isGroupNotNetted(summary.accounts)) groups.push({ unit, ...summary });
-		}
-
+		const groups = Object.keys(unitGroups)
+			.map((unitStr) => parseInt(unitStr))
+			.filter((unit) => isUnitNotNetted(unit))
+			.map((unit) => ({ unit, ...unitNoteNet(unit) }));
 		if (groups.length === 0) return;
 
 		const lines = groups.map((g) => `  Unit ${g.unit}: WD ${moneyLine(g.totalWD, '', true)}, DP ${moneyLine(g.totalDP, '', true)} -> Net ${g.net >= 0 ? 'WD' : 'DP'} ${moneyLine(Math.abs(g.net), '', true)}`).join('\n');
-		if (!confirm(`Consolidate WD/DP for all groups?\n\n${lines}\n\nThis will net WD/DP for ${groups.length} group(s).`)) return;
+		if (!confirm(`Simplify WD/DP for all groups?\n\n${lines}`)) return;
 
 		consolidatingAll = true;
-
-		const newWD = { ...accountWithdrawals };
-		const newDP = { ...accountDeposits };
-
-		for (const g of groups) {
-			for (const a of g.accounts) {
-				newWD[a.account_number] = 0;
-				newDP[a.account_number] = 0;
-			}
-			if (g.net > 0) {
-				newWD[g.maxWDAccount] = g.net;
-			} else if (g.net < 0) {
-				newDP[g.accounts[0].account_number] = Math.abs(g.net);
-			}
-		}
-
-		accountWithdrawals = newWD;
-		accountDeposits = newDP;
-		await updateAccountWithdrawalsAndDeposits();
-
+		const nextWD = { ...unitWithdrawals };
+		const nextDP = { ...unitDeposits };
+		for (const group of groups) applyUnitNet(group.unit, nextWD, nextDP);
+		unitWithdrawals = nextWD;
+		unitDeposits = nextDP;
+		await saveUnitNotes();
 		consolidatingAll = false;
 	}
 
-	async function applyConsolidation(accounts: typeof summaries, net: number, maxWDAccount: string) {
-		const newWD = { ...accountWithdrawals };
-		const newDP = { ...accountDeposits };
-
-		for (const a of accounts) {
-			newWD[a.account_number] = 0;
-			newDP[a.account_number] = 0;
-		}
-
-		if (net > 0) {
-			newWD[maxWDAccount] = net;
-		} else if (net < 0) {
-			newDP[accounts[0].account_number] = Math.abs(net);
-		}
-
-		accountWithdrawals = newWD;
-		accountDeposits = newDP;
-		await updateAccountWithdrawalsAndDeposits();
-	}
-
-	async function updateAccountWithdrawalsAndDeposits() {
-		try {
-			const response = await fetch('/api/settings', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					account_withdrawals: accountWithdrawals,
-					account_deposits: accountDeposits
-				})
-			});
-
-			if (response.ok) {
-				const data = await response.json();
-				accountWithdrawals = data.account_withdrawals || accountWithdrawals;
-				accountDeposits = data.account_deposits || accountDeposits;
-				await fetchData();
-			}
-		} catch (error) {
-			console.error('Error updating account withdrawals and deposits:', error);
-		}
-	}
-
-	$: accountByNumber = (summaries || []).reduce(
-		(map, a) => {
-			(map as any)[a.account_number] = a;
-			return map;
-		},
-		{} as Record<string, AccountSummary>
-	);
-
-	$: nonZeroAccountWDs = Object.entries(accountWithdrawals || {}).filter(
-		([_, v]) => typeof v === 'number' && (v as number) > 0
-	);
-
-	$: nonZeroAccountDPs = Object.entries(accountDeposits || {}).filter(
-		([_, v]) => typeof v === 'number' && (v as number) > 0
-	);
-
-	function groupNotesByUnit(notes: Record<string, number>) {
-		const grouped: Record<number, Array<{ account_number: string; amount: number }>> = {};
-		for (const [acc, amt] of Object.entries(notes || {})) {
-			if (typeof amt !== 'number' || amt <= 0) continue;
-			const u = accountByNumber[acc]?.unit ?? 0;
-			if (!grouped[u]) grouped[u] = [];
-			grouped[u].push({ account_number: acc, amount: amt });
-		}
-		return grouped;
-	}
-
-	$: wdByUnit = groupNotesByUnit(accountWithdrawals);
-	$: dpByUnit = groupNotesByUnit(accountDeposits);
-	$: draftWdByUnit = groupNotesByUnit(draftWithdrawals);
-	$: draftDpByUnit = groupNotesByUnit(draftDeposits);
+	$: settingsNoteUnits = Array.from(new Set([
+		...Object.keys(draftWithdrawals || {}),
+		...Object.keys(draftDeposits || {})
+	]))
+		.map((key) => parseInt(key))
+		.filter((unit) => !isNaN(unit) && (unitNoteAmount(draftWithdrawals, unit) > 0 || unitNoteAmount(draftDeposits, unit) > 0))
+		.sort((a, b) => a - b);
 
 	function addUnitBrokerMinMargin() {
 		const unit = parseInt(newUnitBrokerUnit);
@@ -1160,6 +1114,13 @@
 		return `${dd}/${mm}/${yyyy} ${HH}:${min}:${ss}`;
 	}
 
+	function formatLocalDateTime(dateStr: string): string {
+		const d = new Date(dateStr);
+		if (Number.isNaN(d.getTime())) return '';
+		const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+		return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+	}
+
 	function shortName(name: string): string {
 		if (!name) return '';
 		return name.length > 8 ? name.slice(0, 8) + '~' : name;
@@ -1238,8 +1199,9 @@
 		}
 	}
 
-	async function confirmPendingDelete() {
+	async function confirmPendingDelete(addToWallet: boolean) {
 		if (!pendingDeleteTarget || pendingDeleting) return;
+		const credit = pendingDeleteTarget.amount;
 		pendingDeleting = true;
 		try {
 			const res = await fetch(`/api/pending-withdrawals/${encodeURIComponent(pendingDeleteTarget.id)}`, {
@@ -1249,6 +1211,14 @@
 			if (res.ok) {
 				pendingWithdrawals = Array.isArray(data.pendingWithdrawals) ? data.pendingWithdrawals : [];
 				pendingDeleteTarget = null;
+				if (addToWallet) {
+					externalWallet = {
+						...externalWallet,
+						balance: roundMoney(externalWallet.balance + credit),
+						updated_at: new Date().toISOString()
+					};
+					await saveExternalWallet();
+				}
 			}
 		} catch (error) {
 			console.error('Error deleting pending withdrawal:', error);
@@ -1327,19 +1297,27 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 		if (savingSettings) return;
 		savingSettings = true;
 		try {
-			const response = await fetch('/api/settings', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
+			const settingsBody: Record<string, unknown> = {
                     unit_initial_capitals: draftCapitals,
                     unit_warning_equity_percentages: draftWarns,
 					unit_mappings: draftMappings,
 					unit_broker_min_margins: draftBrokerMargins,
-					account_withdrawals: draftWithdrawals,
-					account_deposits: draftDeposits,
+					unit_withdrawals: draftWithdrawals,
+					unit_deposits: draftDeposits,
 					pl_alert: draftPlAlert,
 					currency: draftCurrency
-				})
+			};
+			if (settingsWalletCredit !== 0) {
+				settingsBody.external_wallet = {
+					...externalWallet,
+					balance: roundMoney(externalWallet.balance + settingsWalletCredit),
+					updated_at: new Date().toISOString()
+				};
+			}
+			const response = await fetch('/api/settings', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(settingsBody)
 			});
 			if (response.ok) {
 				const data = await response.json();
@@ -1348,8 +1326,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                 unitWarningEquityPercentages = data.unit_warning_equity_percentages || draftWarns;
 				unitMappings = data.unit_mappings || draftMappings;
 				unitBrokerMinMargins = data.unit_broker_min_margins || draftBrokerMargins;
-				accountWithdrawals = data.account_withdrawals || draftWithdrawals;
-				accountDeposits = data.account_deposits || draftDeposits;
+				unitWithdrawals = data.unit_withdrawals || {};
+				unitDeposits = data.unit_deposits || {};
 				plAlertSettings = data.pl_alert || draftPlAlert;
 				plAlertState = data.pl_alert_state || plAlertState;
 				if (data.equity_warning_state) equityWarningState = normalizeEquityWarningState(data.equity_warning_state);
@@ -1813,13 +1791,6 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										{#if unitHasStaleData}
 											<span class="w-1.5 h-1.5 rounded-full bg-orange-400 flex-shrink-0" title="Stale data"></span>
 										{/if}
-										{#if unitStat}
-											{#if isGroupNotNetted(unitGroups[unit] || [])}
-												<button on:click|stopPropagation={() => consolidateGroupWDDP(unit)} disabled={consolidatingUnits.has(unit)} class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-cyan-900/40 hover:bg-cyan-900/60 text-cyan-400 disabled:opacity-50 transition-colors">
-													{consolidatingUnits.has(unit) ? '...' : 'Simplify WD/DP'}
-												</button>
-											{/if}
-										{/if}
 									</div>
 									<div class="flex items-center gap-1.5 flex-shrink-0">
 										{#if unitPairs.length > 0}
@@ -1893,8 +1864,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 
 								<!-- Row 2: Stats line + P/L -->
 								{#if unitStat}
-									{@const unitWD = (unitGroups[unit] || []).reduce((s, a) => s + (accountWithdrawals[a.account_number] ?? 0), 0)}
-									{@const unitDP = (unitGroups[unit] || []).reduce((s, a) => s + (accountDeposits[a.account_number] ?? 0), 0)}
+									{@const unitWD = unitNoteAmount(unitWithdrawals, unit)}
+									{@const unitDP = unitNoteAmount(unitDeposits, unit)}
 									{@const unitPWD = pendingTotalForAccounts(unitGroups[unit] || [])}
 									<div class="flex items-center justify-between mt-1.5">
 										<div class="flex items-center gap-x-3 gap-y-0.5 flex-wrap text-xs text-[#ececec]">
@@ -1955,13 +1926,54 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							</div>
 							
 							{#if unitVisibility[unit] !== false}
-							{#if unitStat && Math.abs(unitStat.profitLoss) >= 0.01}
-								<div class="px-4 py-1.5 border-t border-stone-700/50 flex items-center justify-end">
-									<button on:click={() => adjustUnitPLToZero(unit)} disabled={adjustingPLUnits.has(unit)} class="text-[11px] min-h-9 px-2.5 rounded font-medium bg-amber-900/40 hover:bg-amber-900/60 text-amber-400 disabled:opacity-50 transition-colors">
-										{adjustingPLUnits.has(unit) ? '...' : 'Set P/L Zero'}
-									</button>
+							<div class="px-4 py-3 border-t border-stone-700/50 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+								<div class="grid grid-cols-2 gap-3 sm:flex sm:items-end">
+									<label class="block text-[11px] text-[#ececec]">
+										WD Note (+)
+										{#if revealBookValues}
+											<input
+												type="number"
+												min="0"
+												step="0.01"
+												value={unitNoteAmount(unitWithdrawals, unit)}
+												on:change={(e) => handleUnitWithdrawalChange(unit, e)}
+												class="mt-1 w-full sm:w-36 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm tabular-nums focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+												aria-label={`WD Note for unit ${unit}`}
+											/>
+										{:else}
+											<div class="mt-1 w-full sm:w-36 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm leading-[2.75rem]">{MASK}</div>
+										{/if}
+									</label>
+									<label class="block text-[11px] text-[#ececec]">
+										DP Note (-)
+										{#if revealBookValues}
+											<input
+												type="number"
+												min="0"
+												step="0.01"
+												value={unitNoteAmount(unitDeposits, unit)}
+												on:change={(e) => handleUnitDepositChange(unit, e)}
+												class="mt-1 w-full sm:w-36 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm tabular-nums focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+												aria-label={`DP Note for unit ${unit}`}
+											/>
+										{:else}
+											<div class="mt-1 w-full sm:w-36 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm leading-[2.75rem]">{MASK}</div>
+										{/if}
+									</label>
 								</div>
-							{/if}
+								<div class="flex items-center gap-2 flex-wrap">
+									{#if isUnitNotNetted(unit)}
+										<button type="button" on:click={() => consolidateGroupWDDP(unit)} disabled={consolidatingUnits.has(unit)} class="text-[11px] min-h-11 px-2.5 rounded-md font-medium bg-cyan-900/40 hover:bg-cyan-900/60 text-cyan-400 disabled:opacity-50 transition-colors">
+											{consolidatingUnits.has(unit) ? '...' : 'Simplify WD/DP'}
+										</button>
+									{/if}
+									{#if unitStat && Math.abs(unitStat.profitLoss) >= 0.01}
+										<button type="button" on:click={() => adjustUnitPLToZero(unit)} disabled={adjustingPLUnits.has(unit)} class="text-[11px] min-h-11 px-2.5 rounded-md font-medium bg-amber-900/40 hover:bg-amber-900/60 text-amber-400 disabled:opacity-50 transition-colors">
+											{adjustingPLUnits.has(unit) ? '...' : 'Set P/L Zero'}
+										</button>
+									{/if}
+								</div>
+							</div>
 
 							{#if unitPairs.length > 0 || unitUnmatched.length > 0}
 								<div class="px-4 py-2 border-t border-stone-700/50 bg-stone-900/40">
@@ -2120,7 +2132,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												<div class="text-[10px] text-[#ececec] tabular-nums">{formatDateTime(account.last_update)}</div>
 											</div>
 										</div>
-										<div class="grid grid-cols-2 gap-2 text-xs">
+										<div class="grid grid-cols-3 gap-2 text-xs">
 											<div>
 												<div class="text-[#ececec]">Balance</div>
 												<div class="font-medium text-[#f5f5f5] tabular-nums">{moneyLine(account.latest_balance, '', revealBookValues)}</div>
@@ -2142,38 +2154,6 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												</div>
 											</div>
 										</div>
-										<div class="grid grid-cols-2 gap-2">
-											<label class="block text-[11px] text-[#ececec]">
-												WD Note (+)
-												{#if revealBookValues}
-													<input
-														type="number"
-														min="0"
-														step="100"
-														value={accountWithdrawals[account.account_number] ?? 0}
-														on:change={(e) => handleAccountWithdrawalChange(account.account_number, e)}
-														class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
-													/>
-												{:else}
-													<div class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm leading-[2.75rem]">{MASK}</div>
-												{/if}
-											</label>
-											<label class="block text-[11px] text-[#ececec]">
-												DP Note (-)
-												{#if revealBookValues}
-													<input
-														type="number"
-														min="0"
-														step="100"
-														value={accountDeposits[account.account_number] ?? 0}
-														on:change={(e) => handleAccountDepositChange(account.account_number, e)}
-														class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
-													/>
-												{:else}
-													<div class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm leading-[2.75rem]">{MASK}</div>
-												{/if}
-											</label>
-										</div>
 									</div>
 								{/each}
 							</div>
@@ -2186,8 +2166,6 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											<th class="text-left py-1.5 px-2 text-[#ececec] font-medium">Broker</th>
 											<th class="text-right py-1.5 px-2 text-[#ececec] font-medium">Balance</th>
 											<th class="text-right py-1.5 px-2 text-[#ececec] font-medium">Equity</th>
-											<th class="text-right py-1.5 px-2 text-[#ececec] font-medium">WD Note (+)</th>
-											<th class="text-right py-1.5 px-2 text-[#ececec] font-medium">DP Note (-)</th>
 											<th class="text-center py-1.5 px-2 text-[#ececec] font-medium">Status</th>
 											<th class="text-left py-1.5 px-2 text-[#ececec] font-medium">Updated</th>
 										</tr>
@@ -2247,36 +2225,6 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												<td class="py-1.5 px-2 text-right font-medium text-[#f5f5f5] text-xs"
 													>{moneyLine(account.latest_equity, '', revealBookValues)}</td
 												>
-												<td class="py-1.5 px-2 text-right">
-													{#if revealBookValues}
-														<input
-															type="number"
-															min="0"
-															step="100"
-															value={accountWithdrawals[account.account_number] ?? 0}
-															on:change={(e) =>
-																handleAccountWithdrawalChange(account.account_number, e)}
-															class="w-20 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-1.5 py-0.5 text-right text-xs focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
-														/>
-													{:else}
-														<span class="inline-block w-20 px-1.5 py-0.5 text-right text-xs">{MASK}</span>
-													{/if}
-												</td>
-												<td class="py-1.5 px-2 text-right">
-													{#if revealBookValues}
-														<input
-															type="number"
-															min="0"
-															step="100"
-															value={accountDeposits[account.account_number] ?? 0}
-															on:change={(e) =>
-																handleAccountDepositChange(account.account_number, e)}
-															class="w-20 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-1.5 py-0.5 text-right text-xs focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
-														/>
-													{:else}
-														<span class="inline-block w-20 px-1.5 py-0.5 text-right text-xs">{MASK}</span>
-													{/if}
-												</td>
 												<td class="py-1.5 px-2 text-center">
 													{#if dataAge.status === 'stale'}
 														<span class="text-orange-500 font-bold" title="ข้อมูลเก่ากว่า 5 นาที ({dataAge.minutes} นาที)">
@@ -2335,7 +2283,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								{adjustingAllPL ? '...' : 'Set P/L Zero All'}
 							</button>
 						{/if}
-						{#if Object.values(unitGroups).some((accs) => isGroupNotNetted(accs))}
+						{#if Object.keys(unitGroups).some((unitStr) => isUnitNotNetted(parseInt(unitStr)))}
 							<button on:click={consolidateAllGroupsWDDP} disabled={consolidatingAll} class="text-[11px] min-h-9 px-2.5 rounded-md font-medium bg-cyan-900/40 hover:bg-cyan-900/60 text-cyan-400 disabled:opacity-50 transition-colors">
 								{consolidatingAll ? '...' : 'Simplify WD/DP All'}
 							</button>
@@ -2452,7 +2400,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								<span>Unit {entry.unit === 0 ? 'Unknown' : entry.unit}</span>
 								<span class="text-amber-300 tabular-nums">{moneyLine(entry.amount, '', revealBookValues)}</span>
 							</div>
-							<div class="text-[11px] text-[#ececec]">{formatDateTime(entry.withdrawn_at)}</div>
+							<div class="text-[11px] text-[#ececec]">{formatLocalDateTime(entry.withdrawn_at)}</div>
 							{#if entry.note}
 								<div class="text-[11px] text-[#ececec]">{entry.note}</div>
 							{/if}
@@ -2479,7 +2427,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						<tbody>
 							{#each pendingSummaryRows as entry (entry.id)}
 								<tr class="border-b border-stone-700/50">
-									<td class="py-1.5 px-2 text-[#ececec] tabular-nums">{formatDateTime(entry.withdrawn_at)}</td>
+									<td class="py-1.5 px-2 text-[#ececec] tabular-nums">{formatLocalDateTime(entry.withdrawn_at)}</td>
 									<td class="py-1.5 px-2 text-[#ececec]">{entry.unit === 0 ? 'Unknown' : entry.unit}</td>
 									<td class="py-1.5 px-2 font-mono text-[#f5f5f5]">{entry.account_number}</td>
 									<td class="py-1.5 px-2 text-[#ececec] truncate" title={entry.account_name}>{shortName(entry.account_name)}</td>
@@ -2506,6 +2454,50 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						</tbody>
 					</table>
 				</div>
+			</div>
+			<div class="py-5 border-t border-stone-700/60">
+				<div class="flex items-start justify-between gap-3">
+					<div class="min-w-0">
+						{#if walletNameEditing}
+							<form class="flex items-center gap-2" on:submit|preventDefault={commitWalletName}>
+								<input
+									type="text"
+									maxlength={EXTERNAL_WALLET_NAME_MAX}
+									bind:value={walletNameDraft}
+									class="w-40 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-sm focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+									aria-label="Wallet name"
+								/>
+								<button type="submit" class="min-h-11 px-3 text-sm text-[#f5f5f5]">Save</button>
+								<button type="button" on:click={cancelWalletNameEdit} class="min-h-11 px-2 text-sm text-[#ececec]">Cancel</button>
+							</form>
+						{:else}
+							<div class="flex items-center gap-2 min-w-0">
+								<h3 class="text-base font-semibold text-[#f5f5f5] truncate">{externalWallet.name}</h3>
+								<button
+									type="button"
+									on:click={startWalletNameEdit}
+									class="shrink-0 min-h-9 px-2 text-xs text-[#ececec] hover:text-[#f5f5f5]"
+								>
+									Edit
+								</button>
+							</div>
+						{/if}
+					</div>
+					<button
+						type="button"
+						on:click={openWalletAdjust}
+						disabled={!revealBookValues}
+						class="shrink-0 min-h-11 px-3 rounded-md text-sm font-medium bg-stone-700 text-[#f5f5f5] hover:bg-stone-600 disabled:opacity-40"
+					>
+						Adjust to latest
+					</button>
+				</div>
+				<div class="mt-3 fac-display text-4xl sm:text-5xl font-extrabold tracking-tight tabular-nums text-[#f5f5f5] leading-none">
+					{moneyLine(externalWallet.balance, '', revealBookValues)}
+				</div>
+				{#if externalWallet.updated_at}
+					<div class="mt-2 text-xs text-[#ececec] tabular-nums">Updated {formatLocalDateTime(externalWallet.updated_at)}</div>
+				{/if}
 			</div>
 		{/if}
 
@@ -2920,145 +2912,62 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				</div>
 
 
-				<!-- WD Notes Setting (per account) -->
+				<!-- WD / DP Notes (per unit group) -->
 				<div>
 					<fieldset>
-						<legend class="block text-sm font-medium text-[#f5f5f5] mb-2"> WD Notes </legend>
+						<legend class="block text-sm font-medium text-[#f5f5f5] mb-2">WD / DP Notes</legend>
 						<p class="text-xs text-[#ececec] mb-2">
-							Waiting withdrawal per account. Remove here is draft-only until Save.
+							One WD Note and one DP Note per unit group. Clearing a row, including a Wallet update from DP, applies when you press Save.
 						</p>
-						<div class="space-y-3 max-h-64 overflow-y-auto pr-1">
-							{#each Object.entries(draftWdByUnit || {}) as [uStr, entries]}
-								{@const u = parseInt(uStr)}
-								<div class="bg-stone-700/50 border border-stone-600 rounded-xl">
-									<div class="px-3 py-2 border-b border-stone-600 flex items-center justify-between">
-										<span class="text-sm text-[#f5f5f5]">Unit {u === 0 ? 'Unknown' : u}</span>
-										<span class="text-xs text-[#ececec]"
-											>WD Total: {formatNumber(
-												(entries || []).reduce((s, e) => s + (e.amount ?? 0), 0),
-												false
-											)}</span>
-										>
-									</div>
-									<div class="divide-y divide-stone-600/50">
-										{#each entries as e}
-											<div class="flex items-center justify-between px-3 py-2">
-												<div class="text-xs text-[#ececec] truncate mr-2">
-													<span class="font-mono">{e.account_number}</span>
-													{#if accountByNumber[e.account_number]}
-														<span class="text-[#ececec]">
-															— {shortName(accountByNumber[e.account_number].account_name)}</span
-														>
-													{/if}
-												</div>
-												<div class="flex items-center gap-2">
-													<span class="text-xs text-[#ececec]">{formatNumber(e.amount, false)}</span>
-													<button
-														on:click={() => {
-															draftWithdrawals = { ...draftWithdrawals, [e.account_number]: 0 };
-														}}
-														class="fac-minus hover:fac-minus transition-colors"
-														aria-label={`Remove WD for ${e.account_number}`}
-													>
-														<svg
-															class="w-4 h-4"
-															fill="none"
-															stroke="currentColor"
-															viewBox="0 0 24 24"
-														>
-															<path
-																stroke-linecap="round"
-																stroke-linejoin="round"
-																stroke-width="2"
-																d="M6 18L18 6M6 6l12 12"
-															/>
-														</svg>
-													</button>
-												</div>
+						<div class="space-y-2 max-h-64 overflow-y-auto pr-1">
+							{#each settingsNoteUnits as unit}
+								<div class="bg-stone-700/50 border border-stone-600 rounded-xl px-3 py-2 space-y-2">
+									<div class="text-sm text-[#f5f5f5]">Unit {unit === 0 ? 'Unknown' : unit} ({getDraftUnitDisplayName(unit)})</div>
+									{#if unitNoteAmount(draftWithdrawals, unit) > 0}
+										<div class="flex items-center justify-between gap-2">
+											<span class="text-xs text-[#ececec]">WD Note (+)</span>
+											<div class="flex items-center gap-2">
+												<span class="text-xs text-[#ececec] tabular-nums">{formatNumber(unitNoteAmount(draftWithdrawals, unit), false)}</span>
+												<button
+													type="button"
+													on:click={() => { draftWithdrawals = { ...draftWithdrawals, [unit]: 0 }; }}
+													class="fac-minus hover:fac-minus transition-colors"
+													aria-label={`Remove WD note for unit ${unit}`}
+												>
+													<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+														<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+													</svg>
+												</button>
 											</div>
-										{/each}
-									</div>
+										</div>
+									{/if}
+									{#if unitNoteAmount(draftDeposits, unit) > 0}
+										<div class="flex items-center justify-between gap-2">
+											<span class="text-xs text-[#ececec]">DP Note (-)</span>
+											<div class="flex items-center gap-2">
+												<span class="text-xs text-[#ececec] tabular-nums">{formatNumber(unitNoteAmount(draftDeposits, unit), false)}</span>
+												<button
+													type="button"
+													on:click={() => requestSettingsDpClear(unit)}
+													class="fac-minus hover:fac-minus transition-colors"
+													aria-label={`Remove DP note for unit ${unit}`}
+												>
+													<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+														<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+													</svg>
+												</button>
+											</div>
+										</div>
+									{/if}
 								</div>
 							{/each}
-							{#if Object.keys(draftWdByUnit || {}).length === 0}
-								<div class="text-xs text-[#ececec]">No non-zero WD notes.</div>
+							{#if settingsNoteUnits.length === 0}
+								<div class="text-xs text-[#ececec]">No non-zero WD or DP notes.</div>
 							{/if}
 						</div>
-						<p class="text-xs text-[#ececec] mt-1">
-							Stored as mapping: account_number → amount (grouped by unit for display).
-						</p>
 					</fieldset>
 				</div>
 
-				<!-- DP Notes Setting (per account) -->
-				<div>
-					<fieldset>
-						<legend class="block text-sm font-medium text-[#f5f5f5] mb-2"> DP Notes </legend>
-						<p class="text-xs text-[#ececec] mb-2">
-							Deposit adjustment per account. Remove here is draft-only until Save.
-						</p>
-						<div class="space-y-3 max-h-64 overflow-y-auto pr-1">
-							{#each Object.entries(draftDpByUnit || {}) as [uStr, entries]}
-								{@const u = parseInt(uStr)}
-								<div class="bg-stone-700/50 border border-stone-600 rounded-xl">
-									<div class="px-3 py-2 border-b border-stone-600 flex items-center justify-between">
-										<span class="text-sm text-[#f5f5f5]">Unit {u === 0 ? 'Unknown' : u}</span>
-										<span class="text-xs text-[#ececec]"
-											>DP Total: {formatNumber(
-												(entries || []).reduce((s, e) => s + (e.amount ?? 0), 0),
-												false
-											)}</span>
-										>
-									</div>
-									<div class="divide-y divide-stone-600/50">
-										{#each entries as e}
-											<div class="flex items-center justify-between px-3 py-2">
-												<div class="text-xs text-[#ececec] truncate mr-2">
-													<span class="font-mono">{e.account_number}</span>
-													{#if accountByNumber[e.account_number]}
-														<span class="text-[#ececec]">
-															— {shortName(accountByNumber[e.account_number].account_name)}</span
-														>
-													{/if}
-												</div>
-												<div class="flex items-center gap-2">
-													<span class="text-xs text-[#ececec]">{formatNumber(e.amount, false)}</span>
-													<button
-														on:click={() => {
-															draftDeposits = { ...draftDeposits, [e.account_number]: 0 };
-														}}
-														class="fac-minus hover:fac-minus transition-colors"
-														aria-label="Remove DP for {e.account_number}"
-													>
-														<svg
-															class="w-4 h-4"
-															fill="none"
-															stroke="currentColor"
-															viewBox="0 0 24 24"
-														>
-															<path
-																stroke-linecap="round"
-																stroke-linejoin="round"
-																stroke-width="2"
-																d="M6 18L18 6M6 6l12 12"
-															/>
-														</svg>
-													</button>
-												</div>
-											</div>
-										{/each}
-									</div>
-								</div>
-							{/each}
-							{#if Object.keys(draftDpByUnit || {}).length === 0}
-								<div class="text-xs text-[#ececec]">No non-zero DP notes.</div>
-							{/if}
-						</div>
-						<p class="text-xs text-[#ececec] mt-1">
-							Stored as mapping: account_number → amount (grouped by unit for display).
-						</p>
-					</fieldset>
-				</div>
 
 				<!-- Delete Account Data Section -->
 				<div class="border-t border-stone-700 pt-6">
@@ -3265,7 +3174,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						<div class="flex items-start justify-between gap-2 px-3 py-2.5">
 							<div class="min-w-0">
 								<div class="text-sm text-amber-300 tabular-nums">{moneyLine(entry.amount, '', revealBookValues)}</div>
-								<div class="text-[11px] text-[#ececec]">{formatDateTime(entry.withdrawn_at)}</div>
+								<div class="text-[11px] text-[#ececec]">{formatLocalDateTime(entry.withdrawn_at)}</div>
 								{#if entry.note}
 									<div class="text-[11px] text-[#ececec] truncate">{entry.note}</div>
 								{/if}
@@ -3306,34 +3215,185 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			on:keydown|stopPropagation
 			on:mousedown|stopPropagation
 		>
-			<div class="p-6">
-				<h3 id="pending-delete-title" class="text-lg font-semibold text-[#f5f5f5] mb-2">Delete pending withdrawal?</h3>
-				<p class="text-sm text-[#ececec] mb-4">
+			<div class="p-6 relative">
+				<button
+					type="button"
+					on:click={closePendingDelete}
+					disabled={pendingDeleting}
+					class="absolute top-4 right-4 min-h-11 min-w-11 inline-flex items-center justify-center text-[#ececec] hover:text-[#f5f5f5]"
+					aria-label="Close"
+				>
+					<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+					</svg>
+				</button>
+				<h3 id="pending-delete-title" class="text-lg font-semibold text-[#f5f5f5] mb-2 pr-10">Delete pending withdrawal?</h3>
+				<p class="text-sm text-[#ececec] mb-2">
 					{pendingDeleteTarget.account_number}
 					· {moneyLine(pendingDeleteTarget.amount, '', true)}
 					{#if pendingDeleteTarget.note}
 						· {pendingDeleteTarget.note}
 					{/if}
 				</p>
-				<div class="flex items-center justify-end gap-3">
+				<p class="text-sm text-[#ececec] mb-4 tabular-nums">
+					Add to Wallet: {moneyLine(externalWallet.balance, '', true)} → {moneyLine(roundMoney(externalWallet.balance + pendingDeleteTarget.amount), '', true)}
+				</p>
+				<div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">
 					<button
 						type="button"
-						on:click={closePendingDelete}
-						class="min-h-11 flex-1 sm:flex-none px-4 py-2 rounded-xl bg-stone-700 text-[#f5f5f5] hover:bg-stone-600 transition-colors"
+						on:click={() => confirmPendingDelete(false)}
 						disabled={pendingDeleting}
+						class="min-h-11 px-4 py-2 rounded-xl bg-stone-700 text-[#f5f5f5] hover:bg-stone-600 disabled:opacity-50 transition-colors"
 					>
-						Cancel
+						Delete only
 					</button>
 					<button
 						type="button"
-						on:click={confirmPendingDelete}
+						on:click={() => confirmPendingDelete(true)}
 						disabled={pendingDeleting}
-						class="min-h-11 flex-1 sm:flex-none px-4 py-2 rounded-xl bg-red-500 text-white hover:bg-red-600 disabled:bg-stone-700 disabled:text-[#ececec] disabled:cursor-not-allowed transition-colors"
+						class="min-h-11 px-4 py-2 rounded-xl bg-red-500 text-white hover:bg-red-600 disabled:bg-stone-700 disabled:text-[#ececec] disabled:cursor-not-allowed transition-colors"
 					>
-						{pendingDeleting ? 'Deleting...' : 'Delete'}
+						{pendingDeleting ? 'Deleting...' : 'Delete and add to Wallet'}
 					</button>
 				</div>
 			</div>
+		</div>
+	</div>
+{/if}
+
+{#if walletPrompt}
+	{@const effect = walletEffect(walletPrompt.previous, walletPrompt.next)}
+	{@const before = walletPrompt.kind === 'settings-dp' ? roundMoney(externalWallet.balance + settingsWalletCredit) : externalWallet.balance}
+	{@const after = roundMoney(before + effect)}
+	<div
+		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
+		on:click={dismissWalletPrompt}
+		on:keydown={(e) => e.key === 'Escape' && dismissWalletPrompt()}
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="wallet-prompt-title"
+		tabindex="-1"
+	>
+		<div
+			class="bg-[#0a0a0a] border border-[#f5f5f5] w-full max-w-md mx-4 p-2"
+			role="document"
+			on:click|stopPropagation
+			on:keydown|stopPropagation
+			on:mousedown|stopPropagation
+		>
+			<div class="p-6 relative">
+				<button
+					type="button"
+					on:click={dismissWalletPrompt}
+					disabled={walletPromptSaving}
+					class="absolute top-4 right-4 min-h-11 min-w-11 inline-flex items-center justify-center text-[#ececec] hover:text-[#f5f5f5]"
+					aria-label="Close"
+				>
+					<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+					</svg>
+				</button>
+				<h3 id="wallet-prompt-title" class="text-lg font-semibold text-[#f5f5f5] mb-2 pr-10">Update Wallet?</h3>
+				<p class="text-sm text-[#ececec] mb-3">
+					Unit {walletPrompt.unit === 0 ? 'Unknown' : walletPrompt.unit} DP Note
+					{formatNumber(walletPrompt.previous, false)} → {formatNumber(walletPrompt.next, false)}
+				</p>
+				<p class="text-sm text-[#f5f5f5] mb-1 tabular-nums">
+					Difference {formatNumber(Math.abs(effect), false)}
+					{effect >= 0 ? 'added to Wallet' : 'deducted from Wallet'}
+				</p>
+				<p class="text-sm text-[#ececec] mb-4 tabular-nums">
+					Wallet {formatNumber(before, false)} → {formatNumber(after, false)}
+				</p>
+				<div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">
+					{#if walletPrompt.kind === 'settings-dp'}
+						<button
+							type="button"
+							on:click={() => confirmWalletPrompt(false)}
+							class="min-h-11 px-4 py-2 rounded-xl bg-stone-700 text-[#f5f5f5] hover:bg-stone-600 transition-colors"
+						>
+							Clear DP only
+						</button>
+						<button
+							type="button"
+							on:click={() => confirmWalletPrompt(true)}
+							class="min-h-11 px-4 py-2 rounded-xl bg-[#f5f5f5] text-[#0a0a0a] hover:bg-white transition-colors"
+						>
+							Clear DP and update Wallet
+						</button>
+					{:else}
+						<button
+							type="button"
+							on:click={() => confirmWalletPrompt(false)}
+							disabled={walletPromptSaving}
+							class="min-h-11 px-4 py-2 rounded-xl bg-stone-700 text-[#f5f5f5] hover:bg-stone-600 disabled:opacity-50 transition-colors"
+						>
+							Don't update Wallet
+						</button>
+						<button
+							type="button"
+							on:click={() => confirmWalletPrompt(true)}
+							disabled={walletPromptSaving}
+							class="min-h-11 px-4 py-2 rounded-xl bg-[#f5f5f5] text-[#0a0a0a] hover:bg-white disabled:opacity-50 transition-colors"
+						>
+							{walletPromptSaving ? 'Saving...' : 'Update Wallet'}
+						</button>
+					{/if}
+				</div>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if walletAdjustOpen}
+	<div
+		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
+		on:click={closeWalletAdjust}
+		on:keydown={(e) => e.key === 'Escape' && closeWalletAdjust()}
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="wallet-adjust-title"
+		tabindex="-1"
+	>
+		<div
+			class="bg-[#0a0a0a] border border-[#f5f5f5] w-full max-w-md mx-4 p-2"
+			role="document"
+			on:click|stopPropagation
+			on:keydown|stopPropagation
+			on:mousedown|stopPropagation
+		>
+			<form class="p-6 relative" on:submit|preventDefault={applyWalletAdjust}>
+				<button
+					type="button"
+					on:click={closeWalletAdjust}
+					disabled={walletAdjustSaving}
+					class="absolute top-4 right-4 min-h-11 min-w-11 inline-flex items-center justify-center text-[#ececec] hover:text-[#f5f5f5]"
+					aria-label="Close"
+				>
+					<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+					</svg>
+				</button>
+				<h3 id="wallet-adjust-title" class="text-lg font-semibold text-[#f5f5f5] mb-2 pr-10">Adjust Wallet</h3>
+				<p class="text-sm text-[#ececec] mb-3 tabular-nums">Recorded {formatNumber(externalWallet.balance, false)}</p>
+				<label class="block text-[11px] text-[#ececec] mb-4">
+					Latest actual balance
+					<input
+						type="number"
+						step="0.01"
+						bind:value={walletAdjustValue}
+						class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm tabular-nums focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+						required
+					/>
+				</label>
+				<button
+					type="submit"
+					disabled={walletAdjustSaving}
+					class="min-h-11 w-full px-4 py-2 rounded-xl bg-[#f5f5f5] text-[#0a0a0a] hover:bg-white disabled:opacity-50 transition-colors"
+				>
+					{walletAdjustSaving ? 'Saving...' : 'Replace with latest'}
+				</button>
+			</form>
 		</div>
 	</div>
 {/if}
