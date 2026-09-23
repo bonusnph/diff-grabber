@@ -1980,7 +1980,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											<span class="min-w-0 truncate text-[10px] leading-none text-[#ececec]">{brokerLabel}</span>
 											<span class="text-xs leading-none tabular-nums font-medium whitespace-nowrap">
 												{#if tube.zone === 'breach'}
-													<span class="fac-minus">−{moneyLine(tube.mark, '', revealBookValues)} past warn</span>
+													<span class="fac-chip-plus">D {moneyLine(Math.max(0, getUnitTargetEquity(unit) - account.latest_equity), '', revealBookValues)}</span>
 												{:else if tube.zone === 'near'}
 													<span class="fac-warn">{moneyLine(tube.mark, '', revealBookValues)} to warn</span>
 												{:else if tube.zone === 'over'}
@@ -2011,7 +2011,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 														<div class="fac-tube-fill {fillClass}" style="transform: scaleX({tube.fillPct / 100})"></div>
 													</div>
 													{#if tube.zone !== 'unset'}
-														<div class="fac-tube-warn" style="left: {tube.warnPct}%" title="Warning"></div>
+														<div class="fac-tube-warn" class:is-alert={tube.zone === 'near' || tube.zone === 'breach'} style="left: {tube.warnPct}%" title="Warning"></div>
 													{/if}
 												</div>
 												<div class="fac-tube-over" title="Past target">
