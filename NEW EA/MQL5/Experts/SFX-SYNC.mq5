@@ -3,7 +3,7 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.18"
+#define SFX_SYNC_EA_VERSION "1.19"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -196,7 +196,7 @@ input bool              I_CLOSE_ONLY_WEEKEND_ENABLED = true;           // Weeken
 input bool              I_CLOSE_ONLY_WEEKEND_START_CLOSE_ALL = true; // Saturday START: close all EA orders (master + slave)
 input string            I_CLOSE_ONLY_WEEKEND_PRE_FRIDAY = "02:00"; // Friday time (local): PRE — enter close-only
 input string            I_CLOSE_ONLY_WEEKEND_START_SAT = "03:00"; // Saturday (local): START time for close-all-orders (master+slave)
-input string            I_CLOSE_ONLY_WEEKEND_END_MON = "08:00";    // Monday time (local): END — leave close-only
+input string            I_CLOSE_ONLY_WEEKEND_END_MON = "07:00";    // Monday time (local): END — leave close-only
 
 input bool              I_DND_SCHEDULE_MASTER = true;             // Master: time-based do-not-disturb (local clock)
 input bool              I_DND_MON_EN = true;                      // Use Monday window
@@ -1465,6 +1465,40 @@ bool IsTicketOpen(const int ticket)
 bool MasterPairLegTicketLive(const int ticket)
 {
    return IsTicketOpen(ticket);
+}
+
+// True only when the tracked position has an out deal in history.
+// A failed live-position select is not treated as flat.
+bool MasterTrackedLegConfirmedClosed(const int ticket)
+{
+   if(ticket <= 0)
+      return false;
+   if(MasterPairLegTicketLive(ticket))
+      return false;
+   if(!HistorySelect(0, TimeCurrent()))
+      return false;
+   if(!HistorySelectByPosition((ulong)ticket))
+      return false;
+   const int deals = HistoryDealsTotal();
+   for(int i = deals - 1; i >= 0; i--)
+   {
+      const ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0)
+         continue;
+      if((long)HistoryDealGetInteger(deal, DEAL_POSITION_ID) != (long)ticket)
+         continue;
+      const long entry = HistoryDealGetInteger(deal, DEAL_ENTRY);
+      if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_OUT_BY)
+      {
+         if(HistoryDealGetString(deal, DEAL_SYMBOL) != G_SYMBOL)
+            continue;
+         const int deal_magic = (int)HistoryDealGetInteger(deal, DEAL_MAGIC);
+         if(deal_magic != 0 && deal_magic != OrderMagic())
+            continue;
+         return true;
+      }
+   }
+   return false;
 }
 
 int CloseOnlyParseHmToMinutes(const string s)
@@ -2832,6 +2866,18 @@ void HandleMasterIncomingPacket(const string msg)
       G_SLAVE_PAIR_OPEN_REPORT = slave_open_in;
       G_SLAVE_EA_OPEN_COUNT = slave_ea_open_count;
       G_LAST_SLAVE_PAIR_STATUS_MS = NowMs();
+      // Peer status only. Disconnect zeros these flags without a status frame,
+      // so a dropped close result can finish here once both legs are actually flat.
+      if(G_PAIR_ACTIVE && !G_OPEN_TX_ACTIVE && !G_CLOSE_TX_ACTIVE && !G_FORCE_FLAT_ACTIVE
+         && !PairWithinSettleGrace()
+         && !slave_open_in && slave_ticket_in <= 0 && slave_ea_open_count <= 0
+         && MasterTrackedLegConfirmedClosed(G_PAIR_MASTER_TICKET))
+      {
+         if(StringLen(G_CLOSE_REASON) == 0)
+            G_CLOSE_REASON = "BOTH_LEGS_FLAT";
+         SyncLog("[SFX-SYNC] both legs flat, completing pair");
+         CompleteCloseSuccess();
+      }
       return;
    }
 
@@ -2898,8 +2944,16 @@ void HandleMasterIncomingPacket(const string msg)
       G_CLOSE_SLAVE_OK = ((int)StringToInteger(p[2]) == 1);
       G_CLOSE_LAST_ERROR_SLAVE = (int)StringToInteger(p[4]);
       G_CLOSE_SLAVE_BALANCE = (ArraySize(p) >= 6) ? StringToDouble(p[5]) : 0.0;
-      if(G_CLOSE_MASTER_OK && G_CLOSE_SLAVE_OK) CompleteCloseSuccess();
-      else HandleCloseFailure("SLAVE_CLOSE_FAIL");
+      if(G_CLOSE_MASTER_OK && G_CLOSE_SLAVE_OK)
+         CompleteCloseSuccess();
+      else if(G_CLOSE_LAST_ERROR_SLAVE == -9101
+              && MasterTrackedLegConfirmedClosed(G_PAIR_MASTER_TICKET)
+              && !G_SLAVE_PAIR_OPEN_REPORT
+              && G_SLAVE_EA_OPEN_COUNT <= 0
+              && G_PAIR_SLAVE_TICKET <= 0)
+         CompleteCloseSuccess();
+      else
+         HandleCloseFailure("SLAVE_CLOSE_FAIL");
       return;
    }
 
@@ -3146,7 +3200,21 @@ void HandleSlaveIncomingPacket(const string msg)
       double slave_pnl = 0.0;
       if(StringLen(G_SLAVE_PAIR_KEY) == 0 || G_SLAVE_PAIR_TICKET <= 0)
       {
-         err = -9101; // no active pair
+         // Already flat is a successful close. -9101 stays reserved for a live EA leg
+         // or an in-flight open, so the master does not clear a pair that still exists.
+         if(G_SLAVE_PENDING_OPEN_TICKET > 0 || CountEaOpenOrdersOnSlaveSymbol() > 0)
+            err = -9101;
+         else
+         {
+            ok = true;
+            G_SLAVE_PAIR_TICKET = -1;
+            G_SLAVE_PAIR_KEY = "";
+            const string flat_ln = StringFormat(
+               "[SFX-SYNC] CLOSE_INTENT already flat tx_id=%s pair_key=%s",
+               txid, pair_key);
+            ExpertPrintLn(flat_ln);
+            SyncLog(flat_ln);
+         }
       }
       else if(G_SLAVE_PAIR_KEY != pair_key)
       {
