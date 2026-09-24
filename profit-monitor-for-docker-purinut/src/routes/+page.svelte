@@ -17,11 +17,10 @@
 	import { convertUsd, defaultCurrencySettings, identityFxQuote, normalizeCurrencySettings } from '$lib/currency.js';
 	import CurrencyFlag from '$lib/CurrencyFlag.svelte';
 	import {
-		computeLegacyUnitPair,
 		computeUnitDelta,
 		computeUnitPairs,
-		type PairInfo,
-		type UnitPair
+		listUnitDiffLanes,
+		type PairInfo
 	} from '$lib/pairs.js';
 
 	let stats: DashboardStats = {
@@ -367,25 +366,18 @@
 	$: adjustedProfitLoss = (stats?.profit_loss || 0) + (totalWaitingWD || 0) - (totalDeposits || 0);
 	$: adjustedProfitLossPercent =
 		initialCapital > 0 ? (adjustedProfitLoss / initialCapital) * 100 : 0;
-	$: heroAmountShown = bookValue(
-		(adjustedProfitLoss >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLoss),
-		true
-	);
-	$: heroAmountParts = splitAmount(heroAmountShown);
 
 	// Snapshot data returned from server
 	let snapshot: { value: number; kind: 'adjusted' | 'real'; timestamp: string } | null = null;
 	let snapshotDelta: number | null = null;
+	$: heroValue = snapshot ? (snapshotDelta ?? 0) : adjustedProfitLoss;
+	$: heroAmountShown = bookValue(
+		(heroValue >= 0.005 ? '+' : '') + formatNumber(heroValue),
+		true
+	);
+	$: heroAmountParts = splitAmount(heroAmountShown);
 
 	let unitPairsMap: Record<number, { pairs: PairInfo[]; unmatched: Array<OrderInfo & { account_number: string; broker_name: string }> }> = {};
-	let allPairs: UnitPair[] = [];
-	let legacyUnitPairs: UnitPair[] = [];
-	let displayPairs: UnitPair[] = [];
-	let positivePairs: UnitPair[] = [];
-	let negativePairs: UnitPair[] = [];
-	let positivePairsCount = 0;
-	let negativePairsCount = 0;
-	let tradingPairs = 0;
 
 	$: unitPairsMap = Object.entries(unitGroups || {}).reduce(
 		(acc, [unitStr, accounts]) => {
@@ -396,35 +388,7 @@
 		{} as Record<number, { pairs: PairInfo[]; unmatched: Array<OrderInfo & { account_number: string; broker_name: string }> }>
 	);
 
-	$: allPairs = Object.entries(unitPairsMap).flatMap(([unitStr, value]) => {
-		const unit = parseInt(unitStr);
-		return (value?.pairs || []).map((p) => ({ ...p, unit }));
-	});
-
-	$: legacyUnitPairs = Object.entries(unitGroups || {}).flatMap(([unitStr, accounts]) => {
-		const unit = parseInt(unitStr);
-		const ud = unitPairsMap[unit];
-		if (!ud || ud.pairs.length > 0 || ud.unmatched.length > 0) return [];
-		const lp = computeLegacyUnitPair(unit, accounts);
-		return lp ? [lp] : [];
-	});
-
-	$: displayPairs = [...allPairs, ...legacyUnitPairs];
-
-	$: positivePairs = displayPairs
-		.filter((p) => p.diffPoints >= 0)
-		.sort((a, b) => b.diffPoints - a.diffPoints);
-	$: negativePairs = displayPairs
-		.filter((p) => p.diffPoints < 0)
-		.sort((a, b) => b.diffPoints - a.diffPoints);
-	$: positivePairsCount = positivePairs.length;
-	$: negativePairsCount = negativePairs.length;
-	$: tradingPairs = displayPairs.length;
-
-	// Count accounts with low equity warning
-	$: lowEquityWarningAccounts = summaries.filter(isLowEquityWarning);
-	$: lowEquityWarningCount = lowEquityWarningAccounts.length;
-	$: lowEquityUnits = [...new Set(lowEquityWarningAccounts.map(a => a.unit))].sort((a, b) => a - b);
+	$: diffLanes = listUnitDiffLanes(unitGroups, unitInitialCapitals, unitWarningEquityPercentages);
 
 	// Function to check if unit has stale data
 	function hasUnitStaleData(accounts: AccountSummary[]): boolean {
@@ -1612,92 +1576,84 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			{#if !isDataComplete}
 				<span class="inline-block text-xs font-semibold fac-minus mb-2">Partial Data</span>
 			{/if}
+			<p class="text-xs font-semibold tracking-[0.14em] text-[#9a9a9a] mb-1">
+				{snapshot ? 'SNAPSHOT Δ' : 'P/L'}
+			</p>
 			<div class="flex items-center gap-3 sm:gap-4">
 				<CurrencyFlag currency={displayCurrency} size={28} />
 				<p
-					class="fac-display text-6xl sm:text-7xl lg:text-[7rem] font-extrabold tracking-tight leading-none tabular-nums flex items-baseline gap-[0.18em] flex-wrap {!isDataComplete ? 'opacity-60' : ''} {Math.abs(adjustedProfitLoss) < 0.005 ? 'text-[#ececec]' : adjustedProfitLoss >= 0 ? 'fac-plus' : 'fac-minus'}"
+					class="fac-display text-6xl sm:text-7xl lg:text-[7rem] font-extrabold tracking-tight leading-none tabular-nums flex items-baseline gap-[0.18em] flex-wrap {!isDataComplete ? 'opacity-60' : ''} {Math.abs(heroValue) < 0.005 ? 'text-[#ececec]' : heroValue >= 0 ? 'fac-plus' : 'fac-minus'}"
 				>
 					<span class="inline-flex items-baseline whitespace-nowrap">
 						<span>{heroAmountParts.whole}</span><span class="pl-hero-frac">{heroAmountParts.frac}</span>
 					</span>
 					{#if displayCurrency !== 'USD'}
 						<span class="text-[0.28em] sm:text-[0.24em] lg:text-[0.22em] font-semibold tracking-normal text-[#ececec]">
-							{usdParen(adjustedProfitLoss, adjustedProfitLoss >= 0.005 ? '+' : '', true)}
+							{usdParen(heroValue, heroValue >= 0.005 ? '+' : '', true)}
 						</span>
 					{/if}
-					<span
-						class="text-[0.22em] sm:text-[0.20em] lg:text-[0.18em] font-semibold tracking-normal {revealBookValues && Math.abs(adjustedProfitLossPercent) >= 0.005 ? (adjustedProfitLossPercent >= 0 ? 'fac-plus' : 'fac-minus') : 'text-[#ececec]'}"
-					>
-						{bookValue((adjustedProfitLossPercent >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLossPercent, false), revealBookValues)}%
-					</span>
+					{#if !snapshot}
+						<span
+							class="text-[0.22em] sm:text-[0.20em] lg:text-[0.18em] font-semibold tracking-normal {revealBookValues && Math.abs(adjustedProfitLossPercent) >= 0.005 ? (adjustedProfitLossPercent >= 0 ? 'fac-plus' : 'fac-minus') : 'text-[#ececec]'}"
+						>
+							{bookValue((adjustedProfitLossPercent >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLossPercent, false), revealBookValues)}%
+						</span>
+					{:else}
+						<span class="inline-flex items-baseline gap-2 text-sm font-normal tracking-tight text-[#ececec]">
+							<span>
+								P/L
+								<span class={Math.abs(adjustedProfitLoss) < 0.005 ? 'text-[#ececec]' : adjustedProfitLoss >= 0 ? 'fac-plus' : 'fac-minus'}>
+									{bookValue((adjustedProfitLoss >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLoss), true)}
+								</span>
+							</span>
+							<span class={revealBookValues && Math.abs(adjustedProfitLossPercent) >= 0.005 ? (adjustedProfitLossPercent >= 0 ? 'fac-plus' : 'fac-minus') : 'text-[#ececec]'}>
+								({bookValue((adjustedProfitLossPercent >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLossPercent, false), revealBookValues)}%)
+							</span>
+						</span>
+					{/if}
 				</p>
 			</div>
 			{#if totalWaitingWD !== 0 || totalDeposits !== 0}
-				<p class="text-sm mt-2 tracking-tight text-[#ececec] flex flex-wrap gap-x-4">
+				<p class="text-sm mt-2 tracking-tight text-[#ececec] flex flex-wrap items-center gap-x-4 gap-y-1">
 					{#if totalWaitingWD !== 0}
-						<span>SUM WD <span class={revealBookValues ? (totalWaitingWD >= 0 ? 'fac-plus' : 'fac-minus') : ''}>{moneyLine(totalWaitingWD, totalWaitingWD >= 0 ? '+' : '', revealBookValues)}</span></span>
+						<span>SUM WD <span class={revealBookValues ? (totalWaitingWD >= 0 ? 'fac-plus-soft' : 'fac-minus-soft') : ''}>{moneyLine(totalWaitingWD, totalWaitingWD >= 0 ? '+' : '', revealBookValues)}</span></span>
 					{/if}
 					{#if totalDeposits !== 0}
-						<span>SUM DP <span class={revealBookValues ? 'fac-minus' : ''}>{moneyLine(totalDeposits, '−', revealBookValues)}</span></span>
+						<span>SUM DP <span class={revealBookValues ? 'fac-minus-soft' : ''}>{moneyLine(totalDeposits, '−', revealBookValues)}</span></span>
 					{/if}
 				</p>
 			{/if}
 
 			<div class="flex items-center gap-3 flex-wrap text-xs mt-2">
-				{#if snapshot}
-					<span class={(snapshotDelta ?? 0) >= 0 ? 'fac-plus' : 'fac-minus'}>
-						SNAPSHOT Δ {moneyLine(snapshotDelta ?? 0, (snapshotDelta ?? 0) >= 0 ? '+' : '', revealBookValues)}
-					</span>
-				{/if}
 				<button on:click={() => takeSnapshot('adjusted')} class="fac-ghost text-xs" disabled={snapshotLoading}>
-					SNAPSHOT
+					{snapshot ? 'RESET SNAPSHOT' : 'TAKE SNAPSHOT'}
 				</button>
 				{#if snapshot}
 					<button on:click={clearSnapshot} class="fac-ghost text-xs" disabled={snapshotLoading}>
-						CLEAR
+						TURN OFF SNAPSHOT
 					</button>
 				{/if}
 			</div>
 		</div>
 
 		<div class="flex flex-col gap-1 pb-2 text-xs text-[#ececec]">
-			<div class="flex flex-wrap gap-x-6 gap-y-1">
-				<span>ACTIVE {stats.account_count}</span>
-				<span>
-					OPEN PAIRS {tradingPairs}
-					{#if positivePairsCount > 0 || negativePairsCount > 0}
-						<span class="fac-plus">+{positivePairsCount}</span>
-						/
-						<span class="fac-minus">−{negativePairsCount}</span>
-					{/if}
-				</span>
-				<span class={lowEquityUnits.length > 0 ? 'fac-minus' : ''}>
-					LOW EQUITY
-					{#if lowEquityUnits.length > 0}
-						{#each lowEquityUnits as u}
-							#{u} {getUnitDisplayName(u)}
-						{/each}
-					{:else}
-						--
-					{/if}
-				</span>
-			</div>
-			{#if displayPairs.length > 0}
-				<div class="flex flex-wrap gap-1.5 items-center" aria-label="Pair diffs">
-					{#each positivePairs as p}
-						<span
-							class="fac-chip-plus tabular-nums"
-							title={`Unit ${p.unit}${p.pairMagic !== undefined ? ` · magic ${p.pairMagic}` : ''}${p.symbol ? ' · ' + p.symbol : ''} · ${((p.buyLots + p.sellLots) / 2).toFixed(2)}L`}
-						>
-							+{Math.round(p.diffPoints)}
-						</span>
-					{/each}
-					{#each negativePairs as p}
-						<span
-							class="fac-chip-minus tabular-nums"
-							title={`Unit ${p.unit}${p.pairMagic !== undefined ? ` · magic ${p.pairMagic}` : ''}${p.symbol ? ' · ' + p.symbol : ''} · ${((p.buyLots + p.sellLots) / 2).toFixed(2)}L`}
-						>
-							{Math.round(p.diffPoints)}
+			{#if diffLanes.length > 0}
+				<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5" aria-label="Unit diffs">
+					{#each diffLanes as lane, i (lane.unit)}
+						{#if i > 0}
+							<span class="inline-block h-4 w-px shrink-0 bg-[#ececec]/35" aria-hidden="true"></span>
+						{/if}
+						<span class="inline-flex items-center gap-1">
+							<span class="tabular-nums {lane.lowEquity ? 'fac-warn' : 'text-[#9a9a9a]'}" title={lane.lowEquity ? 'Low equity' : undefined}>#{lane.unit}</span>
+							{#if lane.diffs.length === 0}
+								<span class={lane.lowEquity ? 'fac-warn' : 'text-[#5c5c5c]'} title="No open diff">—</span>
+							{:else}
+								{#each lane.diffs as diff, i (`${lane.unit}-${i}`)}
+									<span class="{diff >= 0 ? 'fac-chip-plus' : 'fac-chip-minus'} tabular-nums">
+										{diff >= 0 ? '+' : ''}{diff}
+									</span>
+								{/each}
+							{/if}
 						</span>
 					{/each}
 				</div>

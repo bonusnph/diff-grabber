@@ -1,4 +1,5 @@
 import type { AccountSummary, OrderInfo } from '$lib/types.js';
+import { isLowEquityWarning } from '$lib/equity-warning-model.js';
 
 export interface PairInfo {
 	symbol: string;
@@ -258,6 +259,37 @@ export function listDisplayPairs(unitGroups: Record<string, AccountSummary[]> | 
 	});
 
 	return [...allPairs, ...legacyUnitPairs];
+}
+
+export type UnitDiffLane = { unit: number; diffs: number[]; lowEquity: boolean };
+
+/** One lane per unit, in unit order. Empty diffs means the group has no open pair. */
+export function listUnitDiffLanes(
+	unitGroups: Record<string, AccountSummary[]> | undefined,
+	capitals: Record<number, number> = {},
+	warnPcts: Record<number, number> = {}
+): UnitDiffLane[] {
+	const groups = unitGroups || {};
+	const byUnit = new Map<number, number[]>();
+	for (const pair of listDisplayPairs(groups)) {
+		const diffs = byUnit.get(pair.unit) ?? [];
+		diffs.push(Math.round(pair.diffPoints));
+		byUnit.set(pair.unit, diffs);
+	}
+	return Object.keys(groups)
+		.map((key) => parseInt(key, 10))
+		.filter((unit) => Number.isFinite(unit))
+		.sort((a, b) => a - b)
+		.map((unit) => {
+			const accounts = groups[String(unit)] || [];
+			return {
+				unit,
+				diffs: byUnit.get(unit) ?? [],
+				lowEquity: accounts.some((account) =>
+					isLowEquityWarning(account.latest_equity, capitals[unit] ?? 0, warnPcts[unit])
+				)
+			};
+		});
 }
 
 export function splitSignedPairs(pairs: UnitPair[]): { positive: UnitPair[]; negative: UnitPair[] } {

@@ -17,6 +17,8 @@ export const GET: RequestHandler = async () => {
 		const plAlertState = await storage.getPlAlertState();
 		const plAlertSettings = await storage.getPlAlertSettings();
 		const equityWarningState = await storage.getEquityWarningState();
+		const unitInitialCapitals = await storage.getUnitInitialCapitals();
+		const unitWarningEquityPercentages = await storage.getUnitWarningEquityPercentages();
 		const currency = await storage.getCurrencySettings();
 		const fx = await resolveFxQuote(currency);
 		
@@ -47,6 +49,8 @@ export const GET: RequestHandler = async () => {
 			equityWarning: {
 				state: equityWarningState
 			},
+			unitInitialCapitals,
+			unitWarningEquityPercentages,
 			currency,
 			fx
 		});

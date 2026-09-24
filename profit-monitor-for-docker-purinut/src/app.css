@@ -63,6 +63,14 @@ body {
 	color: #ff4d4d;
 }
 
+.fac-plus-soft {
+	color: color-mix(in srgb, #3dff6a 42%, #9a9a9a);
+}
+
+.fac-minus-soft {
+	color: color-mix(in srgb, #ff4d4d 42%, #9a9a9a);
+}
+
 .fac-chip-plus,
 .fac-chip-minus {
 	padding: 2px 6px;

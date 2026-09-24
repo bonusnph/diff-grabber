@@ -7,7 +7,7 @@
 		normalizeCurrencySettings
 	} from '$lib/currency.js';
 	import CurrencyFlag from '$lib/CurrencyFlag.svelte';
-	import { listDisplayPairs, splitSignedPairs } from '$lib/pairs.js';
+	import { listUnitDiffLanes } from '$lib/pairs.js';
 	import { computeAdjustedProfitLoss } from '$lib/pl-alert-model.js';
 	import type { AccountSummary, CurrencySettings, FxQuote } from '$lib/types.js';
 
@@ -24,6 +24,8 @@
 		accountWithdrawals?: Record<string, number>;
 		accountDeposits?: Record<string, number>;
 		unitGroups?: Record<string, AccountSummary[]>;
+		unitInitialCapitals?: Record<string, number>;
+		unitWarningEquityPercentages?: Record<string, number>;
 		currency?: unknown;
 		fx?: FxQuote | null;
 		snapshot?: WatchSnapshot | null;
@@ -41,6 +43,8 @@
 	let snapshotDelta: number | null = null;
 	let snapshotLoading = false;
 	let unitGroups: Record<string, AccountSummary[]> = {};
+	let unitCapitals: Record<number, number> = {};
+	let unitWarnPcts: Record<number, number> = {};
 	let latestUpdate = 0;
 	let currencySettings: CurrencySettings = defaultCurrencySettings();
 	let fxQuote: FxQuote = identityFxQuote(currencySettings);
@@ -56,23 +60,33 @@
 
 	$: displayRate = currencySettings.currency === 'USD' ? 1 : fxQuote.rate;
 	$: displayCurrency = currencySettings.currency;
-	$: shown = formatAmount(adjusted, displayRate);
+	$: heroValue = snapshot ? (snapshotDelta ?? 0) : adjusted;
+	$: shown = formatAmount(heroValue, displayRate);
 	$: amountParts = splitAmount(shown);
-	$: tone = Math.abs(adjusted) < 0.005 ? 'flat' : adjusted >= 0 ? 'plus' : 'minus';
+	$: tone = Math.abs(heroValue) < 0.005 ? 'flat' : heroValue >= 0 ? 'plus' : 'minus';
 	$: percent = initialCapital > 0 ? (adjusted / initialCapital) * 100 : 0;
 	$: percentShown = formatPlain(percent);
 	$: percentTone = Math.abs(percent) < 0.005 ? 'flat' : percent >= 0 ? 'plus' : 'minus';
-	$: delta = snapshotDelta ?? 0;
-	$: deltaShown = formatAmount(delta, displayRate);
-	$: deltaTone = Math.abs(delta) < 0.005 ? 'flat' : delta >= 0 ? 'plus' : 'minus';
-	$: displayPairs = listDisplayPairs(unitGroups);
-	$: signedPairs = splitSignedPairs(displayPairs);
-	$: positivePairs = signedPairs.positive;
-	$: negativePairs = signedPairs.negative;
+	$: diffLanes = listUnitDiffLanes(unitGroups, unitCapitals, unitWarnPcts);
 	$: stamp = latestUpdate > 0 ? formatDateTime(latestUpdate) : '';
 	$: stale = latestUpdate > 0 && Date.now() - latestUpdate >= 5 * 60 * 1000;
 	$: countLabel = String(countdownSeconds).padStart(2, '0');
-	$: statusLabel = failed ? 'Unable to load P/L' : loading && !hasValue ? 'Loading P/L' : 'Adjusted P/L';
+	$: statusLabel = failed
+		? 'Unable to load P/L'
+		: loading && !hasValue
+			? 'Loading P/L'
+			: snapshot
+				? 'Snapshot delta'
+				: 'Adjusted P/L';
+
+	function numberRecord(raw: Record<string, number> | undefined): Record<number, number> {
+		const out: Record<number, number> = {};
+		for (const [key, value] of Object.entries(raw || {})) {
+			const unit = Number(key);
+			if (Number.isInteger(unit) && typeof value === 'number') out[unit] = value;
+		}
+		return out;
+	}
 
 	function formatAmount(amount: number, rate: number): string {
 		return formatPlain(convertUsd(amount, rate));
@@ -134,6 +148,11 @@
 		}
 	}
 
+	$: if (amountEl) {
+		shown;
+		requestAnimationFrame(fitAmount);
+	}
+
 	function applyPayload(payload: WatchPayload) {
 		currencySettings = payload.currency
 			? normalizeCurrencySettings(payload.currency)
@@ -156,6 +175,8 @@
 		snapshot = payload.snapshot || null;
 		snapshotDelta = payload.snapshotDelta ?? null;
 		unitGroups = payload.unitGroups || {};
+		unitCapitals = numberRecord(payload.unitInitialCapitals);
+		unitWarnPcts = numberRecord(payload.unitWarningEquityPercentages);
 		latestUpdate = latestFromSummaries(payload.summaries);
 		hasValue = true;
 		failed = false;
@@ -318,6 +339,7 @@
 		<p class="amount flat">—</p>
 	{:else}
 		<div class="hero">
+			<p class="mode">{snapshot ? 'SNAPSHOT Δ' : 'P/L'}</p>
 			<p class="amount {tone}" bind:this={amountEl}>
 				<span class="flag">
 					<CurrencyFlag currency={displayCurrency} size={28} />
@@ -326,14 +348,30 @@
 					<span class="int">{amountParts.whole}</span><span class="frac">{amountParts.frac}</span>
 				</span>
 			</p>
-			<p class="meta {percentTone}">{percentShown}%</p>
-			{#if displayPairs.length > 0}
-				<div class="bubbles" aria-label="Pair diffs">
-					{#each positivePairs as p, i (`p-${p.unit}-${p.pairMagic ?? 'x'}-${p.buyAccount}-${i}`)}
-						<span class="chip fac-chip-plus">+{Math.round(p.diffPoints)}</span>
-					{/each}
-					{#each negativePairs as p, i (`n-${p.unit}-${p.pairMagic ?? 'x'}-${p.sellAccount}-${i}`)}
-						<span class="chip fac-chip-minus">{Math.round(p.diffPoints)}</span>
+			{#if snapshot}
+				<p class="meta trail">
+					<span>P/L <span class={Math.abs(adjusted) < 0.005 ? 'flat' : adjusted >= 0 ? 'plus' : 'minus'}>{formatAmount(adjusted, displayRate)}</span></span>
+					<span class={percentTone}>({percentShown}%)</span>
+				</p>
+			{:else}
+				<p class="meta {percentTone}">{percentShown}%</p>
+			{/if}
+			{#if diffLanes.length > 0}
+				<div class="bubbles" aria-label="Unit diffs">
+					{#each diffLanes as lane, i (lane.unit)}
+						{#if i > 0}
+							<span class="lane-rule" aria-hidden="true"></span>
+						{/if}
+						<span class="lane">
+							<span class="lane-id" class:low={lane.lowEquity}>#{lane.unit}</span>
+							{#if lane.diffs.length === 0}
+								<span class="chip closed" class:low={lane.lowEquity}>—</span>
+							{:else}
+								{#each lane.diffs as diff, diffIndex (`${lane.unit}-${diffIndex}`)}
+									<span class="chip {diff >= 0 ? 'fac-chip-plus' : 'fac-chip-minus'}">{diff >= 0 ? '+' : ''}{diff}</span>
+								{/each}
+							{/if}
+						</span>
 					{/each}
 				</div>
 			{/if}
@@ -343,13 +381,10 @@
 				{/if}
 				<p class="count">{countLabel}</p>
 			</div>
-			{#if snapshot}
-				<p class="meta {deltaTone}">Δ {deltaShown}</p>
-			{/if}
 			<div class="actions">
-				<button type="button" on:click={takeSnapshot} disabled={snapshotLoading}>SNAPSHOT</button>
+				<button type="button" on:click={takeSnapshot} disabled={snapshotLoading}>{snapshot ? 'RESET SNAPSHOT' : 'TAKE SNAPSHOT'}</button>
 				{#if snapshot}
-					<button type="button" on:click={clearSnapshot} disabled={snapshotLoading}>CLEAR</button>
+					<button type="button" on:click={clearSnapshot} disabled={snapshotLoading}>TURN OFF SNAPSHOT</button>
 				{/if}
 			</div>
 		</div>
@@ -434,6 +469,16 @@
 		height: 100%;
 	}
 
+	.mode {
+		margin: 0;
+		font-family: 'Azeret Mono', ui-monospace, monospace;
+		font-size: calc(10px * var(--ui));
+		font-weight: 600;
+		letter-spacing: 0.12em;
+		line-height: 1.2;
+		color: #9a9a9a;
+	}
+
 	.meta {
 		margin: 0;
 		font-family: 'Azeret Mono', ui-monospace, monospace;
@@ -444,18 +489,48 @@
 		white-space: nowrap;
 	}
 
+	.trail {
+		display: flex;
+		align-items: baseline;
+		justify-content: center;
+		gap: calc(8px * var(--ui));
+		color: #ececec;
+		font-size: calc(10px * var(--ui));
+	}
+
 	.bubbles {
 		display: flex;
-		flex-wrap: wrap;
+		flex-wrap: nowrap;
 		justify-content: center;
 		align-items: center;
 		gap: calc(4px * var(--ui));
 		width: 100%;
 		font-family: 'Azeret Mono', ui-monospace, monospace;
-		font-size: calc(11px * var(--ui));
+		font-size: calc(8px * var(--ui));
 		letter-spacing: -0.02em;
 		line-height: 1.2;
 		font-variant-numeric: tabular-nums;
+	}
+
+	.lane-rule {
+		width: 1px;
+		height: calc(10px * var(--ui));
+		background: color-mix(in srgb, #ececec 35%, transparent);
+		flex-shrink: 0;
+	}
+
+	.lane {
+		display: inline-flex;
+		align-items: center;
+		gap: calc(3px * var(--ui));
+	}
+
+	.lane-id {
+		color: #9a9a9a;
+	}
+
+	.lane-id.low {
+		color: #ffcc33;
 	}
 
 	.chip {
@@ -464,8 +539,19 @@
 		font-weight: 600;
 	}
 
+	.chip.closed {
+		color: #5c5c5c;
+		font-weight: 500;
+	}
+
+	.chip.closed.low {
+		color: #ffcc33;
+	}
+
 	.actions {
 		display: flex;
+		flex-wrap: wrap;
+		justify-content: center;
 		gap: calc(6px * var(--ui));
 		margin-top: calc(2px * var(--ui));
 	}
@@ -474,11 +560,11 @@
 		background: transparent;
 		color: #f5f5f5;
 		border: 1px solid #f5f5f5;
-		min-height: calc(28px * var(--ui));
-		padding: calc(4px * var(--ui)) calc(8px * var(--ui));
+		min-height: calc(18px * var(--ui));
+		padding: calc(2px * var(--ui)) calc(6px * var(--ui));
 		font: inherit;
-		font-size: calc(10px * var(--ui));
-		letter-spacing: 0.04em;
+		font-size: calc(8px * var(--ui));
+		letter-spacing: 0.03em;
 	}
 
 	.actions button:disabled {
