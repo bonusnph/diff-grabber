@@ -105,6 +105,23 @@
 			/* ignore */
 		}
 	}
+	const SHOW_USD_EQUIV_KEY = 'pm-show-usd-equiv';
+	function readStoredShowUsdEquiv(): boolean {
+		try {
+			return sessionStorage.getItem(SHOW_USD_EQUIV_KEY) !== '0';
+		} catch {
+			return true;
+		}
+	}
+	let showUsdEquiv = typeof sessionStorage !== 'undefined' ? readStoredShowUsdEquiv() : true;
+	function setShowUsdEquiv(next: boolean) {
+		showUsdEquiv = next;
+		try {
+			sessionStorage.setItem(SHOW_USD_EQUIV_KEY, next ? '1' : '0');
+		} catch {
+			/* ignore */
+		}
+	}
 	let savingSettings = false;
     let snapshotLoading = false;
 	let latestUpdate: number = 0;
@@ -1114,18 +1131,18 @@
 		return { whole: formatted.slice(0, index), frac: formatted.slice(index) };
 	}
 
-	function usdParen(amount: number, prefix = '', reveal = revealBookValues): string {
-		if (displayCurrency === 'USD') return '';
+	$: usdParen = (amount: number, prefix = '', reveal = revealBookValues): string => {
+		if (displayCurrency === 'USD' || !showUsdEquiv) return '';
 		if (!reveal) return MASK;
 		return `(${prefix}${formatNumber(amount, false)} USD)`;
-	}
+	};
 
-	function moneyLine(amount: number, prefix = '', reveal = revealBookValues): string {
+	$: moneyLine = (amount: number, prefix = '', reveal = revealBookValues): string => {
 		if (!reveal) return MASK;
 		const shown = prefix + formatNumber(amount);
 		const extra = usdParen(amount, prefix, true);
 		return extra ? `${shown} ${extra}` : shown;
-	}
+	};
 
 	function formatPercent(num: number): string {
 		const result = new Intl.NumberFormat('th-TH', {
@@ -1302,6 +1319,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 
 	onMount(() => {
 		revealBookValues = readStoredRevealBook();
+		showUsdEquiv = readStoredShowUsdEquiv();
 		(async () => {
 			await loadInitialCapital();
 			await fetchData();
@@ -1495,6 +1513,23 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				</div>
 			</div>
 			<div class="flex items-center gap-1.5 shrink-0">
+				{#if displayCurrency !== 'USD'}
+					<button
+						on:click={() => setShowUsdEquiv(!showUsdEquiv)}
+						class="fac-ghost fac-icon"
+						class:fac-on={!showUsdEquiv}
+						title={showUsdEquiv ? 'Hide USD amounts' : 'Show USD amounts'}
+						aria-label={showUsdEquiv ? 'Hide USD amounts' : 'Show USD amounts'}
+						aria-pressed={!showUsdEquiv}
+					>
+						<span class="relative text-[10px] font-semibold leading-none tracking-tight">
+							USD
+							{#if !showUsdEquiv}
+								<span class="absolute -left-0.5 -right-0.5 top-1/2 h-px bg-current"></span>
+							{/if}
+						</span>
+					</button>
+				{/if}
 				<button
 					on:click={() => setRevealBookValues(!revealBookValues)}
 					class="fac-ghost fac-icon"
@@ -1587,7 +1622,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					<span class="inline-flex items-baseline whitespace-nowrap">
 						<span>{heroAmountParts.whole}</span><span class="pl-hero-frac">{heroAmountParts.frac}</span>
 					</span>
-					{#if displayCurrency !== 'USD'}
+					{#if displayCurrency !== 'USD' && showUsdEquiv}
 						<span class="text-[0.28em] sm:text-[0.24em] lg:text-[0.22em] font-semibold tracking-normal text-[#ececec]">
 							{usdParen(heroValue, heroValue >= 0.005 ? '+' : '', true)}
 						</span>
