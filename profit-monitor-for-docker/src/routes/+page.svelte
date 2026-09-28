@@ -49,6 +49,13 @@
 	let settingsWalletCredit = 0;
 	let walletPrompt: { kind: 'dp-note' | 'settings-dp'; unit: number; previous: number; next: number } | null = null;
 	let walletPromptSaving = false;
+	const AUTO_WD_PENDING_NOTE = 'สร้างอัตโนมัติจากการปรับค่า WD';
+	let wdPrompt: { kind: 'wd-note' | 'settings-wd'; unit: number; previous: number; next: number } | null = null;
+	let wdPromptAccount = '';
+	let wdPromptNote = '';
+	let wdPromptSaving = false;
+	let wdPromptError = '';
+	let stagedWdPendings: Array<{ unit: number; account_number: string; amount: number; note: string }> = [];
 	let walletNameEditing = false;
 	let walletNameDraft = '';
 	let walletAdjustOpen = false;
@@ -123,6 +130,7 @@
 		}
 	}
 	let savingSettings = false;
+	let settingsSaveError = '';
     let snapshotLoading = false;
 	let latestUpdate: number = 0;
 	let settingsLoaded = false;
@@ -294,7 +302,10 @@
 		draftWithdrawals = { ...unitWithdrawals };
 		draftDeposits = { ...unitDeposits };
 		settingsWalletCredit = 0;
+		settingsSaveError = '';
+		stagedWdPendings = [];
 		if (walletPrompt?.kind === 'settings-dp') walletPrompt = null;
+		if (wdPrompt?.kind === 'settings-wd') wdPrompt = null;
 		draftPlAlert = { ...plAlertSettings };
 		draftCurrency = { ...currencySettings };
 		showSettingsModal = true;
@@ -302,7 +313,10 @@
 
 	function closeSettings() {
 		settingsWalletCredit = 0;
+		settingsSaveError = '';
+		stagedWdPendings = [];
 		if (walletPrompt?.kind === 'settings-dp') walletPrompt = null;
+		if (wdPrompt?.kind === 'settings-wd') wdPrompt = null;
 		showSettingsModal = false;
 	}
 
@@ -744,9 +758,14 @@
 		return roundMoney(previous - next);
 	}
 
-	function handleUnitWithdrawalChange(unit: number, event: Event) {
-		unitWithdrawals = { ...unitWithdrawals, [unit]: parseNoteInput(event) };
-		void saveUnitNotes();
+	async function handleUnitWithdrawalChange(unit: number, event: Event) {
+		const previous = unitNoteAmount(unitWithdrawals, unit);
+		const next = parseNoteInput(event);
+		if (next === previous) return;
+		unitWithdrawals = { ...unitWithdrawals, [unit]: next };
+		const saved = await saveUnitNotes();
+		if (!saved || next === previous) return;
+		openWdPrompt({ kind: 'wd-note', unit, previous, next });
 	}
 
 	async function handleUnitDepositChange(unit: number, event: Event) {
@@ -820,6 +839,9 @@
 		if (side === 'dp' && next !== previous) {
 			walletPrompt = { kind: 'dp-note', unit, previous, next };
 		}
+		if (side === 'wd' && next !== previous) {
+			openWdPrompt({ kind: 'wd-note', unit, previous, next });
+		}
 	}
 
 	function requestSettingsDpClear(unit: number) {
@@ -853,6 +875,122 @@
 		};
 		await saveExternalWallet();
 		walletPromptSaving = false;
+	}
+
+	function accountsForUnit(unit: number): AccountSummary[] {
+		return unitGroups[String(unit)] ?? [];
+	}
+
+	function wdPendingAmount(previous: number, next: number): number {
+		return roundMoney(Math.abs(previous - next));
+	}
+
+	function wdAccountOptionLabel(account: AccountSummary): string {
+		const broker = bookBroker(account.broker_name, revealBookValues);
+		return `${account.account_number} · ${account.account_name} · ${broker}`;
+	}
+
+	function currentWdPromptNote(): string {
+		return wdPromptNote.trim().slice(0, PENDING_NOTE_MAX_LENGTH);
+	}
+
+	function openWdPrompt(prompt: { kind: 'wd-note' | 'settings-wd'; unit: number; previous: number; next: number }) {
+		const accounts = accountsForUnit(prompt.unit);
+		wdPrompt = prompt;
+		wdPromptAccount = accounts.length === 1 ? accounts[0].account_number : '';
+		wdPromptNote = AUTO_WD_PENDING_NOTE;
+		wdPromptError = '';
+	}
+
+	function requestSettingsWdClear(unit: number) {
+		const previous = unitNoteAmount(draftWithdrawals, unit);
+		if (previous <= 0) return;
+		openWdPrompt({ kind: 'settings-wd', unit, previous, next: 0 });
+	}
+
+	function dismissWdPrompt() {
+		if (wdPromptSaving) return;
+		wdPrompt = null;
+		wdPromptAccount = '';
+		wdPromptNote = '';
+		wdPromptError = '';
+	}
+
+	async function createAutoWdPending(accountNumber: string, amount: number, note: string): Promise<boolean> {
+		try {
+			const res = await fetch('/api/pending-withdrawals', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					account_number: accountNumber,
+					amount,
+					note,
+					withdrawn_at: new Date().toISOString()
+				})
+			});
+			const data = await res.json();
+			if (!res.ok) return false;
+			if (Array.isArray(data.pendingWithdrawals)) pendingWithdrawals = data.pendingWithdrawals;
+			return true;
+		} catch (error) {
+			console.error('Error creating pending withdrawal from WD note:', error);
+			return false;
+		}
+	}
+
+	async function flushStagedWdPendings(): Promise<boolean> {
+		const failed: Array<{ unit: number; account_number: string; amount: number; note: string }> = [];
+		for (const item of stagedWdPendings) {
+			const ok = await createAutoWdPending(item.account_number, item.amount, item.note);
+			if (!ok) failed.push(item);
+		}
+		stagedWdPendings = failed;
+		return failed.length === 0;
+	}
+
+	async function confirmWdPrompt(create: boolean) {
+		if (!wdPrompt || wdPromptSaving) return;
+		const prompt = wdPrompt;
+		const amount = wdPendingAmount(prompt.previous, prompt.next);
+		if (prompt.kind === 'settings-wd') {
+			if (create) {
+				if (!wdPromptAccount || amount <= 0) {
+					wdPromptError = 'Select an account';
+					return;
+				}
+				stagedWdPendings = [
+					...stagedWdPendings.filter((item) => item.unit !== prompt.unit),
+					{ unit: prompt.unit, account_number: wdPromptAccount, amount, note: currentWdPromptNote() }
+				];
+			} else {
+				stagedWdPendings = stagedWdPendings.filter((item) => item.unit !== prompt.unit);
+			}
+			draftWithdrawals = { ...draftWithdrawals, [prompt.unit]: 0 };
+			wdPrompt = null;
+			wdPromptAccount = '';
+			wdPromptNote = '';
+			wdPromptError = '';
+			return;
+		}
+		if (!create || amount <= 0) {
+			dismissWdPrompt();
+			return;
+		}
+		if (!wdPromptAccount) {
+			wdPromptError = 'Select an account';
+			return;
+		}
+		wdPromptSaving = true;
+		wdPromptError = '';
+		const ok = await createAutoWdPending(wdPromptAccount, amount, currentWdPromptNote());
+		wdPromptSaving = false;
+		if (!ok) {
+			wdPromptError = 'Could not save';
+			return;
+		}
+		wdPrompt = null;
+		wdPromptAccount = '';
+		wdPromptNote = '';
 	}
 
 	function startWalletNameEdit() {
@@ -1348,6 +1486,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 	async function saveSettings() {
 		if (savingSettings) return;
 		savingSettings = true;
+		settingsSaveError = '';
 		try {
 			const settingsBody: Record<string, unknown> = {
                     unit_initial_capitals: draftCapitals,
@@ -1384,6 +1523,11 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				plAlertState = data.pl_alert_state || plAlertState;
 				if (data.equity_warning_state) equityWarningState = normalizeEquityWarningState(data.equity_warning_state);
 				applyCurrencyPayload({ currency: data.currency || draftCurrency, fx: data.fx });
+				const pendingOk = await flushStagedWdPendings();
+				if (!pendingOk) {
+					settingsSaveError = 'Settings were saved, but the pending withdrawal was not created. Press Save to retry, or Cancel to skip it.';
+					return;
+				}
 				showSettingsModal = false;
 				location.reload();
 			}
@@ -3028,7 +3172,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					<fieldset>
 						<legend class="block text-sm font-medium text-[#f5f5f5] mb-2">WD / DP Notes</legend>
 						<p class="text-xs text-[#ececec] mb-2">
-							One WD Note and one DP Note per unit group. Clearing a row, including a Wallet update from DP, applies when you press Save.
+							One WD Note and one DP Note per unit group. Clearing a row applies when you press Save. A DP clear can update Wallet, and a WD clear can add a pending withdrawal.
 						</p>
 						<div class="space-y-2 max-h-64 overflow-y-auto pr-1">
 							{#each settingsNoteUnits as unit}
@@ -3041,7 +3185,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												<span class="text-xs text-[#ececec] tabular-nums">{formatNumber(unitNoteAmount(draftWithdrawals, unit), false)}</span>
 												<button
 													type="button"
-													on:click={() => { draftWithdrawals = { ...draftWithdrawals, [unit]: 0 }; }}
+													on:click={() => requestSettingsWdClear(unit)}
 													class="fac-minus hover:fac-minus transition-colors"
 													aria-label={`Remove WD note for unit ${unit}`}
 												>
@@ -3109,6 +3253,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				</div>
 			</div>
 
+			{#if settingsSaveError}
+				<p class="px-4 sm:px-6 pt-3 text-xs fac-minus">{settingsSaveError}</p>
+			{/if}
 			<div
 				class="px-4 sm:px-6 py-3 sm:py-4 border-t border-[#f5f5f5] flex items-center justify-end gap-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
 			>
@@ -3526,6 +3673,121 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							class="min-h-11 px-4 py-2 rounded-xl bg-[#f5f5f5] text-[#0a0a0a] hover:bg-white disabled:opacity-50 transition-colors"
 						>
 							{walletPromptSaving ? 'Saving...' : 'Update Wallet'}
+						</button>
+					{/if}
+				</div>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if wdPrompt}
+	{@const amount = wdPendingAmount(wdPrompt.previous, wdPrompt.next)}
+	{@const accounts = accountsForUnit(wdPrompt.unit)}
+	<div
+		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
+		on:click={dismissWdPrompt}
+		on:keydown={(e) => e.key === 'Escape' && dismissWdPrompt()}
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="wd-prompt-title"
+		tabindex="-1"
+	>
+		<div
+			class="bg-[#0a0a0a] border border-[#f5f5f5] w-full max-w-md mx-4 p-2"
+			role="document"
+			on:click|stopPropagation
+			on:keydown|stopPropagation
+			on:mousedown|stopPropagation
+		>
+			<div class="p-6 relative">
+				<button
+					type="button"
+					on:click={dismissWdPrompt}
+					disabled={wdPromptSaving}
+					class="absolute top-4 right-4 min-h-11 min-w-11 inline-flex items-center justify-center text-[#ececec] hover:text-[#f5f5f5]"
+					aria-label="Close"
+				>
+					<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+					</svg>
+				</button>
+				<h3 id="wd-prompt-title" class="text-lg font-semibold text-[#f5f5f5] mb-2 pr-10">Create pending withdrawal?</h3>
+				<p class="text-sm text-[#ececec] mb-3">
+					Unit {wdPrompt.unit === 0 ? 'Unknown' : wdPrompt.unit} WD Note
+					{formatNumber(wdPrompt.previous, false)} → {formatNumber(wdPrompt.next, false)}
+				</p>
+				<p class="text-sm text-[#f5f5f5] mb-3 tabular-nums">
+					Amount {formatNumber(amount, false)}
+				</p>
+				<label class="block text-[11px] text-[#ececec] mb-3">
+					Account
+					<select
+						bind:value={wdPromptAccount}
+						disabled={wdPromptSaving || accounts.length === 0}
+						class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-sm focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+					>
+						<option value="">Select account</option>
+						{#each accounts as account (account.account_number)}
+							<option value={account.account_number}>
+								{wdAccountOptionLabel(account)}
+							</option>
+						{/each}
+					</select>
+				</label>
+				{#if accounts.length === 0}
+					<p class="text-xs text-[#ececec] mb-3">No accounts in this unit.</p>
+				{/if}
+				<label class="block text-[11px] text-[#ececec] mb-3">
+					Note
+					<input
+						type="text"
+						maxlength={PENDING_NOTE_MAX_LENGTH}
+						bind:value={wdPromptNote}
+						disabled={wdPromptSaving}
+						class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-sm focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+					/>
+				</label>
+				<p class="text-sm text-[#ececec] mb-4">
+					Withdrawn at: current time{wdPrompt.kind === 'settings-wd' ? ' when you press Save' : ''}
+				</p>
+				{#if wdPromptError}
+					<p class="text-xs fac-minus mb-3">{wdPromptError}</p>
+				{/if}
+				<div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">
+					{#if wdPrompt.kind === 'settings-wd'}
+						<button
+							type="button"
+							on:click={() => confirmWdPrompt(false)}
+							disabled={wdPromptSaving}
+							class="min-h-11 px-4 py-2 rounded-xl bg-stone-700 text-[#f5f5f5] hover:bg-stone-600 disabled:opacity-50 transition-colors"
+						>
+							Clear WD only
+						</button>
+						<button
+							type="button"
+							on:click={() => confirmWdPrompt(true)}
+							disabled={wdPromptSaving || !wdPromptAccount || amount <= 0}
+							class="min-h-11 px-4 py-2 rounded-xl bg-[#f5f5f5] text-[#0a0a0a] hover:bg-white disabled:opacity-50 transition-colors"
+						>
+							Clear WD and create pending
+						</button>
+					{:else}
+						<button
+							type="button"
+							on:click={() => confirmWdPrompt(false)}
+							disabled={wdPromptSaving}
+							class="min-h-11 px-4 py-2 rounded-xl bg-stone-700 text-[#f5f5f5] hover:bg-stone-600 disabled:opacity-50 transition-colors"
+						>
+							Don't create
+						</button>
+						<button
+							type="button"
+							on:click={() => confirmWdPrompt(true)}
+							disabled={wdPromptSaving || !wdPromptAccount || amount <= 0}
+							class="min-h-11 px-4 py-2 rounded-xl bg-[#f5f5f5] text-[#0a0a0a] hover:bg-white disabled:opacity-50 transition-colors"
+						>
+							{wdPromptSaving ? 'Saving...' : 'Create pending withdrawal'}
 						</button>
 					{/if}
 				</div>
