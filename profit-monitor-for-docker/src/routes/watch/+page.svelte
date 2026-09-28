@@ -41,7 +41,6 @@
 	let initialCapital = 0;
 	let snapshot: WatchSnapshot | null = null;
 	let snapshotDelta: number | null = null;
-	let snapshotLoading = false;
 	let unitGroups: Record<string, AccountSummary[]> = {};
 	let unitCapitals: Record<number, number> = {};
 	let unitWarnPcts: Record<number, number> = {};
@@ -216,40 +215,6 @@
 		return fetchInFlight;
 	}
 
-	async function takeSnapshot() {
-		if (snapshotLoading) return;
-		snapshotLoading = true;
-		try {
-			const res = await fetch('/api/settings', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ snapshot: { value: adjusted, kind: 'adjusted' } })
-			});
-			if (res.ok) await fetchData();
-		} finally {
-			snapshotLoading = false;
-		}
-	}
-
-	async function clearSnapshot() {
-		if (snapshotLoading) return;
-		snapshotLoading = true;
-		try {
-			const res = await fetch('/api/settings', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ clear_snapshot: true })
-			});
-			if (res.ok) {
-				snapshot = null;
-				snapshotDelta = null;
-				await fetchData();
-			}
-		} finally {
-			snapshotLoading = false;
-		}
-	}
-
 	function stopCountdown() {
 		if (countdownId) {
 			clearInterval(countdownId);
@@ -380,12 +345,6 @@
 					<p class="meta stamp" class:stale class:busy={refreshing}>{stamp}</p>
 				{/if}
 				<p class="count">{countLabel}</p>
-			</div>
-			<div class="actions">
-				<button type="button" on:click={takeSnapshot} disabled={snapshotLoading}>{snapshot ? 'RESET SNAPSHOT' : 'TAKE SNAPSHOT'}</button>
-				{#if snapshot}
-					<button type="button" on:click={clearSnapshot} disabled={snapshotLoading}>TURN OFF SNAPSHOT</button>
-				{/if}
 			</div>
 		</div>
 	{/if}
@@ -548,34 +507,6 @@
 		color: #ffcc33;
 	}
 
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		justify-content: center;
-		gap: calc(6px * var(--ui));
-		margin-top: calc(2px * var(--ui));
-	}
-
-	.actions button {
-		background: transparent;
-		color: #f5f5f5;
-		border: 1px solid #f5f5f5;
-		min-height: calc(18px * var(--ui));
-		padding: calc(2px * var(--ui)) calc(6px * var(--ui));
-		font: inherit;
-		font-size: calc(8px * var(--ui));
-		letter-spacing: 0.03em;
-	}
-
-	.actions button:disabled {
-		opacity: 0.45;
-	}
-
-	.actions button:focus-visible {
-		outline: 2px solid #f5f5f5;
-		outline-offset: 2px;
-	}
-
 	.plus {
 		color: #3dff6a;
 	}
@@ -639,4 +570,5 @@
 			opacity: 0.28;
 		}
 	}
+
 </style>

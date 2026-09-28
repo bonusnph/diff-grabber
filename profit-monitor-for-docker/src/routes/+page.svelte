@@ -132,6 +132,12 @@
 	let savingSettings = false;
 	let settingsSaveError = '';
     let snapshotLoading = false;
+	let snapshotDialog: 'take' | 'off' | null = null;
+	let snapshotAmountInput = '';
+	let snapshotDialogError = '';
+	let summaryEmailOpen = false;
+	let summaryEmailSending = false;
+	let summaryEmailError = '';
 	let latestUpdate: number = 0;
 	let settingsLoaded = false;
 	let appReady = false;
@@ -506,19 +512,58 @@
 		}
 	}
 
-	async function takeSnapshot(kind: 'adjusted' | 'real' = 'adjusted') {
+	function openTakeSnapshotDialog() {
 		if (snapshotLoading) return;
+		snapshotAmountInput = '';
+		snapshotDialogError = '';
+		snapshotDialog = 'take';
+	}
+
+	function openTurnOffSnapshotDialog() {
+		if (snapshotLoading) return;
+		snapshotDialogError = '';
+		snapshotDialog = 'off';
+	}
+
+	function closeSnapshotDialog() {
+		if (snapshotLoading) return;
+		snapshotDialog = null;
+		snapshotAmountInput = '';
+		snapshotDialogError = '';
+	}
+
+	function snapshotAmountFromInput(): number | null {
+		const text = snapshotAmountInput.trim().replace(/,/g, '');
+		if (!text) return null;
+		const parsed = Number(text);
+		if (!Number.isFinite(parsed)) return Number.NaN;
+		const rate = displayRate > 0 ? displayRate : 1;
+		return roundMoney(parsed / rate);
+	}
+
+	async function confirmTakeSnapshot() {
+		if (snapshotLoading) return;
+		const parsed = snapshotAmountFromInput();
+		if (Number.isNaN(parsed)) {
+			snapshotDialogError = 'Enter a valid amount';
+			return;
+		}
+		const value = parsed === null ? adjustedProfitLoss : parsed;
 		snapshotLoading = true;
+		snapshotDialogError = '';
 		try {
-			const value = kind === 'adjusted' ? adjustedProfitLoss : stats.profit_loss;
 			const res = await fetch('/api/settings', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ snapshot: { value, kind } })
+				body: JSON.stringify({ snapshot: { value, kind: 'adjusted' } })
 			});
-			if (res.ok) {
-				await fetchData();
+			if (!res.ok) {
+				snapshotDialogError = 'Could not save';
+				return;
 			}
+			snapshotDialog = null;
+			snapshotAmountInput = '';
+			await fetchData();
 		} finally {
 			snapshotLoading = false;
 		}
@@ -557,7 +602,48 @@
 		}
 	}
 
-    async function loadInitialCapital() {
+	async function confirmTurnOffSnapshot() {
+		await clearSnapshot();
+		if (!snapshot) {
+			snapshotDialog = null;
+			snapshotDialogError = '';
+			return;
+		}
+		snapshotDialogError = 'Could not turn off';
+	}
+
+	function openSummaryEmailDialog() {
+		if (summaryEmailSending || !plAlertSettings.recipientEmail.trim()) return;
+		summaryEmailError = '';
+		summaryEmailOpen = true;
+	}
+
+	function closeSummaryEmailDialog() {
+		if (summaryEmailSending) return;
+		summaryEmailOpen = false;
+		summaryEmailError = '';
+	}
+
+	async function confirmSummaryEmail() {
+		if (summaryEmailSending || !plAlertSettings.recipientEmail.trim()) return;
+		summaryEmailSending = true;
+		summaryEmailError = '';
+		try {
+			const res = await fetch('/api/summary-email', { method: 'POST' });
+			if (!res.ok) {
+				summaryEmailError = 'Could not send';
+				return;
+			}
+			summaryEmailOpen = false;
+		} catch (error) {
+			console.error('Error sending summary email:', error);
+			summaryEmailError = 'Could not send';
+		} finally {
+			summaryEmailSending = false;
+		}
+	}
+
+	async function loadInitialCapital() {
 		settingsLoaded = false;
 		try {
 			const response = await fetch('/api/settings');
@@ -1804,14 +1890,27 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			{/if}
 
 			<div class="flex items-center gap-3 flex-wrap text-xs mt-2">
-				<button on:click={() => takeSnapshot('adjusted')} class="fac-ghost text-xs" disabled={snapshotLoading}>
+				<button on:click={openTakeSnapshotDialog} class="fac-ghost text-xs" disabled={snapshotLoading}>
 					{snapshot ? 'RESET SNAPSHOT' : 'TAKE SNAPSHOT'}
 				</button>
 				{#if snapshot}
-					<button on:click={clearSnapshot} class="fac-ghost text-xs" disabled={snapshotLoading}>
+					<button on:click={openTurnOffSnapshotDialog} class="fac-ghost text-xs" disabled={snapshotLoading}>
 						TURN OFF SNAPSHOT
 					</button>
 				{/if}
+				<button
+					type="button"
+					on:click={openSummaryEmailDialog}
+					class="fac-ghost fac-icon disabled:opacity-40 disabled:cursor-not-allowed"
+					disabled={summaryEmailSending || !plAlertSettings.recipientEmail.trim()}
+					title={plAlertSettings.recipientEmail.trim() ? `Send summary to ${plAlertSettings.recipientEmail}` : 'Set Recipient email in Settings'}
+					aria-label={plAlertSettings.recipientEmail.trim() ? `Send summary to ${plAlertSettings.recipientEmail}` : 'Set Recipient email in Settings'}
+				>
+					<svg viewBox="0 0 24 24" aria-hidden="true">
+						<path d="M3 6h18v12H3z" />
+						<path d="M3 7l9 7 9-7" />
+					</svg>
+				</button>
 			</div>
 		</div>
 
@@ -3790,6 +3889,179 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							{wdPromptSaving ? 'Saving...' : 'Create pending withdrawal'}
 						</button>
 					{/if}
+				</div>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if snapshotDialog}
+	<div
+		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
+		on:click={closeSnapshotDialog}
+		on:keydown={(e) => e.key === 'Escape' && closeSnapshotDialog()}
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="snapshot-dialog-title"
+		tabindex="-1"
+	>
+		<div
+			class="bg-[#0a0a0a] border border-[#f5f5f5] w-full max-w-md mx-4 p-2"
+			role="document"
+			on:click|stopPropagation
+			on:keydown|stopPropagation
+			on:mousedown|stopPropagation
+		>
+			{#if snapshotDialog === 'take'}
+				<form class="p-6 relative" on:submit|preventDefault={confirmTakeSnapshot}>
+					<button
+						type="button"
+						on:click={closeSnapshotDialog}
+						disabled={snapshotLoading}
+						class="absolute top-4 right-4 min-h-11 min-w-11 inline-flex items-center justify-center text-[#ececec] hover:text-[#f5f5f5]"
+						aria-label="Close"
+					>
+						<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+						</svg>
+					</button>
+					<h3 id="snapshot-dialog-title" class="text-lg font-semibold text-[#f5f5f5] mb-2 pr-10">
+						{snapshot ? 'Reset snapshot?' : 'Take snapshot?'}
+					</h3>
+					<p class="text-sm text-[#ececec] mb-3">
+						Current P/L {(adjustedProfitLoss >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLoss)}
+					</p>
+					<label class="block text-[11px] text-[#ececec] mb-4">
+						Amount
+						<input
+							type="text"
+							inputmode="decimal"
+							bind:value={snapshotAmountInput}
+							placeholder={(adjustedProfitLoss >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLoss)}
+							disabled={snapshotLoading}
+							class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm tabular-nums focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+						/>
+						<span class="mt-1 block text-[#ececec]">Leave blank to use the current P/L</span>
+					</label>
+					{#if snapshotDialogError}
+						<p class="text-xs fac-minus mb-3">{snapshotDialogError}</p>
+					{/if}
+					<div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">
+						<button
+							type="button"
+							on:click={closeSnapshotDialog}
+							disabled={snapshotLoading}
+							class="min-h-11 px-4 py-2 rounded-xl bg-stone-700 text-[#f5f5f5] hover:bg-stone-600 disabled:opacity-50 transition-colors"
+						>
+							Cancel
+						</button>
+						<button
+							type="submit"
+							disabled={snapshotLoading}
+							class="min-h-11 px-4 py-2 rounded-xl bg-[#f5f5f5] text-[#0a0a0a] hover:bg-white disabled:opacity-50 transition-colors"
+						>
+							{snapshotLoading ? 'Saving...' : snapshot ? 'Reset snapshot' : 'Take snapshot'}
+						</button>
+					</div>
+				</form>
+			{:else}
+				<div class="p-6 relative">
+					<button
+						type="button"
+						on:click={closeSnapshotDialog}
+						disabled={snapshotLoading}
+						class="absolute top-4 right-4 min-h-11 min-w-11 inline-flex items-center justify-center text-[#ececec] hover:text-[#f5f5f5]"
+						aria-label="Close"
+					>
+						<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+						</svg>
+					</button>
+					<h3 id="snapshot-dialog-title" class="text-lg font-semibold text-[#f5f5f5] mb-2 pr-10">Turn off snapshot?</h3>
+					<p class="text-sm text-[#ececec] mb-4">The display will return to the live P/L.</p>
+					{#if snapshotDialogError}
+						<p class="text-xs fac-minus mb-3">{snapshotDialogError}</p>
+					{/if}
+					<div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">
+						<button
+							type="button"
+							on:click={closeSnapshotDialog}
+							disabled={snapshotLoading}
+							class="min-h-11 px-4 py-2 rounded-xl bg-stone-700 text-[#f5f5f5] hover:bg-stone-600 disabled:opacity-50 transition-colors"
+						>
+							Cancel
+						</button>
+						<button
+							type="button"
+							on:click={confirmTurnOffSnapshot}
+							disabled={snapshotLoading}
+							class="min-h-11 px-4 py-2 rounded-xl bg-[#f5f5f5] text-[#0a0a0a] hover:bg-white disabled:opacity-50 transition-colors"
+						>
+							{snapshotLoading ? 'Saving...' : 'Turn off'}
+						</button>
+					</div>
+				</div>
+			{/if}
+		</div>
+	</div>
+{/if}
+
+{#if summaryEmailOpen}
+	<div
+		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
+		on:click={closeSummaryEmailDialog}
+		on:keydown={(e) => e.key === 'Escape' && closeSummaryEmailDialog()}
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="summary-email-title"
+		tabindex="-1"
+	>
+		<div
+			class="bg-[#0a0a0a] border border-[#f5f5f5] w-full max-w-md mx-4 p-2"
+			role="document"
+			on:click|stopPropagation
+			on:keydown|stopPropagation
+			on:mousedown|stopPropagation
+		>
+			<div class="p-6 relative">
+				<button
+					type="button"
+					on:click={closeSummaryEmailDialog}
+					disabled={summaryEmailSending}
+					class="absolute top-4 right-4 min-h-11 min-w-11 inline-flex items-center justify-center text-[#ececec] hover:text-[#f5f5f5]"
+					aria-label="Close"
+				>
+					<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+					</svg>
+				</button>
+				<h3 id="summary-email-title" class="text-lg font-semibold text-[#f5f5f5] mb-2 pr-10">Send summary email?</h3>
+				<p class="text-sm text-[#ececec] {snapshot ? 'mb-2' : 'mb-4'}">
+					The current overview, each unit group, broker totals, pending withdrawals, and wallet will be sent to {plAlertSettings.recipientEmail}.
+				</p>
+				{#if snapshot}
+					<p class="text-sm text-[#ececec] mb-4">The snapshot profit is included.</p>
+				{/if}
+				{#if summaryEmailError}
+					<p class="text-xs fac-minus mb-3">{summaryEmailError}</p>
+				{/if}
+				<div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">
+					<button
+						type="button"
+						on:click={closeSummaryEmailDialog}
+						disabled={summaryEmailSending}
+						class="min-h-11 px-4 py-2 rounded-xl bg-stone-700 text-[#f5f5f5] hover:bg-stone-600 disabled:opacity-50 transition-colors"
+					>
+						Cancel
+					</button>
+					<button
+						type="button"
+						on:click={confirmSummaryEmail}
+						disabled={summaryEmailSending}
+						class="min-h-11 px-4 py-2 rounded-xl bg-[#f5f5f5] text-[#0a0a0a] hover:bg-white disabled:opacity-50 transition-colors"
+					>
+						{summaryEmailSending ? 'Sending...' : 'Send email'}
+					</button>
 				</div>
 			</div>
 		</div>
