@@ -1,0 +1,35 @@
+---
+description: Deploy profit-monitor-for-docker-purinut to https://profit.sauichi.com. Use when deploying, updating, or changing production DNS, Caddy, or ORIGIN for the Purinut profit monitor.
+globs: profit-monitor-for-docker-purinut/**
+alwaysApply: false
+---
+
+# Deploy Purinut Profit Monitor
+
+Apply this only when the user asks to deploy or change production for `profit-monitor-for-docker-purinut`. Full steps are in `profit-monitor-for-docker-purinut/DEPLOY.md`.
+
+| Item | Value |
+| --- | --- |
+| URL | `https://profit.sauichi.com` |
+| Watch | `https://profit.sauichi.com/watch` |
+| Webhook | `https://profit.sauichi.com/api/webhook` |
+| Server | `root@139.180.214.152` |
+| Path | `/opt/profit-monitor` |
+| Origin | `ORIGIN=https://profit.sauichi.com` in the server `.env` only |
+
+- DNS is an A record `profit` → `139.180.214.152` on Cloudflare zone `sauichi.com`, DNS only. Do not enable the proxy. Let's Encrypt HTTP-01 and TLS-ALPN need port 80/443 to reach this server.
+- Do not enable zone-wide Always Use HTTPS. `https://sauichi.com` already fails at the apex origin. Do not change apex records.
+- Caddy terminates TLS for `profit.sauichi.com` only. Do not restore the self-signed IP certificate or `auto_https disable_redirects`.
+- Never commit or rsync `.env`. Do not put `@`, `#`, or `/` in `POSTGRES_PASSWORD`.
+
+Update an existing deploy from `profit-monitor-for-docker-purinut`:
+
+```bash
+rsync -av --delete \
+  --exclude node_modules --exclude .svelte-kit --exclude build \
+  --exclude .git --exclude .env --exclude .env.local --exclude .env.* \
+  ./ root@139.180.214.152:/opt/profit-monitor/
+ssh root@139.180.214.152 'cd /opt/profit-monitor && docker compose up -d --build'
+```
+
+Confirm `https://profit.sauichi.com/api/health` returns healthy and `http://` redirects to `https://`. After a domain or `ORIGIN` change, tell the user to allow `https://profit.sauichi.com` in the MT4/MT5 WebRequest list.

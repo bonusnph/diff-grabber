@@ -26,7 +26,7 @@ services:
       NODE_ENV: production
       PORT: 3000
       HOST: 0.0.0.0
-      ORIGIN: ${ORIGIN:-https://139.180.214.152}
+      ORIGIN: ${ORIGIN:-https://profit.sauichi.com}
       PROTOCOL_HEADER: x-forwarded-proto
       HOST_HEADER: host
       DATABASE_URL: postgresql://${POSTGRES_USER:-profit}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-profit_monitor}
@@ -55,7 +55,6 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./certs:/etc/caddy/certs:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

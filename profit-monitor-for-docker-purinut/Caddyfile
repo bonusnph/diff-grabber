@@ -1,12 +1,7 @@
 {
-	auto_https disable_redirects
+	email bonusnph@gmail.com
 }
 
-:80 {
-	redir https://{host}{uri} permanent
-}
-
-:443 {
-	tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
+profit.sauichi.com {
 	reverse_proxy profit-monitor:3000
 }

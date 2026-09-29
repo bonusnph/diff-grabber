@@ -1,219 +1,158 @@
-# คู่มือ Deploy Profit Monitor ด้วย Docker + Cloudflare Tunnel
+# Deploy Profit Monitor
 
-โฟลเดอร์นี้ (`profit-monitor-for-docker`) เป็นเวอร์ชันที่ปรับมาให้ deploy แบบ **self-hosted บน server ทั่วไปผ่าน Docker**
+This folder deploys to one VPS. The public site is `https://profit.sumofx.co`. DNS for `sumofx.co` is on Cloudflare. The `profit` A record is proxied. A page rule for `*profit.sumofx.co/*` sets SSL to Full (strict) and turns Browser Integrity Check off for that hostname only. Caddy still terminates Let's Encrypt on the server.
 
-## ข้อมูล Deployment ปัจจุบัน
+The previous Docker Hub + Cloudflare Tunnel flow is kept in [`DEPLOY-TUNNEL.md`](./DEPLOY-TUNNEL.md) and `docker-compose.tunnel.yml`. Use that only when this server cannot accept traffic on port 443.
 
-| รายการ | ค่า |
+| Item | Value |
 | --- | --- |
-| URL ที่ใช้งานจริง | https://profit.sumofx.co/ |
-| Server IP | `68.183.185.48` (โดเมน `sumofx.co`) |
-| Path บน server | `/home/profit-monitor` |
-| Docker Hub image | `bonusnph/profit-monitor:latest` |
-| บัญชี Cloudflare | `bonusnph@gmail.com` |
-| Tunnel hostname | `profit.sumofx.co` → service `profit-monitor:3000` |
-
-Flow โดยรวม:
+| Public URL | https://profit.sumofx.co |
+| Watch page | https://profit.sumofx.co/watch |
+| Server | `68.183.185.48` |
+| Path on server | `/home/profit-monitor` |
+| TLS | Let's Encrypt via TLS-ALPN on port 443 |
 
 ```
-เครื่อง Local (build image) → push ขึ้น Docker Hub → server (pull image + run)
-                                                              │
-                                                     Cloudflare Tunnel (cloudflared)
-                                                              │
-                                                     https://your-domain.com
+local source → rsync to server → docker compose build → Caddy :443 → app :3000
+                                         └── Postgres (internal only)
 ```
 
----
+Caddy listens on ports 80 and 443. `http://profit.sumofx.co` redirects to `https://profit.sumofx.co`. Other names on port 80 are forwarded to the WordPress container, which must not publish host port 80 itself. Keep the Cloudflare proxy on for `profit`. Do not change zone SSL away from Flexible, and do not change the `sumofx.co` or `www` records. The page rule is what makes Cloudflare connect to origin port 443 with the real certificate. Browser Integrity Check stays off on that rule so MT4/MT5 WebRequest is not challenged.
 
-## 1. โครงสร้างที่เกี่ยวข้อง
+The certificate is valid until 2026-12-28. Let's Encrypt renewal cannot complete while the proxy is on, because the TLS-ALPN challenge would hit Cloudflare instead of Caddy. To renew, set the `profit` record to DNS-only, restart Caddy, wait until the certificate renews, then turn the proxy back on. Leave the page rule in place.
 
-| ไฟล์ | หน้าที่ |
+## 1. Files that matter
+
+| File | Role |
 | --- | --- |
-| `Dockerfile` | Build image ของแอป (SvelteKit + `adapter-node`) |
-| `docker-compose.yml` | รัน container ของแอป + `cloudflared` บน server |
-| `.env` | เก็บ `POSTGRES_PASSWORD`, `CLOUDFLARE_TUNNEL_TOKEN` และ SMTP (ห้าม commit ขึ้น git) |
-| `package.json` (`docker:release`) | build + push image ขึ้น Docker Hub แบบ multi-arch (amd64 + arm64) |
+| `Dockerfile` | Builds the SvelteKit Node server |
+| `docker-compose.yml` | App + Postgres + Caddy |
+| `Caddyfile` | HTTPS reverse proxy for `profit.sumofx.co` |
+| `.env` | `POSTGRES_*` and `ORIGIN` (do not commit) |
+| `docker-compose.tunnel.yml` | Fallback tunnel stack |
+| `settings-seed.json`, `accounts-seed.json` | Live on the server only. Imported once, then ignored |
 
-> **สำคัญ:** image ต้อง build แบบ multi-platform (`linux/amd64` + `linux/arm64`) เพราะเครื่อง local ที่ build (เช่น Mac Apple Silicon) เป็น `arm64` แต่ server ส่วนใหญ่เป็น `amd64` ถ้า build ด้วย `docker build` ธรรมดาแล้ว push จะได้ image แค่ arch เดียว พอไป `docker compose pull` บน server ที่ arch ไม่ตรงจะเจอ error `no matching manifest for linux/amd64`
+Postgres is not published. The app is not published. Only port `443` is published for this stack.
 
----
+Do not put `@`, `#`, or `/` in `POSTGRES_PASSWORD`. Compose builds `DATABASE_URL` from that value.
 
-## 2. Build และ Push Image ขึ้น Docker Hub
+## 2. DNS
 
-จากเครื่อง local (ต้อง `docker login` ที่มีสิทธิ์ push ให้ repo `bonusnph/profit-monitor` ก่อน):
+In Cloudflare DNS for `sumofx.co`:
+
+| Field | Value |
+| --- | --- |
+| Name | `profit` |
+| Type | A |
+| IPv4 | `68.183.185.48` |
+| Proxy | DNS only |
+
+Remove the tunnel CNAME for `profit` before creating this record. The tunnel ingress is documented in `DEPLOY-TUNNEL.md`.
+
+## 3. Copy the project and start it
+
+From `profit-monitor-for-docker` on your machine. Do not use `--delete`: the seed JSON files exist only on the server.
 
 ```bash
-cd profit-monitor-for-docker
-yarn docker:release
+rsync -av \
+  --exclude node_modules \
+  --exclude .svelte-kit \
+  --exclude build \
+  --exclude .git \
+  --exclude .env \
+  --exclude .env.local \
+  --exclude .env.* \
+  ./ root@68.183.185.48:/home/profit-monitor/
 ```
 
-คำสั่งนี้จะรัน:
-
-```bash
-docker buildx build --platform linux/amd64,linux/arm64 -t bonusnph/profit-monitor:latest --push .
-```
-
-ตรวจสอบว่า push สำเร็จและมีทั้งสอง arch:
-
-```bash
-docker buildx imagetools inspect bonusnph/profit-monitor:latest
-```
-
-ควรเห็น `Platform: linux/amd64` และ `Platform: linux/arm64` ทั้งคู่ในผลลัพธ์
-
----
-
-## 3. เตรียมไฟล์บน Server
-
-Server **ไม่ต้องมี** `Dockerfile` หรือซอร์สโค้ดใดๆ เลย เพราะ image ถูก build ไว้แล้วบน Docker Hub ต้องมีแค่ 2 ไฟล์:
-
-```
-/home/profit-monitor/
-├── docker-compose.yml
-├── .env
-├── settings-seed.json
-└── accounts-seed.json
-```
-
-Copy `docker-compose.yml` จากโฟลเดอร์นี้ไปวางที่ server แล้วสร้าง `.env` โดยใส่ค่า:
+On the server, `/home/profit-monitor/.env` must include:
 
 ```bash
 POSTGRES_USER=profit
 POSTGRES_PASSWORD=choose-a-long-password
 POSTGRES_DB=profit_monitor
-CLOUDFLARE_TUNNEL_TOKEN=xxxxxxxxxxxxxxxxxxxx   # ได้จากขั้นตอน Cloudflare ด้านล่าง
+ORIGIN=https://profit.sumofx.co
 ```
 
-Do not put `@`, `#`, or `/` in `POSTGRES_PASSWORD`. Compose builds `DATABASE_URL` from that value.
-
-`settings-seed.json` and `accounts-seed.json` are imported once on first boot, then ignored.
-
-**Port ที่ใช้:** `docker-compose.yml` map พอร์ต host เป็น `3300:3000` เพื่อเลี่ยงไม่ให้ชนกับ container อื่นที่ใช้ 80 / 8080 / 3306 อยู่แล้วบน server เดียวกัน (แก้เลข `3300` ได้ถ้าจำเป็น)
-
----
-
-## 4. Setup Cloudflare Tunnel (ทำครั้งเดียว)
-
-### 4.1 สร้าง Tunnel ผ่าน Dashboard
-
-1. เข้า [Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/) → login ด้วยบัญชี `bonusnph@gmail.com` → เลือก account ของ `sumofx.co`
-2. ไปที่ **Networks → Tunnels → Create a tunnel**
-3. เลือก connector type: **Cloudflared** → กด Next
-4. ตั้งชื่อ tunnel เช่น `profit-monitor` → กด **Save tunnel**
-5. หน้าถัดไปจะโชว์คำสั่งสำหรับรัน `cloudflared` พร้อม `--token <TOKEN>` ยาวๆ
-   → **copy เฉพาะค่า token** (ส่วนที่ต่อจาก `--token`) เก็บไว้ ไม่ต้องรันคำสั่งนั้นตรงๆ เพราะเราจะรันผ่าน docker compose แทน
-
-### 4.2 ตั้งค่า Public Hostname
-
-ในหน้าเดียวกัน (หรือย้อนกลับไปที่ tunnel ที่สร้าง → แท็บ **Public Hostname**) กด **Add a public hostname**:
-
-| Field | ค่าที่ใส่ |
-| --- | --- |
-| Subdomain | `profit` |
-| Domain | `sumofx.co` |
-| Path | เว้นว่าง |
-| Type | `HTTP` |
-| URL | `profit-monitor:3000` |
-
-(ผลลัพธ์คือ `https://profit.sumofx.co` ตามที่ใช้งานจริงอยู่ในปัจจุบัน)
-
-> ตรง URL ให้ใส่ `profit-monitor:3000` (ชื่อ service ใน `docker-compose.yml` + พอร์ตภายใน container) **ไม่ใช่** `localhost:3300` เพราะ `cloudflared` รันอยู่ใน docker network เดียวกับแอป เชื่อมกันผ่านชื่อ service ได้ตรงๆ
-
-กด **Save** — ระบบจะสร้าง DNS record (CNAME) ให้อัตโนมัติ ไม่ต้องไปตั้งค่าใน DNS tab เอง
-
-### 4.3 นำ Token ไปใส่ในเซิร์ฟเวอร์
-
-เอา token จากขั้นตอน 4.1 ไปใส่ในไฟล์ `.env` บน server:
-
-```bash
-CLOUDFLARE_TUNNEL_TOKEN=<token ที่ copy มา>
-```
-
----
-
-## 5. Deploy บน Server
+The DNS record must already point at this server before Caddy can finish the certificate.
 
 ```bash
 cd /home/profit-monitor
-docker compose pull
-docker compose up -d
-```
-
-ตรวจสอบสถานะ:
-
-```bash
+docker compose up -d --build
 docker compose ps
-docker compose logs -f cloudflared
 ```
 
-ถ้าเห็น log แบบ `Registered tunnel connection` ใน `cloudflared` แสดงว่าเชื่อมสำเร็จ
-
-ตรวจสอบแอปฝั่งใน container:
+Check:
 
 ```bash
-curl http://localhost:3300/api/health
+curl -fsS https://profit.sumofx.co/api/health
 ```
 
-ควรได้ผลลัพธ์ `{"status":"healthy", ...}`
+You should see `{"status":"healthy", ...}`.
 
-สุดท้ายลองเปิดโดเมนจริง:
-
-```
-https://profit.sumofx.co/api/health
-```
-
-Cloudflare จะจัดการ HTTPS/SSL ให้อัตโนมัติ ไม่ต้องตั้ง certificate เอง และไม่ต้องเปิด port อะไรบน server/firewall เลย
-
----
-
-## 6. อัพเดทเวอร์ชันใหม่ (Deploy ครั้งต่อไป)
-
-**บนเครื่อง local:**
+## 4. Update an existing deploy
 
 ```bash
-cd profit-monitor-for-docker
-yarn docker:release
+rsync -av \
+  --exclude node_modules \
+  --exclude .svelte-kit \
+  --exclude build \
+  --exclude .git \
+  --exclude .env \
+  --exclude .env.local \
+  --exclude .env.* \
+  ./ root@68.183.185.48:/home/profit-monitor/
+
+ssh root@68.183.185.48 'cd /home/profit-monitor && docker compose up -d --build'
 ```
 
-**บน server:**
+Postgres data stays in the `postgres-data` volume. Keep `ORIGIN=https://profit.sumofx.co` in the server `.env`.
+
+## 5. EA webhook
+
+Allow WebRequest for:
+
+```
+https://profit.sumofx.co
+```
+
+Webhook URL:
+
+```
+https://profit.sumofx.co/api/webhook
+```
+
+## 6. Fallback to the tunnel
+
+Stop this stack without deleting the database volume, then start the tunnel file:
 
 ```bash
 cd /home/profit-monitor
-docker compose pull
-docker compose up -d
+docker compose down
+docker compose -f docker-compose.tunnel.yml up -d
 ```
 
-`docker compose up -d` จะดึง image ใหม่มาแทนตัวเดิมและ restart container ให้อัตโนมัติ
-
----
+Restore the Cloudflare tunnel hostname `profit.sumofx.co` → `http://profit-monitor:3000` as described in `DEPLOY-TUNNEL.md`. `CLOUDFLARE_TUNNEL_TOKEN` stays in `.env` for that path.
 
 ## 7. Troubleshooting
 
-| ปัญหา | สาเหตุ / วิธีแก้ |
+| Problem | What to check |
 | --- | --- |
-| `no matching manifest for linux/amd64` | Image build มาจาก arch เดียว (เช่น arm64 บน Mac) ให้ build ด้วย `yarn docker:release` (multi-arch) แล้ว push ใหม่ |
-| `failed to read dockerfile: open Dockerfile: no such file` | รันจาก `docker compose up -d` แล้ว compose พยายาม build เอง (ไม่มี `build:` ใน compose แล้ว ถ้ายังเจอปัญหานี้ ตรวจว่า copy `docker-compose.yml` เวอร์ชันล่าสุดไปวางที่ server แล้ว) |
-| container ตื่นไม่ทัน webhook จาก EA | เช็ค `docker compose logs profit-monitor` และ `curl localhost:3300/api/health` ว่า container รันอยู่จริง |
-| `cloudflared` ขึ้น error เรื่อง token ผิด | ตรวจว่า copy `CLOUDFLARE_TUNNEL_TOKEN` มาครบไม่มีตัดตอน/มีช่องว่างแปลกๆ ใน `.env` |
-| Public hostname ตั้งแล้วเข้าไม่ได้ | เช็คว่า URL ใน Public Hostname เป็น `profit-monitor:3000` (ชื่อ service ตรงกับ `docker-compose.yml`) ไม่ใช่ `localhost` |
+| Certificate is not issued | Renewal needs the `profit` record DNS-only for the TLS-ALPN challenge, then the proxy turned back on. `docker compose logs caddy` |
+| Caddy cannot bind port 80 | WordPress is still publishing host port 80. Remove that publish so Caddy can take it |
+| Health is unhealthy | `docker compose logs profit-monitor` and `docker compose logs postgres` |
+| EA cannot send data | Allow `https://profit.sumofx.co` in WebRequest |
 
----
-
-## 8. คำสั่งที่ใช้บ่อย
+## 8. Common commands
 
 ```bash
-# ดู log ของแอป
+cd /home/profit-monitor
+
 docker compose logs -f profit-monitor
+docker compose logs -f caddy
+docker compose logs -f postgres
 
-# ดู log ของ tunnel
-docker compose logs -f cloudflared
-
-# restart ทั้งหมด
+docker compose ps
 docker compose restart
-
-# ปิดทั้งหมด
 docker compose down
-
-# เข้าไปดูภายใน container
-docker exec -it profit-monitor-app sh
 ```

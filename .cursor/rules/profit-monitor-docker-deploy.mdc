@@ -1,0 +1,36 @@
+---
+description: Deploy profit-monitor-for-docker to https://profit.sumofx.co with Caddy on the VPS. Use when deploying or changing production DNS, Caddy, or ORIGIN for this profit monitor. The Cloudflare Tunnel flow is fallback only.
+globs: profit-monitor-for-docker/**
+alwaysApply: false
+---
+
+# Deploy Profit Monitor (sumofx)
+
+Apply this only when the user asks to deploy or change production for `profit-monitor-for-docker`. Full steps are in `profit-monitor-for-docker/DEPLOY.md`. Do not use the tunnel path unless the user asks for the fallback.
+
+| Item | Value |
+| --- | --- |
+| URL | `https://profit.sumofx.co` |
+| Watch | `https://profit.sumofx.co/watch` |
+| Webhook | `https://profit.sumofx.co/api/webhook` |
+| Server | `root@68.183.185.48` |
+| Path | `/home/profit-monitor` |
+| Origin | `ORIGIN=https://profit.sumofx.co` in the server `.env` only |
+
+- DNS is a proxied A record `profit` → `68.183.185.48` on Cloudflare zone `sumofx.co`. Keep the proxy on. A page rule `*profit.sumofx.co/*` sets SSL to Full (strict) and Browser Integrity Check off. Do not change zone SSL (it stays Flexible) and do not change `sumofx.co` or `www` (`157.245.155.102`). Certificate renewal needs the proxy off only for the TLS-ALPN challenge, then the proxy back on. The certificate is valid until 2026-12-28.
+- Caddy owns host ports 80 and 443. `profit.sumofx.co` on port 80 redirects to HTTPS. Every other host on port 80 is proxied to the WordPress container on network `docker_wpsite`. Do not publish WordPress on host port 80 again. Certificates use TLS-ALPN because the HTTP-01 challenge is disabled. HTTP/3 is off.
+- Build on the server with `docker compose up -d --build`. Do not require `yarn docker:release` for this path.
+- Rsync without `--delete`. `settings-seed.json` and `accounts-seed.json` exist only on the server.
+- Never commit or rsync `.env`. Do not put `@`, `#`, or `/` in `POSTGRES_PASSWORD`.
+
+```bash
+rsync -av \
+  --exclude node_modules --exclude .svelte-kit --exclude build \
+  --exclude .git --exclude .env --exclude .env.local --exclude .env.* \
+  ./ root@68.183.185.48:/home/profit-monitor/
+ssh root@68.183.185.48 'cd /home/profit-monitor && docker compose up -d --build'
+```
+
+Confirm `https://profit.sumofx.co/api/health` returns healthy. After a domain or `ORIGIN` change, tell the user to allow `https://profit.sumofx.co` in the MT4/MT5 WebRequest list.
+
+Fallback, only when asked: `DEPLOY-TUNNEL.md` and `docker compose -f docker-compose.tunnel.yml up -d` after `docker compose down`. Keep `CLOUDFLARE_TUNNEL_TOKEN` in the server `.env`.

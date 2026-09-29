@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -21,21 +19,19 @@ services:
       - profit-monitor-network
 
   profit-monitor:
-    # Pulled from Docker Hub — build the image locally with `yarn docker:release`
-    # and push it, don't build on the server (no Dockerfile/source there).
+    build: .
     image: bonusnph/profit-monitor:latest
     container_name: profit-monitor-app
-    ports:
-      # Host port 3300 avoids the existing 80 / 8080 / 3306 containers on this server.
-      # Change "3300" on the left if you need a different host port.
-      - "3300:3000"
     environment:
-      - NODE_ENV=production
-      - PORT=3000
-      - HOST=0.0.0.0
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-profit}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-profit_monitor}
-      - SETTINGS_SEED_PATH=/app/settings-seed.json
-      - ACCOUNTS_SEED_PATH=/app/accounts-seed.json
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+      ORIGIN: ${ORIGIN:-https://profit.sumofx.co}
+      PROTOCOL_HEADER: x-forwarded-proto
+      HOST_HEADER: host
+      DATABASE_URL: postgresql://${POSTGRES_USER:-profit}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-profit_monitor}
+      SETTINGS_SEED_PATH: /app/settings-seed.json
+      ACCOUNTS_SEED_PATH: /app/accounts-seed.json
     env_file:
       - .env
     volumes:
@@ -54,26 +50,31 @@ services:
     networks:
       - profit-monitor-network
 
-  # Cloudflare Tunnel: exposes the app to your domain without opening any port
-  # on the host. Create the tunnel in the Cloudflare Zero Trust dashboard
-  # (Networks > Tunnels), copy its token into CLOUDFLARE_TUNNEL_TOKEN in .env,
-  # and set the tunnel's public hostname to point at service "profit-monitor",
-  # port 3000 (the internal docker network address, not localhost:3300).
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: profit-monitor-cloudflared
-    command: tunnel run
-    environment:
-      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
-    restart: unless-stopped
+  caddy:
+    image: caddy:2-alpine
+    container_name: profit-monitor-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
     depends_on:
       - profit-monitor
+    restart: unless-stopped
     networks:
       - profit-monitor-network
+      - wordpress
 
 volumes:
   postgres-data:
+  caddy-data:
+  caddy-config:
 
 networks:
   profit-monitor-network:
     driver: bridge
+  wordpress:
+    external: true
+    name: docker_wpsite

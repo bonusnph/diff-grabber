@@ -25,8 +25,9 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 sveltekit
+RUN apk add --no-cache wget \
+	&& addgroup --system --gid 1001 nodejs \
+	&& adduser --system --uid 1001 sveltekit
 
 # Copy built application
 COPY --from=builder --chown=sveltekit:nodejs /app/build ./build
@@ -35,8 +36,7 @@ COPY --from=builder --chown=sveltekit:nodejs /app/node_modules ./node_modules
 
 USER sveltekit
 
-# Internal container port. Map to a free host port at `docker run -p`
-# (server already has 80/8080/3306 in use, avoid those on the host side).
+# Internal container port. Caddy publishes 443 on the host. Do not publish 3000.
 EXPOSE 3000
 
 ENV PORT=3000

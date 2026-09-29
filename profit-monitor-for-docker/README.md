@@ -149,20 +149,20 @@ docker-compose up -d
 docker-compose --profile production up -d
 ```
 
-### Option 3: Docker Hub + Cloudflare Tunnel (Production)
+### Option 3: Caddy on the VPS (Production)
 
-Build the image locally, push it to Docker Hub, then pull and run it on any server — no build tools needed on the server itself:
+Rsync the source to the server and build there. Caddy serves `https://profit.sumofx.co`.
 
 ```bash
-# Local machine
-yarn docker:release   # multi-arch build (amd64 + arm64) + push to bonusnph/profit-monitor
-
-# Server
-docker compose pull
-docker compose up -d
+# From this folder. Do not delete server-only seed files.
+rsync -av \
+  --exclude node_modules --exclude .svelte-kit --exclude build \
+  --exclude .git --exclude .env --exclude .env.local --exclude .env.* \
+  ./ root@68.183.185.48:/home/profit-monitor/
+ssh root@68.183.185.48 'cd /home/profit-monitor && docker compose up -d --build'
 ```
 
-Full step-by-step guide (Docker Hub release, server setup, and mapping a domain via Cloudflare Tunnel) is in [`DEPLOY.md`](./DEPLOY.md).
+The full guide is in [`DEPLOY.md`](./DEPLOY.md). The previous Docker Hub + Cloudflare Tunnel flow is kept in [`DEPLOY-TUNNEL.md`](./DEPLOY-TUNNEL.md).
 
 ## Configuration
 

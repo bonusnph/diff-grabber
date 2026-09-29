@@ -1,0 +1,25 @@
+{
+	email bonusnph@gmail.com
+	auto_https disable_redirects
+	servers {
+		protocols h1 h2
+	}
+}
+
+http://profit.sumofx.co {
+	redir https://profit.sumofx.co{uri}
+}
+
+https://profit.sumofx.co {
+	tls {
+		issuer acme {
+			disable_http_challenge
+			email bonusnph@gmail.com
+		}
+	}
+	reverse_proxy profit-monitor:3000
+}
+
+:80 {
+	reverse_proxy wordpress:80
+}

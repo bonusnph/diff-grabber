@@ -1,21 +1,21 @@
 # Deploy Profit Monitor (Purinut)
 
-This folder deploys to a single VPS and is reached by IP over HTTPS. There is no domain and no Cloudflare tunnel.
+This folder deploys to a single VPS. The public site is `profit.sauichi.com` over HTTPS. DNS for `sauichi.com` is on Cloudflare. The `profit` record is DNS-only (not proxied), so Caddy can obtain and renew a Let's Encrypt certificate on the server.
 
 | Item | Value |
 | --- | --- |
-| Public URL | https://139.180.214.152 |
-| Watch page | https://139.180.214.152/watch |
+| Public URL | https://profit.sauichi.com |
+| Watch page | https://profit.sauichi.com/watch |
 | Server | `139.180.214.152` |
 | Path on server | `/opt/profit-monitor` |
-| TLS | Self-signed certificate with an IP SAN (public CAs do not issue certs for a raw IP) |
+| TLS | Let's Encrypt, issued by Caddy for `profit.sauichi.com` |
 
 ```
 local source → rsync to server → docker compose build → Caddy :443 → app :3000
                                          └── Postgres (internal only)
 ```
 
-Browsers will warn that the certificate is untrusted. That is expected for HTTPS on a raw IP. Accept the warning once to continue.
+Do not turn the Cloudflare proxy (orange cloud) on for `profit`. HTTP-01 renewal needs port 80 to reach this server directly. The zone SSL mode stays `full` because `https://sauichi.com` currently fails at the apex origin.
 
 ## 1. Files that matter
 
@@ -23,7 +23,7 @@ Browsers will warn that the certificate is untrusted. That is expected for HTTPS
 | --- | --- |
 | `Dockerfile` | Builds the SvelteKit Node server |
 | `docker-compose.yml` | App + Postgres + Caddy |
-| `Caddyfile` | HTTP → HTTPS redirect and reverse proxy |
+| `Caddyfile` | Automatic HTTPS and reverse proxy for `profit.sauichi.com` |
 | `.env` | `POSTGRES_*` and `ORIGIN` (do not commit) |
 
 Postgres is not published to the host. The app is not published either. Only ports `80` and `443` are open.
@@ -48,6 +48,14 @@ ufw allow 443/tcp
 ufw --force enable
 ```
 
+In Cloudflare DNS for `sauichi.com`, add an A record:
+
+| Field | Value |
+| --- | --- |
+| Name | `profit` |
+| IPv4 | `139.180.214.152` |
+| Proxy | DNS only |
+
 ## 3. Copy the project and start it
 
 From your machine, in `profit-monitor-for-docker-purinut`:
@@ -70,22 +78,10 @@ On the server, create `/opt/profit-monitor/.env`:
 POSTGRES_USER=profit
 POSTGRES_PASSWORD=choose-a-strong-password
 POSTGRES_DB=profit_monitor
-ORIGIN=https://139.180.214.152
+ORIGIN=https://profit.sauichi.com
 ```
 
-Create a self-signed cert for the server IP:
-
-```bash
-mkdir -p /opt/profit-monitor/certs
-openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-  -keyout /opt/profit-monitor/certs/key.pem \
-  -out /opt/profit-monitor/certs/cert.pem \
-  -subj "/CN=139.180.214.152" \
-  -addext "subjectAltName=IP:139.180.214.152,IP:127.0.0.1"
-chmod 600 /opt/profit-monitor/certs/key.pem
-```
-
-Then build and start:
+Then build and start. Caddy requests the certificate on startup, so the DNS record must already point at this server.
 
 ```bash
 cd /opt/profit-monitor
@@ -96,7 +92,7 @@ docker compose ps
 Check from the server:
 
 ```bash
-curl -k https://127.0.0.1/api/health
+curl -fsS https://profit.sauichi.com/api/health
 ```
 
 You should see `{"status":"healthy", ...}`.
@@ -117,33 +113,31 @@ rsync -av --delete \
 ssh root@139.180.214.152 'cd /opt/profit-monitor && docker compose up -d --build'
 ```
 
-Postgres data stays in the `postgres-data` volume across rebuilds.
+Postgres data stays in the `postgres-data` volume across rebuilds. Keep `ORIGIN=https://profit.sauichi.com` in the server `.env`.
 
 ## 5. EA webhook
 
 In the MT4/MT5 EA, allow WebRequest for:
 
 ```
-https://139.180.214.152
+https://profit.sauichi.com
 ```
 
 Webhook URL:
 
 ```
-https://139.180.214.152/api/webhook
+https://profit.sauichi.com/api/webhook
 ```
-
-MetaTrader may reject the self-signed certificate. If the EA cannot POST, install the Caddy local CA on that Windows machine or temporarily test with a trusted cert.
 
 ## 6. Troubleshooting
 
 | Problem | What to check |
 | --- | --- |
-| Browser certificate warning | Expected. Click through once. |
-| `https://139.180.214.152` times out | `ufw status`, `docker compose ps`, cloud/VPS firewall for 80/443 |
+| Certificate is not issued | `dig +short profit.sauichi.com` must be `139.180.214.152`, and the Cloudflare proxy must be off |
+| `https://profit.sauichi.com` times out | `ufw status`, `docker compose ps`, cloud/VPS firewall for 80/443 |
 | Health is unhealthy | `docker compose logs profit-monitor` and `docker compose logs postgres` |
 | App build fails on the server | Confirm the full source (including `Dockerfile`) is in `/opt/profit-monitor` |
-| EA cannot send data | Allow the IP in WebRequest and confirm the self-signed cert is accepted |
+| EA cannot send data | Allow `https://profit.sauichi.com` in WebRequest |
 
 ## 7. Common commands
 

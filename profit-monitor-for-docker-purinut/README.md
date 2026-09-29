@@ -162,7 +162,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Full step-by-step guide (Docker Hub release, server setup, and mapping a domain via Cloudflare Tunnel) is in [`DEPLOY.md`](./DEPLOY.md).
+Full step-by-step guide for the production server (`https://profit.sauichi.com`) is in [`DEPLOY.md`](./DEPLOY.md).
 
 ## Configuration
 
