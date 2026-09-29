@@ -1778,8 +1778,14 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							<span class="tabular-nums shrink-0" title="Next refresh">{String(countdownSeconds).padStart(2, '0')}s</span>
 						</div>
 						{#if quickThb}
-							<span class="whitespace-nowrap font-semibold text-[#ffcc33] tabular-nums" aria-live="polite">
-								TEMP THB · USD in {quickThbLeft}s
+							<span
+								class="whitespace-nowrap font-semibold text-[#ffcc33] tabular-nums"
+								aria-live="polite"
+								title={shownFx.displayMode === 'live+buffer'
+									? `USD → THB @ ${shownFx.rawRate} − ${shownFx.buffer} = ${shownFx.rate} (${shownFx.source})`
+									: `USD → THB @ ${shownFx.rate} (${shownFx.source})`}
+							>
+								TEMP THB · {formatNumber(shownFx.rate, false)} · {shownFx.displayMode} · USD in {quickThbLeft}s
 							</span>
 						{:else if displayCurrency !== 'USD'}
 							<span
@@ -1879,11 +1885,6 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			<p class="text-xs font-semibold tracking-[0.14em] text-[#9a9a9a] mb-1">
 				{snapshot ? 'SNAPSHOT Δ' : 'P/L'}
 			</p>
-			{#if quickThb}
-				<p class="text-xs font-semibold tracking-[0.08em] text-[#ffcc33] mb-2 tabular-nums" aria-live="polite">
-					TEMP THB · USD in {quickThbLeft}s
-				</p>
-			{/if}
 			<div class="flex items-center gap-3 sm:gap-4">
 				<CurrencyFlag currency={displayCurrency} size={28} />
 				<div
@@ -1919,7 +1920,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							<span>
 								P/L
 								<span class={Math.abs(adjustedProfitLoss) < 0.005 ? 'text-[#ececec]' : adjustedProfitLoss >= 0 ? 'fac-plus' : 'fac-minus'}>
-									{bookValue((adjustedProfitLoss >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLoss), true)}
+									{bookValue((adjustedProfitLoss >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLoss, displayRate > 0), true)}
 								</span>
 								{#if displayCurrency !== 'USD' && showUsdEquiv}
 									{usdParen(adjustedProfitLoss, adjustedProfitLoss >= 0.005 ? '+' : '', true)}
@@ -2262,7 +2263,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 										<div
 											class="col-span-3 grid grid-cols-subgrid items-center gap-x-2"
 											title={revealBookValues
-												? `${account.broker_name} equity ${formatNumber(account.latest_equity)} · target ${formatNumber(getUnitTargetEquity(unit))} · warning ${formatNumber(getWarningThreshold(unitInitialCapitals[unit] ?? 0, unitWarningEquityPercentages[unit]))}`
+												? `${account.broker_name} equity ${formatNumber(account.latest_equity, displayRate > 0)} · target ${formatNumber(getUnitTargetEquity(unit), displayRate > 0)} · warning ${formatNumber(getWarningThreshold(unitInitialCapitals[unit] ?? 0, unitWarningEquityPercentages[unit]), displayRate > 0)}`
 												: brokerLabel}
 										>
 											<span class="min-w-0 truncate text-[10px] leading-none text-[#ececec]">{brokerLabel}</span>
@@ -4026,7 +4027,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						{snapshot ? 'Reset snapshot?' : 'Take snapshot?'}
 					</h3>
 					<p class="text-sm text-[#ececec] mb-3">
-						Current P/L {(adjustedProfitLoss >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLoss)}
+						Current P/L {(adjustedProfitLoss >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLoss, displayRate > 0)}
 					</p>
 					<label class="block text-[11px] text-[#ececec] mb-4">
 						Amount
@@ -4034,7 +4035,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							type="text"
 							inputmode="decimal"
 							bind:value={snapshotAmountInput}
-							placeholder={(adjustedProfitLoss >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLoss)}
+							placeholder={(adjustedProfitLoss >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLoss, displayRate > 0)}
 							disabled={snapshotLoading}
 							class="mt-1 w-full min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm tabular-nums focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
 						/>

@@ -357,7 +357,15 @@
 		<div class="hero">
 			<p class="mode">{snapshot ? 'SNAPSHOT Δ' : 'P/L'}</p>
 			{#if quickThb}
-				<p class="meta temp" aria-live="polite">TEMP THB · {quickThbLeft}s</p>
+				<p
+					class="meta temp"
+					aria-live="polite"
+					title={shownFx.displayMode === 'live+buffer'
+						? `USD → THB @ ${shownFx.rawRate} − ${shownFx.buffer} = ${shownFx.rate} (${shownFx.source})`
+						: `USD → THB @ ${shownFx.rate} (${shownFx.source})`}
+				>
+					TEMP THB · {formatPlain(shownFx.rate)} · {shownFx.displayMode} · {quickThbLeft}s
+				</p>
 			{/if}
 			<div class="amount {tone}" bind:this={amountEl}>
 				<span class="flag">
