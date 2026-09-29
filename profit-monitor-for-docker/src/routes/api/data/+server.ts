@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { storage } from '$lib/storage-postgres.js';
-import { resolveFxQuote } from '$lib/fx-rate.js';
+import { resolveFxQuotes } from '$lib/fx-rate.js';
 
 export const GET: RequestHandler = async () => {
 	try {
@@ -20,7 +20,7 @@ export const GET: RequestHandler = async () => {
 		const unitInitialCapitals = await storage.getUnitInitialCapitals();
 		const unitWarningEquityPercentages = await storage.getUnitWarningEquityPercentages();
 		const currency = await storage.getCurrencySettings();
-		const fx = await resolveFxQuote(currency);
+		const { fx, thb } = await resolveFxQuotes(currency);
 		
 		const currentAdjusted = (() => {
 			const totalWaitingWD = Object.values(unitWithdrawals || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
@@ -52,7 +52,8 @@ export const GET: RequestHandler = async () => {
 			unitInitialCapitals,
 			unitWarningEquityPercentages,
 			currency,
-			fx
+			fx,
+			thb
 		});
 		
 	} catch (error) {

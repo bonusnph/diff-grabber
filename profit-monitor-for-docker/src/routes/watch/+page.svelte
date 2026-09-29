@@ -4,7 +4,9 @@
 		convertUsd,
 		defaultCurrencySettings,
 		identityFxQuote,
-		normalizeCurrencySettings
+		makeFxQuote,
+		normalizeCurrencySettings,
+		normalizeQuickThbSeconds
 	} from '$lib/currency.js';
 	import CurrencyFlag from '$lib/CurrencyFlag.svelte';
 	import { listUnitDiffLanes } from '$lib/pairs.js';
@@ -28,6 +30,7 @@
 		unitWarningEquityPercentages?: Record<string, number>;
 		currency?: unknown;
 		fx?: FxQuote | null;
+		thb?: FxQuote | null;
 		snapshot?: WatchSnapshot | null;
 		snapshotDelta?: number | null;
 	};
@@ -47,9 +50,17 @@
 	let latestUpdate = 0;
 	let currencySettings: CurrencySettings = defaultCurrencySettings();
 	let fxQuote: FxQuote = identityFxQuote(currencySettings);
+	let thbQuote: FxQuote = makeFxQuote(
+		{ ...defaultCurrencySettings(), currency: 'THB' },
+		defaultCurrencySettings().fixedRate,
+		'fixed'
+	);
+	let quickThb = false;
+	let quickThbLeft = 0;
+	let quickThbTimer: ReturnType<typeof setInterval> | null = null;
 	let fetchInFlight: Promise<void> | null = null;
 	let countdownId: ReturnType<typeof setInterval> | null = null;
-	let amountEl: HTMLParagraphElement | null = null;
+	let amountEl: HTMLElement | null = null;
 	let countdownSeconds = 0;
 	let lastCountdown = 0;
 	let fetchedThisCycle = false;
@@ -57,8 +68,35 @@
 	let resumeLoading = false;
 	let refreshing = false;
 
-	$: displayRate = currencySettings.currency === 'USD' ? 1 : fxQuote.rate;
-	$: displayCurrency = currencySettings.currency;
+	$: displayCurrency = quickThb ? 'THB' : currencySettings.currency;
+	$: shownFx = quickThb ? thbQuote : fxQuote;
+	$: displayRate = displayCurrency === 'USD' ? 1 : shownFx.rate > 0 ? shownFx.rate : 1;
+
+	function clearQuickThb() {
+		quickThb = false;
+		quickThbLeft = 0;
+		if (quickThbTimer) {
+			clearInterval(quickThbTimer);
+			quickThbTimer = null;
+		}
+	}
+
+	function quickSwitchThb() {
+		if (currencySettings.currency !== 'USD') return;
+		const seconds = normalizeQuickThbSeconds(currencySettings.quickThbSeconds);
+		const endsAt = Date.now() + seconds * 1000;
+		quickThb = true;
+		quickThbLeft = seconds;
+		if (quickThbTimer) clearInterval(quickThbTimer);
+		quickThbTimer = setInterval(() => {
+			const left = Math.ceil((endsAt - Date.now()) / 1000);
+			if (left <= 0) {
+				clearQuickThb();
+				return;
+			}
+			if (left !== quickThbLeft) quickThbLeft = left;
+		}, 200);
+	}
 	$: heroValue = snapshot ? (snapshotDelta ?? 0) : adjusted;
 	$: shown = formatAmount(heroValue, displayRate);
 	$: amountParts = splitAmount(shown);
@@ -156,6 +194,7 @@
 		currencySettings = payload.currency
 			? normalizeCurrencySettings(payload.currency)
 			: defaultCurrencySettings();
+		if (currencySettings.currency !== 'USD') clearQuickThb();
 		if (payload.fx && typeof payload.fx.rate === 'number' && payload.fx.rate > 0) {
 			fxQuote = {
 				...identityFxQuote(currencySettings),
@@ -163,6 +202,17 @@
 			};
 		} else {
 			fxQuote = identityFxQuote(currencySettings);
+		}
+		if (payload.thb && typeof payload.thb.rate === 'number' && payload.thb.rate > 0) {
+			thbQuote = payload.thb;
+		} else if (currencySettings.currency === 'THB') {
+			thbQuote = fxQuote;
+		} else {
+			thbQuote = makeFxQuote(
+				{ ...currencySettings, currency: 'THB' },
+				currencySettings.fixedRate,
+				'fixed'
+			);
 		}
 		adjusted = computeAdjustedProfitLoss(
 			payload.stats?.profit_loss || 0,
@@ -290,6 +340,7 @@
 
 	onDestroy(() => {
 		stopCountdown();
+		clearQuickThb();
 	});
 </script>
 
@@ -305,14 +356,28 @@
 	{:else}
 		<div class="hero">
 			<p class="mode">{snapshot ? 'SNAPSHOT Δ' : 'P/L'}</p>
-			<p class="amount {tone}" bind:this={amountEl}>
+			{#if quickThb}
+				<p class="meta temp" aria-live="polite">TEMP THB · {quickThbLeft}s</p>
+			{/if}
+			<div class="amount {tone}" bind:this={amountEl}>
 				<span class="flag">
 					<CurrencyFlag currency={displayCurrency} size={28} />
 				</span>
-				<span class="num">
-					<span class="int">{amountParts.whole}</span><span class="frac">{amountParts.frac}</span>
-				</span>
-			</p>
+				{#if currencySettings.currency === 'USD'}
+					<button
+						type="button"
+						class="num"
+						on:click={quickSwitchThb}
+						aria-label={`Show Thai baht for ${normalizeQuickThbSeconds(currencySettings.quickThbSeconds)} seconds`}
+					>
+						<span class="int">{amountParts.whole}</span><span class="frac">{amountParts.frac}</span>
+					</button>
+				{:else}
+					<span class="num">
+						<span class="int">{amountParts.whole}</span><span class="frac">{amountParts.frac}</span>
+					</span>
+				{/if}
+			</div>
 			{#if snapshot}
 				<p class="meta trail">
 					<span>P/L <span class={Math.abs(adjusted) < 0.005 ? 'flat' : adjusted >= 0 ? 'plus' : 'minus'}>{formatAmount(adjusted, displayRate)}</span></span>
@@ -402,6 +467,18 @@
 		min-width: 0;
 	}
 
+	button.num {
+		margin: 0;
+		padding: 0;
+		border: 0;
+		background: transparent;
+		color: inherit;
+		font: inherit;
+		letter-spacing: inherit;
+		line-height: inherit;
+		cursor: pointer;
+	}
+
 	.frac {
 		font-size: 0.38em;
 		font-weight: 600;
@@ -426,6 +503,11 @@
 		display: block;
 		width: 100%;
 		height: 100%;
+	}
+
+	.temp {
+		color: #ffcc33;
+		font-weight: 700;
 	}
 
 	.mode {

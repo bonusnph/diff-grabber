@@ -4,7 +4,7 @@ import {
 	makeFxQuote,
 	normalizeCurrencySettings
 } from './currency.js';
-import type { FxQuote } from './types.js';
+import type { CurrencySettings, FxQuote } from './types.js';
 
 const LIVE_TTL_MS = 15 * 60 * 1000;
 const FRANKFURTER_URL = 'https://api.frankfurter.dev/v1/latest?base=USD&symbols=THB';
@@ -68,11 +68,7 @@ async function fetchLiveUsdThb(): Promise<{ rate: number; source: string; fetche
 	return { ...live, fetchedAt };
 }
 
-export async function resolveFxQuote(rawSettings: unknown): Promise<FxQuote> {
-	const settings = normalizeCurrencySettings(rawSettings);
-	if (settings.currency === 'USD') {
-		return identityFxQuote(settings);
-	}
+async function quoteInCurrency(settings: CurrencySettings): Promise<FxQuote> {
 	if (settings.rateMode === 'fixed') {
 		return makeFxQuote(settings, settings.fixedRate, 'fixed');
 	}
@@ -94,5 +90,19 @@ export async function resolveFxQuote(rawSettings: unknown): Promise<FxQuote> {
 			cachedLive?.fetchedAt || new Date().toISOString()
 		);
 	}
+}
+
+export async function resolveFxQuotes(rawSettings: unknown): Promise<{ fx: FxQuote; thb: FxQuote }> {
+	const settings = normalizeCurrencySettings(rawSettings);
+	const thb = await quoteInCurrency({ ...settings, currency: 'THB' });
+	if (settings.currency === 'USD') {
+		return { fx: identityFxQuote(settings), thb };
+	}
+	return { fx: thb, thb };
+}
+
+export async function resolveFxQuote(rawSettings: unknown): Promise<FxQuote> {
+	const { fx } = await resolveFxQuotes(rawSettings);
+	return fx;
 }
 

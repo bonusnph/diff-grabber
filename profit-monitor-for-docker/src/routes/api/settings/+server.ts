@@ -5,7 +5,7 @@ import { schedulePlAlertEvaluation } from '$lib/pl-alerts.js';
 import { normalizePlAlertSettings } from '$lib/pl-alert-model.js';
 import { normalizeCurrencySettings } from '$lib/currency.js';
 import { normalizeExternalWallet } from '$lib/external-wallet-model.js';
-import { resolveFxQuote } from '$lib/fx-rate.js';
+import { resolveFxQuotes } from '$lib/fx-rate.js';
 
 function normalizeUnitNotes(raw: unknown): Record<number, number> | null {
 	if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
@@ -21,6 +21,7 @@ function normalizeUnitNotes(raw: unknown): Record<number, number> | null {
 
 async function settingsPayload() {
 	const currency = await storage.getCurrencySettings();
+	const { fx, thb } = await resolveFxQuotes(currency);
 	return {
 		initial_capital: await storage.getInitialCapital(),
 		unit_initial_capitals: await storage.getUnitInitialCapitals(),
@@ -36,7 +37,8 @@ async function settingsPayload() {
 		pl_alert_state: await storage.getPlAlertState(),
 		equity_warning_state: await storage.getEquityWarningState(),
 		currency,
-		fx: await resolveFxQuote(currency)
+		fx,
+		thb
 	};
 }
 

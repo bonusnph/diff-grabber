@@ -90,6 +90,7 @@ export interface CurrencySettings {
 	rateMode: FxRateMode;
 	fixedRate: number;
 	liveBuffer: number;
+	quickThbSeconds: number;
 }
 
 export interface FxQuote {

@@ -14,7 +14,7 @@
 		isLowEquityWarning as isLowEquityByValues,
 		normalizeEquityWarningState
 	} from '$lib/equity-warning-model.js';
-	import { convertUsd, defaultCurrencySettings, identityFxQuote, normalizeCurrencySettings } from '$lib/currency.js';
+	import { convertUsd, defaultCurrencySettings, identityFxQuote, makeFxQuote, normalizeCurrencySettings, normalizeQuickThbSeconds } from '$lib/currency.js';
 	import CurrencyFlag from '$lib/CurrencyFlag.svelte';
 	import {
 		computeUnitDelta,
@@ -93,6 +93,14 @@
 	let currencySettings: CurrencySettings = defaultCurrencySettings();
 	let draftCurrency: CurrencySettings = defaultCurrencySettings();
 	let fxQuote: FxQuote = identityFxQuote(defaultCurrencySettings());
+	let thbQuote: FxQuote = makeFxQuote(
+		{ ...defaultCurrencySettings(), currency: 'THB' },
+		defaultCurrencySettings().fixedRate,
+		'fixed'
+	);
+	let quickThb = false;
+	let quickThbLeft = 0;
+	let quickThbTimer: ReturnType<typeof setInterval> | null = null;
 	let resettingAlert: 'profit' | 'loss' | null = null;
 	let resettingEquityUnit: number | null = null;
 	const REVEAL_BOOK_KEY = 'pm-reveal-book';
@@ -172,8 +180,35 @@
 	})();
 
 	$: appReady = settingsLoaded;
-	$: displayRate = currencySettings.currency === 'USD' ? 1 : fxQuote.rate;
-	$: displayCurrency = currencySettings.currency;
+	$: displayCurrency = quickThb ? 'THB' : currencySettings.currency;
+	$: shownFx = quickThb ? thbQuote : fxQuote;
+	$: displayRate = displayCurrency === 'USD' ? 1 : shownFx.rate > 0 ? shownFx.rate : 1;
+
+	function clearQuickThb() {
+		quickThb = false;
+		quickThbLeft = 0;
+		if (quickThbTimer) {
+			clearInterval(quickThbTimer);
+			quickThbTimer = null;
+		}
+	}
+
+	function quickSwitchThb() {
+		if (currencySettings.currency !== 'USD') return;
+		const seconds = normalizeQuickThbSeconds(currencySettings.quickThbSeconds);
+		const endsAt = Date.now() + seconds * 1000;
+		quickThb = true;
+		quickThbLeft = seconds;
+		if (quickThbTimer) clearInterval(quickThbTimer);
+		quickThbTimer = setInterval(() => {
+			const left = Math.ceil((endsAt - Date.now()) / 1000);
+			if (left <= 0) {
+				clearQuickThb();
+				return;
+			}
+			if (left !== quickThbLeft) quickThbLeft = left;
+		}, 200);
+	}
 
 	$: uniqueBrokersList = (() => {
 		const counts = new Map<string, number>();
@@ -409,7 +444,7 @@
 	let snapshotDelta: number | null = null;
 	$: heroValue = snapshot ? (snapshotDelta ?? 0) : adjustedProfitLoss;
 	$: heroAmountShown = bookValue(
-		(heroValue >= 0.005 ? '+' : '') + formatNumber(heroValue),
+		(heroValue >= 0.005 ? '+' : '') + formatNumber(heroValue, displayRate > 0),
 		true
 	);
 	$: heroAmountParts = splitAmount(heroAmountShown);
@@ -1321,10 +1356,11 @@
         );
     }
 
-	function applyCurrencyPayload(data: { currency?: unknown; fx?: FxQuote | null }) {
+	function applyCurrencyPayload(data: { currency?: unknown; fx?: FxQuote | null; thb?: FxQuote | null }) {
 		if (data.currency) {
 			currencySettings = normalizeCurrencySettings(data.currency);
 		}
+		if (currencySettings.currency !== 'USD') clearQuickThb();
 		if (data.fx && typeof data.fx.rate === 'number' && data.fx.rate > 0) {
 			fxQuote = {
 				...identityFxQuote(currencySettings),
@@ -1335,6 +1371,17 @@
 			};
 		} else {
 			fxQuote = identityFxQuote(currencySettings);
+		}
+		if (data.thb && typeof data.thb.rate === 'number' && data.thb.rate > 0) {
+			thbQuote = data.thb;
+		} else if (currencySettings.currency === 'THB') {
+			thbQuote = fxQuote;
+		} else {
+			thbQuote = makeFxQuote(
+				{ ...currencySettings, currency: 'THB' },
+				currencySettings.fixedRate,
+				'fixed'
+			);
 		}
 	}
 
@@ -1567,6 +1614,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 
 	onDestroy(() => {
 		stopPolling();
+		clearQuickThb();
 	});
 
 	async function saveSettings() {
@@ -1729,37 +1777,24 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							{/if}
 							<span class="tabular-nums shrink-0" title="Next refresh">{String(countdownSeconds).padStart(2, '0')}s</span>
 						</div>
-						{#if displayCurrency !== 'USD'}
+						{#if quickThb}
+							<span class="whitespace-nowrap font-semibold text-[#ffcc33] tabular-nums" aria-live="polite">
+								TEMP THB · USD in {quickThbLeft}s
+							</span>
+						{:else if displayCurrency !== 'USD'}
 							<span
 								class="whitespace-nowrap"
-								title={fxQuote.displayMode === 'live+buffer'
-									? `USD → ${displayCurrency} @ ${fxQuote.rawRate} − ${fxQuote.buffer} = ${fxQuote.rate} (${fxQuote.source})`
-									: `USD → ${displayCurrency} @ ${fxQuote.rate} (${fxQuote.source})`}
+								title={shownFx.displayMode === 'live+buffer'
+									? `USD → ${displayCurrency} @ ${shownFx.rawRate} − ${shownFx.buffer} = ${shownFx.rate} (${shownFx.source})`
+									: `USD → ${displayCurrency} @ ${shownFx.rate} (${shownFx.source})`}
 							>
-								{displayCurrency} · {formatNumber(fxQuote.rate, false)} · {fxQuote.displayMode}
+								{displayCurrency} · {formatNumber(shownFx.rate, false)} · {shownFx.displayMode}
 							</span>
 						{/if}
 					{/if}
 				</div>
 			</div>
 			<div class="flex items-center gap-1.5 shrink-0">
-				{#if displayCurrency !== 'USD'}
-					<button
-						on:click={() => setShowUsdEquiv(!showUsdEquiv)}
-						class="fac-ghost fac-icon"
-						class:fac-on={!showUsdEquiv}
-						title={showUsdEquiv ? 'Hide USD amounts' : 'Show USD amounts'}
-						aria-label={showUsdEquiv ? 'Hide USD amounts' : 'Show USD amounts'}
-						aria-pressed={!showUsdEquiv}
-					>
-						<span class="relative text-[10px] font-semibold leading-none tracking-tight">
-							USD
-							{#if !showUsdEquiv}
-								<span class="absolute -left-0.5 -right-0.5 top-1/2 h-px bg-current"></span>
-							{/if}
-						</span>
-					</button>
-				{/if}
 				<button
 					on:click={() => setRevealBookValues(!revealBookValues)}
 					class="fac-ghost fac-icon"
@@ -1844,14 +1879,30 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			<p class="text-xs font-semibold tracking-[0.14em] text-[#9a9a9a] mb-1">
 				{snapshot ? 'SNAPSHOT Δ' : 'P/L'}
 			</p>
+			{#if quickThb}
+				<p class="text-xs font-semibold tracking-[0.08em] text-[#ffcc33] mb-2 tabular-nums" aria-live="polite">
+					TEMP THB · USD in {quickThbLeft}s
+				</p>
+			{/if}
 			<div class="flex items-center gap-3 sm:gap-4">
 				<CurrencyFlag currency={displayCurrency} size={28} />
-				<p
+				<div
 					class="fac-display text-6xl sm:text-7xl lg:text-[7rem] font-extrabold tracking-tight leading-none tabular-nums flex items-baseline gap-[0.18em] flex-wrap {!isDataComplete ? 'opacity-60' : ''} {Math.abs(heroValue) < 0.005 ? 'text-[#ececec]' : heroValue >= 0 ? 'fac-plus' : 'fac-minus'}"
 				>
-					<span class="inline-flex items-baseline whitespace-nowrap">
-						<span>{heroAmountParts.whole}</span><span class="pl-hero-frac">{heroAmountParts.frac}</span>
-					</span>
+					{#if currencySettings.currency === 'USD'}
+						<button
+							type="button"
+							class="inline-flex items-baseline whitespace-nowrap appearance-none bg-transparent p-0 border-0 font-[inherit] text-inherit tracking-inherit leading-none cursor-pointer"
+							on:click={quickSwitchThb}
+							aria-label={`Show Thai baht for ${normalizeQuickThbSeconds(currencySettings.quickThbSeconds)} seconds`}
+						>
+							<span>{heroAmountParts.whole}</span><span class="pl-hero-frac">{heroAmountParts.frac}</span>
+						</button>
+					{:else}
+						<span class="inline-flex items-baseline whitespace-nowrap">
+							<span>{heroAmountParts.whole}</span><span class="pl-hero-frac">{heroAmountParts.frac}</span>
+						</span>
+					{/if}
 					{#if displayCurrency !== 'USD' && showUsdEquiv}
 						<span class="text-[0.28em] sm:text-[0.24em] lg:text-[0.22em] font-semibold tracking-normal text-[#ececec]">
 							{usdParen(heroValue, heroValue >= 0.005 ? '+' : '', true)}
@@ -1870,13 +1921,16 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 								<span class={Math.abs(adjustedProfitLoss) < 0.005 ? 'text-[#ececec]' : adjustedProfitLoss >= 0 ? 'fac-plus' : 'fac-minus'}>
 									{bookValue((adjustedProfitLoss >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLoss), true)}
 								</span>
+								{#if displayCurrency !== 'USD' && showUsdEquiv}
+									{usdParen(adjustedProfitLoss, adjustedProfitLoss >= 0.005 ? '+' : '', true)}
+								{/if}
 							</span>
 							<span class={revealBookValues && Math.abs(adjustedProfitLossPercent) >= 0.005 ? (adjustedProfitLossPercent >= 0 ? 'fac-plus' : 'fac-minus') : 'text-[#ececec]'}>
 								({bookValue((adjustedProfitLossPercent >= 0.005 ? '+' : '') + formatNumber(adjustedProfitLossPercent, false), revealBookValues)}%)
 							</span>
 						</span>
 					{/if}
-				</p>
+				</div>
 			</div>
 			{#if totalWaitingWD !== 0 || totalDeposits !== 0}
 				<p class="text-sm mt-2 tracking-tight text-[#ececec] flex flex-wrap items-center gap-x-4 gap-y-1">
@@ -2928,6 +2982,29 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                                 THB
                             </button>
                         </div>
+                        {#if draftCurrency.currency !== 'USD'}
+                            <div class="flex flex-wrap items-center gap-2 mb-3">
+                                <span class="text-sm text-[#ececec]">USD reference</span>
+                                <button
+                                    type="button"
+                                    class="fac-ghost text-xs"
+                                    class:fac-on={showUsdEquiv}
+                                    on:click={() => setShowUsdEquiv(true)}
+                                    aria-pressed={showUsdEquiv}
+                                >
+                                    Show
+                                </button>
+                                <button
+                                    type="button"
+                                    class="fac-ghost text-xs"
+                                    class:fac-on={!showUsdEquiv}
+                                    on:click={() => setShowUsdEquiv(false)}
+                                    aria-pressed={!showUsdEquiv}
+                                >
+                                    Hide
+                                </button>
+                            </div>
+                        {/if}
                         <div class="flex flex-wrap items-center gap-2 mb-3">
                             <button
                                 type="button"
@@ -2981,10 +3058,30 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                                 class="w-28 border border-stone-600 bg-stone-700 text-[#f5f5f5] px-2 py-1 text-right focus:ring-2 focus:ring-[#f5f5f5] focus:border-[#f5f5f5] disabled:opacity-50"
                                 aria-label="Live rate buffer subtracted from USD to THB"
                             />
-                            <span class="text-sm text-[#ececec]">subtracted from live rate</span>
-                        </div>
-                        <p class="text-xs text-[#ececec]">
-                            Default display is USD. Account values stay stored in USD; the dashboard converts for viewing.
+							<span class="text-sm text-[#ececec]">subtracted from live rate</span>
+						</div>
+						<div class="flex flex-wrap items-center gap-2 mb-3">
+							<span class="text-sm text-[#ececec]">Quick THB</span>
+							<input
+								type="number"
+								min="1"
+								max="60"
+								step="1"
+								value={draftCurrency.quickThbSeconds}
+								on:change={(e) => {
+									draftCurrency = {
+										...draftCurrency,
+										quickThbSeconds: normalizeQuickThbSeconds((e.target as HTMLInputElement).value)
+									};
+								}}
+								class="w-28 border border-stone-600 bg-stone-700 text-[#f5f5f5] px-2 py-1 text-right focus:ring-2 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+								aria-label="Seconds to preview Thai baht"
+							/>
+							<span class="text-sm text-[#ececec]">seconds, then back to USD</span>
+						</div>
+						<p class="text-xs text-[#ececec]">
+							Default display is USD. Account values stay stored in USD; the dashboard converts for viewing.
+							Click the hero amount to preview THB, then return to USD after the Quick THB seconds (1–60).
                             {#if draftCurrency.rateMode === 'live'}
                                 Live rate uses Frankfurter (no signup), with open.er-api as fallback.
                                 Buffer {formatNumber(draftCurrency.liveBuffer, false)} turns the mode into {draftCurrency.liveBuffer > 0 ? 'live+buffer' : 'live'}.

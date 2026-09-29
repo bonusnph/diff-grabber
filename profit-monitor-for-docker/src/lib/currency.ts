@@ -1,13 +1,23 @@
 import type { CurrencySettings, DisplayCurrency, FxDisplayMode, FxQuote, FxRateMode } from './types.js';
 
 export const DEFAULT_FIXED_USDTHB = 31;
+export const DEFAULT_QUICK_THB_SECONDS = 5;
+export const MIN_QUICK_THB_SECONDS = 1;
+export const MAX_QUICK_THB_SECONDS = 60;
+
+export function normalizeQuickThbSeconds(raw: unknown): number {
+	const parsed = Math.round(Number(raw));
+	if (!Number.isFinite(parsed)) return DEFAULT_QUICK_THB_SECONDS;
+	return Math.min(MAX_QUICK_THB_SECONDS, Math.max(MIN_QUICK_THB_SECONDS, parsed));
+}
 
 export function defaultCurrencySettings(): CurrencySettings {
 	return {
 		currency: 'USD',
 		rateMode: 'fixed',
 		fixedRate: DEFAULT_FIXED_USDTHB,
-		liveBuffer: 0
+		liveBuffer: 0,
+		quickThbSeconds: DEFAULT_QUICK_THB_SECONDS
 	};
 }
 
@@ -22,7 +32,13 @@ export function normalizeCurrencySettings(raw: unknown): CurrencySettings {
 		Number.isFinite(parsedRate) && parsedRate > 0 ? parsedRate : DEFAULT_FIXED_USDTHB;
 	const parsedBuffer = Number(value.liveBuffer);
 	const liveBuffer = Number.isFinite(parsedBuffer) && parsedBuffer > 0 ? parsedBuffer : 0;
-	return { currency, rateMode, fixedRate, liveBuffer };
+	return {
+		currency,
+		rateMode,
+		fixedRate,
+		liveBuffer,
+		quickThbSeconds: normalizeQuickThbSeconds(value.quickThbSeconds)
+	};
 }
 
 export function fxDisplayMode(settings: CurrencySettings): FxDisplayMode {
