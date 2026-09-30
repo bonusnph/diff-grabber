@@ -143,11 +143,11 @@ input int               I_DIFF_CLOSE_COOLDOWN_SEC = 300;            // Base dela
 int               I_DIFF_AVG_PERIOD = 9;                  // EMA period for AVG mode
 bool              I_DIFF_USE_PREFILTER_MEDIAN = true;     // Median filter before EMA (AVG mode)
 int               I_DIFF_PREFILTER_WINDOW = 3;            // Median window (odd, >=3)
-int               I_DIFF_HYSTERESIS_PTS = 0;                // Extra points on open threshold (AVG mode)
-int               I_DIFF_EPSILON_PTS = 1;                   // Extra margin for real-diff confirmation
-bool              I_DIFF_REAL_CONFIRM = true;             // After AVG trigger, require raw diff confirmation
-int               I_DIFF_CONFIRM_TICKS = 2;                 // Ticks in a row for confirmation
-int               I_DIFF_CONFIRM_TIMEOUT_MS = 300;        // Abandon pending confirm after (ms)
+input int               I_DIFF_HYSTERESIS_PTS = 0;                // Extra points on open threshold (AVG mode)
+input int               I_DIFF_EPSILON_PTS = 1;                   // Extra margin for real-diff confirmation
+input bool              I_DIFF_REAL_CONFIRM = true;             // After AVG trigger, require raw diff confirmation
+input int               I_DIFF_CONFIRM_TICKS = 2;                 // Ticks in a row for confirmation
+input int               I_DIFF_CONFIRM_TIMEOUT_MS = 300;        // Abandon pending confirm after (ms)
 int               I_DIFF_AVG_SIGNAL_COOLDOWN_MS = 400;      // Min gap between AVG open signals (ms)
 
 int               I_DIFF_RAW_STABILITY_TICKS = 3;          // Consecutive above-threshold ticks (RAW mode)
