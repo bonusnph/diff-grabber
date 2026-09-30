@@ -3,7 +3,7 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.19"
+#define SFX_SYNC_EA_VERSION "1.21"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -72,31 +72,57 @@ struct DpmEvent
    datetime eventTime;
 };
 
+// Inputs hidden to the lite surface, plus diff confirm strictness.
+// Restore the input keyword on these names to roll back:
+// I_PORT, I_MASTER_SIDE, I_DYN_LOT_ENABLED, I_DYN_LOT_MIN, I_DYN_LOT_MAX,
+// I_DYN_LOT_STEP_UP, I_DYN_LOT_STEP_DOWN, I_DYN_LOT_PROFIT_STREAK_N,
+// I_DYN_LOT_LOSS_STREAK_M, I_DYN_LOT_STABLE_LOOP_Y, I_DYN_LOT_COUNT_SCHEDULED,
+// I_OPEN_MODE, I_CLOSE_MODE, I_LOCK_ENABLED, I_LOCK_GROUP, I_LOCK_SCOPE,
+// I_LOCK_STALE_MS, I_LOCK_DEBUG_LOG, I_PAIR_SETTLE_GRACE_MS, I_LOOP_MS,
+// I_DIFF_SIGNAL_MODE_VAL, I_DIFF_OPEN_THRESHOLD_PTS, I_DIFF_CLOSE_THRESHOLD_PTS,
+// I_DIFF_QUOTES_FRESH_MS, I_DIFF_QUOTES_FRESH_AUTO, I_DIFF_MAX_SPREAD_SELF,
+// I_DIFF_MAX_SPREAD_PEER, I_DIFF_OPEN_COOLDOWN_SEC, I_DIFF_CLOSE_COOLDOWN_SEC,
+// I_DIFF_CONFIRM_TIMEOUT_MS, I_DIFF_TIME_GATE_OPEN_MS, I_DIFF_TIME_GATE_CLOSE_MS,
+// I_DIFF_TIME_GATE_HYSTERESIS_OFFSET, I_DIFF_TIME_GATE_TIMEOUT_MS,
+// I_DPM_ENABLED, I_DPM_CSV_ENABLED, I_DPM_HUD_ROWS, I_DPM_TRACK_OPEN, I_DPM_TRACK_CLOSE,
+// I_DPM_OPEN_TH1, I_DPM_OPEN_TH2, I_DPM_OPEN_TH3, I_DPM_CLOSE_TH1, I_DPM_CLOSE_TH2, I_DPM_CLOSE_TH3,
+// I_DIFF_ZONE_STABILITY_ENABLED, I_DIFF_ZONE_STABILITY_TICKS, I_DIFF_ZONE_NEGATIVE_THRESHOLD,
+// I_CLOSE_ONLY_SCHEDULE_MASTER, I_CLOSE_ONLY_MON_EN, I_CLOSE_ONLY_MON_START, I_CLOSE_ONLY_MON_END,
+// I_CLOSE_ONLY_TUE_EN, I_CLOSE_ONLY_TUE_START, I_CLOSE_ONLY_TUE_END,
+// I_CLOSE_ONLY_WED_EN, I_CLOSE_ONLY_WED_START, I_CLOSE_ONLY_WED_END,
+// I_CLOSE_ONLY_THU_EN, I_CLOSE_ONLY_THU_START, I_CLOSE_ONLY_THU_END,
+// I_CLOSE_ONLY_FRI_EN, I_CLOSE_ONLY_FRI_START, I_CLOSE_ONLY_FRI_END,
+// I_CLOSE_ONLY_WEEKEND_ENABLED, I_CLOSE_ONLY_WEEKEND_START_CLOSE_ALL,
+// I_CLOSE_ONLY_WEEKEND_PRE_FRIDAY, I_CLOSE_ONLY_WEEKEND_START_SAT, I_CLOSE_ONLY_WEEKEND_END_MON,
+// I_DND_SCHEDULE_MASTER, I_DND_MON_EN, I_DND_MON_START, I_DND_MON_END,
+// I_DND_TUE_EN, I_DND_TUE_START, I_DND_TUE_END, I_DND_WED_EN, I_DND_WED_START, I_DND_WED_END,
+// I_DND_THU_EN, I_DND_THU_START, I_DND_THU_END, I_DND_FRI_EN, I_DND_FRI_START, I_DND_FRI_END,
+// I_DND_WEEKEND_ENABLED, I_DND_WEEKEND_START_SAT, I_DND_WEEKEND_END_MON
 input ENUM_ROLE I_ROLE = ROLE_SOURCE_MASTER; // Master streams orders; slave copies
-input ushort    I_PORT = 65110;              // TCP port (same on master and slave)
+ushort    I_PORT = 65110;              // TCP port (same on master and slave)
 string    I_MASTER_IP = "127.0.0.1";   // Slave only: master host or VPN IP
 string    I_SECRET = "Password on this channel"; // Channel password (must match peer)
-input ENUM_SIDE I_MASTER_SIDE = SIDE_AUTO;     // Side master trades; slave mirrors opposite
+ENUM_SIDE I_MASTER_SIDE = SIDE_AUTO;     // Side master trades; slave mirrors opposite
 input double    I_LOT = 0.01;                 // Lot per synced order side
-input bool      I_DYN_LOT_ENABLED = false;         // Dynamic lot: enable adaptive lot sizing
-input double    I_DYN_LOT_MIN = 0.01;              // Dynamic lot: lower bound (inclusive)
-input double    I_DYN_LOT_MAX = 1.00;              // Dynamic lot: upper bound (inclusive)
-input double    I_DYN_LOT_STEP_UP = 0.01;          // Dynamic lot: increment on profit streak
-input double    I_DYN_LOT_STEP_DOWN = 0.01;        // Dynamic lot: decrement on loss streak
-input int       I_DYN_LOT_PROFIT_STREAK_N = 3;     // Dynamic lot: consecutive profit rounds to increase
-input int       I_DYN_LOT_LOSS_STREAK_M = 3;       // Dynamic lot: consecutive loss rounds to decrease
-input int       I_DYN_LOT_STABLE_LOOP_Y = 3;       // Dynamic lot: inc->dec oscillations before Stable-Lock
-input bool      I_DYN_LOT_COUNT_SCHEDULED = false; // Dynamic lot: count weekend/schedule closes in streak
+bool      I_DYN_LOT_ENABLED = false;         // Dynamic lot: enable adaptive lot sizing
+double    I_DYN_LOT_MIN = 0.01;              // Dynamic lot: lower bound (inclusive)
+double    I_DYN_LOT_MAX = 1.00;              // Dynamic lot: upper bound (inclusive)
+double    I_DYN_LOT_STEP_UP = 0.01;          // Dynamic lot: increment on profit streak
+double    I_DYN_LOT_STEP_DOWN = 0.01;        // Dynamic lot: decrement on loss streak
+int       I_DYN_LOT_PROFIT_STREAK_N = 3;     // Dynamic lot: consecutive profit rounds to increase
+int       I_DYN_LOT_LOSS_STREAK_M = 3;       // Dynamic lot: consecutive loss rounds to decrease
+int       I_DYN_LOT_STABLE_LOOP_Y = 3;       // Dynamic lot: inc->dec oscillations before Stable-Lock
+bool      I_DYN_LOT_COUNT_SCHEDULED = false; // Dynamic lot: count weekend/schedule closes in streak
 input double    I_MIN_BALANCE_MASTER = 0.00;       // Min master balance to allow new open (0 = off)
 input double    I_MIN_BALANCE_SLAVE  = 0.00;       // Min slave balance to allow new open (0 = off)
 int       I_SLIPPAGE = 30;              // Max slippage (points) for sync orders
-input ENUM_OPEN_MODE I_OPEN_MODE = OPEN_BALANCED;   // How to sequence master/slave opens
-input ENUM_CLOSE_MODE I_CLOSE_MODE = CLOSE_BALANCED; // How to sequence closes (and rescue)
-input bool      I_LOCK_ENABLED = true;                   // Enable cross-instance global lock for open/close intents
-input string    I_LOCK_GROUP = "DEFAULT";                // User-defined lock namespace
-input ENUM_LOCK_SCOPE I_LOCK_SCOPE = LOCK_SCOPE_PAIR_ACTION; // Lock granularity inside a group
-input int       I_LOCK_STALE_MS = 8000;                  // Reclaim lock if holder appears stale for this many ms
-input bool      I_LOCK_DEBUG_LOG = false;                // Emit lock acquire/release diagnostics
+ENUM_OPEN_MODE I_OPEN_MODE = OPEN_BALANCED;   // How to sequence master/slave opens
+ENUM_CLOSE_MODE I_CLOSE_MODE = CLOSE_BALANCED; // How to sequence closes (and rescue)
+bool      I_LOCK_ENABLED = true;                   // Enable cross-instance global lock for open/close intents
+string    I_LOCK_GROUP = "DEFAULT";                // User-defined lock namespace
+ENUM_LOCK_SCOPE I_LOCK_SCOPE = LOCK_SCOPE_PAIR_ACTION; // Lock granularity inside a group
+int       I_LOCK_STALE_MS = 8000;                  // Reclaim lock if holder appears stale for this many ms
+bool      I_LOCK_DEBUG_LOG = false;                // Emit lock acquire/release diagnostics
 int       I_OPEN_ROLLBACK_TIMEOUT_MS = 10000;
 int       I_SLAVE_OPEN_TIMEOUT_MS = 2200;
 int       I_SLAVE_OPEN_RETRY_COUNT = 3;
@@ -108,7 +134,7 @@ int       I_SLAVE_CLOSE_RETRY_COUNT = 3;
 int       I_SLAVE_CLOSE_RETRY_INTERVAL_MS = 400;
 int       I_SLAVE_PENDING_COMMIT_TIMEOUT_MS = 10000; // Slave waits this long for COMMIT before self-closing pending leg
 int       I_PAIR_STATUS_STALE_MS = 5000;          // Max age of slave PAIR_STATUS before protective close
-input int I_PAIR_SETTLE_GRACE_MS = 10000;         // Grace ms after OPEN_INTENT before mismatch close paths fire
+int I_PAIR_SETTLE_GRACE_MS = 10000;         // Grace ms after OPEN_INTENT before mismatch close paths fire
 int I_OPEN_TX_DISCONNECT_GRACE_MS = 10000;  // Grace ms before closing master leg on disconnect during OPEN_TX
 int       I_PAIR_CLEAR_CROSSKEY_MIN_AGE_SEC = 10; // Allow clear-state key mismatch only after pair is old enough
 int       I_ORDER_CLOSE_RETRY_COUNT = 8;             // OrderClose attempts per call (requote/off quotes/etc.)
@@ -122,108 +148,109 @@ int       I_FORCE_FLAT_RETRY_COUNT = 1;          // Extra retries when FORCE_FLA
 int       I_FORCE_FLAT_RETRY_INTERVAL_MS = 400;  // Delay before FORCE_FLAT retry
 int       I_RESCUE_MAX_ATTEMPTS = 3;
 bool      I_BLOCK_NEW_OPEN_WHEN_DEGRADED = true;
-input int       I_LOOP_MS = 50;
+int       I_LOOP_MS = 50;
 bool      I_SYNC_LOG_CLEAR_ON_INIT = false; // Delete EA log files when EA attaches
 
 bool                I_DIFF_SYNC_ENABLED = true;           // Master: diff-driven auto open/close
-input ENUM_DIFF_SIGNAL_MODE I_DIFF_SIGNAL_MODE_VAL = DIFF_SIGNAL_AVG; // Signal style: SIMPLE, RAW stability, or AVG
-input int               I_DIFF_OPEN_THRESHOLD_PTS = 20;          // Diff (pts) needed for auto-open signal
-input int               I_DIFF_CLOSE_THRESHOLD_PTS = 20;          // Diff (pts) needed for auto-close signal
-input int               I_DIFF_QUOTES_FRESH_MS = 850;             // Master: max lag (ms) for last quote observation on each side (manual; also AUTO fallback until warmup)
-input bool              I_DIFF_QUOTES_FRESH_AUTO = true;    // Master: derive fresh limit from EMA of observed master/slave quote gaps (else use I_DIFF_QUOTES_FRESH_MS)
+ENUM_DIFF_SIGNAL_MODE I_DIFF_SIGNAL_MODE_VAL = DIFF_SIGNAL_AVG; // Signal style: SIMPLE, RAW stability, or AVG
+int               I_DIFF_OPEN_THRESHOLD_PTS = 20;          // Diff (pts) needed for auto-open signal
+int               I_DIFF_CLOSE_THRESHOLD_PTS = 20;          // Diff (pts) needed for auto-close signal
+int               I_DIFF_QUOTES_FRESH_MS = 850;             // Master: max lag (ms) for last quote observation on each side (manual; also AUTO fallback until warmup)
+bool              I_DIFF_QUOTES_FRESH_AUTO = true;    // Master: derive fresh limit from EMA of observed master/slave quote gaps (else use I_DIFF_QUOTES_FRESH_MS)
 double            I_DIFF_QF_AUTO_MUL = 1.78;           // AUTO: scale factor on max(master EMA gap, slave EMA gap) before margin and clamp
 int               I_DIFF_QF_AUTO_MARGIN_MS = 220;       // AUTO: extra ms added after scaling (headroom vs jitter)
 int               I_DIFF_QF_AUTO_MIN_MS = 520;         // AUTO: floor for computed fresh ms (prevents an overly tight limit)
 int               I_DIFF_QF_AUTO_MAX_MS = 7200;        // AUTO: ceiling for computed fresh ms (prevents runaway when one side stalls)
 int               I_DIFF_QF_AUTO_WARMUP_N = 22;        // AUTO: need at least this many gap samples on master and on slave before AUTO replaces manual fresh ms
-input int               I_DIFF_MAX_SPREAD_SELF = 30;              // Block if this chart spread exceeds (pts)
-input int               I_DIFF_MAX_SPREAD_PEER = 30;             // Block if slave spread exceeds (pts)
-input int               I_DIFF_OPEN_COOLDOWN_SEC = 60;            // Wait after an auto-open before next auto-open
-input int               I_DIFF_CLOSE_COOLDOWN_SEC = 300;            // Base delay before diff auto-close; also post-open guard
+int               I_DIFF_MAX_SPREAD_SELF = 30;              // Block if this chart spread exceeds (pts)
+int               I_DIFF_MAX_SPREAD_PEER = 30;             // Block if slave spread exceeds (pts)
+int               I_DIFF_OPEN_COOLDOWN_SEC = 60;            // Wait after an auto-open before next auto-open
+int               I_DIFF_CLOSE_COOLDOWN_SEC = 300;            // Base delay before diff auto-close; also post-open guard
 
 int               I_DIFF_AVG_PERIOD = 9;                  // EMA period for AVG mode
 bool              I_DIFF_USE_PREFILTER_MEDIAN = true;     // Median filter before EMA (AVG mode)
 int               I_DIFF_PREFILTER_WINDOW = 3;            // Median window (odd, >=3)
 input int               I_DIFF_HYSTERESIS_PTS = 0;                // Extra points on open threshold (AVG mode)
-input int               I_DIFF_EPSILON_PTS = 1;                   // Extra margin for real-diff confirmation
+input int               I_DIFF_EPSILON_PTS = 0;                   // Extra margin for real-diff confirmation
 input bool              I_DIFF_REAL_CONFIRM = true;             // After AVG trigger, require raw diff confirmation
 input int               I_DIFF_CONFIRM_TICKS = 2;                 // Ticks in a row for confirmation
-input int               I_DIFF_CONFIRM_TIMEOUT_MS = 300;        // Abandon pending confirm after (ms)
+int               I_DIFF_CONFIRM_TIMEOUT_MS = 300;        // Abandon pending confirm after (ms)
 int               I_DIFF_AVG_SIGNAL_COOLDOWN_MS = 400;      // Min gap between AVG open signals (ms)
 
 int               I_DIFF_RAW_STABILITY_TICKS = 3;          // Consecutive above-threshold ticks (RAW mode)
 int               I_DIFF_RAW_HYSTERESIS_OFFSET = 10;     // Points below threshold to reset streak (RAW)
 int               I_DIFF_RAW_STABILITY_TIMEOUT_MS = 500; // Abandon RAW wait after (ms)
 
-input int               I_DIFF_TIME_GATE_OPEN_MS           = 200;  // TIME_GATE: ms raw diff must stay >= open threshold
-input int               I_DIFF_TIME_GATE_CLOSE_MS          = 200;  // TIME_GATE: ms raw diff must stay >= close threshold
-input int               I_DIFF_TIME_GATE_HYSTERESIS_OFFSET = 5;    // TIME_GATE: pts below threshold to reset timer
-input int               I_DIFF_TIME_GATE_TIMEOUT_MS        = 2000; // TIME_GATE: abandon pending gate after (ms)
+int               I_DIFF_TIME_GATE_OPEN_MS           = 200;  // TIME_GATE: ms raw diff must stay >= open threshold
+int               I_DIFF_TIME_GATE_CLOSE_MS          = 200;  // TIME_GATE: ms raw diff must stay >= close threshold
+int               I_DIFF_TIME_GATE_HYSTERESIS_OFFSET = 5;    // TIME_GATE: pts below threshold to reset timer
+int               I_DIFF_TIME_GATE_TIMEOUT_MS        = 2000; // TIME_GATE: abandon pending gate after (ms)
 
-input bool              I_DPM_ENABLED     = false; // Drift Persistence Monitor: enable background observer
-input bool              I_DPM_CSV_ENABLED = false; // DPM: write events to CSV file
-input int               I_DPM_HUD_ROWS   = 5;     // DPM: recent event rows on HUD (0 = stats only)
-input bool              I_DPM_TRACK_OPEN  = true;  // DPM: observe open-side persistence
-input bool              I_DPM_TRACK_CLOSE = true;  // DPM: observe close-side persistence
-input int               I_DPM_OPEN_TH1   = 15;    // DPM open threshold level 1 (pts)
-input int               I_DPM_OPEN_TH2   = 25;    // DPM open threshold level 2 (pts)
-input int               I_DPM_OPEN_TH3   = 40;    // DPM open threshold level 3 (pts)
-input int               I_DPM_CLOSE_TH1  = 15;    // DPM close threshold level 1 (pts)
-input int               I_DPM_CLOSE_TH2  = 25;    // DPM close threshold level 2 (pts)
-input int               I_DPM_CLOSE_TH3  = 40;    // DPM close threshold level 3 (pts)
+bool              I_DPM_ENABLED     = false; // Drift Persistence Monitor: enable background observer
+bool              I_DPM_CSV_ENABLED = false; // DPM: write events to CSV file
+int               I_DPM_HUD_ROWS   = 5;     // DPM: recent event rows on HUD (0 = stats only)
+bool              I_DPM_TRACK_OPEN  = true;  // DPM: observe open-side persistence
+bool              I_DPM_TRACK_CLOSE = true;  // DPM: observe close-side persistence
+int               I_DPM_OPEN_TH1   = 15;    // DPM open threshold level 1 (pts)
+int               I_DPM_OPEN_TH2   = 25;    // DPM open threshold level 2 (pts)
+int               I_DPM_OPEN_TH3   = 40;    // DPM open threshold level 3 (pts)
+int               I_DPM_CLOSE_TH1  = 15;    // DPM close threshold level 1 (pts)
+int               I_DPM_CLOSE_TH2  = 25;    // DPM close threshold level 2 (pts)
+int               I_DPM_CLOSE_TH3  = 40;    // DPM close threshold level 3 (pts)
 
-input bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
-input int               I_DIFF_ZONE_STABILITY_TICKS = 7;         // Ticks in positive zone required
-input int               I_DIFF_ZONE_NEGATIVE_THRESHOLD = -1;    // Pts at/below = negative zone
+bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
+int               I_DIFF_ZONE_STABILITY_TICKS = 7;         // Ticks in positive zone required
+int               I_DIFF_ZONE_NEGATIVE_THRESHOLD = -1;    // Pts at/below = negative zone
 
-input bool              I_CLOSE_ONLY_SCHEDULE_MASTER = true;   // Master: time-based close-only (local clock)
-input bool              I_CLOSE_ONLY_MON_EN = false;             // Use Monday window
-input string            I_CLOSE_ONLY_MON_START = "02:00";      // Monday begin HH:mm (local)
-input string            I_CLOSE_ONLY_MON_END = "06:00";        // Monday end HH:mm (local)
-input bool              I_CLOSE_ONLY_TUE_EN = false;             // Use Tuesday window
-input string            I_CLOSE_ONLY_TUE_START = "02:00";        // Tuesday begin HH:mm (local)
-input string            I_CLOSE_ONLY_TUE_END = "06:00";        // Tuesday end HH:mm (local)
-input bool              I_CLOSE_ONLY_WED_EN = false;             // Use Wednesday window
-input string            I_CLOSE_ONLY_WED_START = "02:00";        // Wednesday begin HH:mm (local)
-input string            I_CLOSE_ONLY_WED_END = "06:00";        // Wednesday end HH:mm (local)
-input bool              I_CLOSE_ONLY_THU_EN = true;              // Use Thursday window
-input string            I_CLOSE_ONLY_THU_START = "01:00";        // Thursday begin HH:mm (local)
-input string            I_CLOSE_ONLY_THU_END = "06:00";        // Thursday end HH:mm (local)
-input bool              I_CLOSE_ONLY_FRI_EN = false;             // Use Friday window
-input string            I_CLOSE_ONLY_FRI_START = "02:00";        // Friday begin HH:mm (local)
-input string            I_CLOSE_ONLY_FRI_END = "06:00";        // Friday end HH:mm (local)
+bool              I_CLOSE_ONLY_SCHEDULE_MASTER = true;   // Master: time-based close-only (local clock)
+bool              I_CLOSE_ONLY_MON_EN = false;             // Use Monday window
+string            I_CLOSE_ONLY_MON_START = "02:00";      // Monday begin HH:mm (local)
+string            I_CLOSE_ONLY_MON_END = "06:00";        // Monday end HH:mm (local)
+bool              I_CLOSE_ONLY_TUE_EN = false;             // Use Tuesday window
+string            I_CLOSE_ONLY_TUE_START = "02:00";        // Tuesday begin HH:mm (local)
+string            I_CLOSE_ONLY_TUE_END = "06:00";        // Tuesday end HH:mm (local)
+bool              I_CLOSE_ONLY_WED_EN = false;             // Use Wednesday window
+string            I_CLOSE_ONLY_WED_START = "02:00";        // Wednesday begin HH:mm (local)
+string            I_CLOSE_ONLY_WED_END = "06:00";        // Wednesday end HH:mm (local)
+bool              I_CLOSE_ONLY_THU_EN = true;              // Use Thursday window
+string            I_CLOSE_ONLY_THU_START = "01:00";        // Thursday begin HH:mm (local)
+string            I_CLOSE_ONLY_THU_END = "06:00";        // Thursday end HH:mm (local)
+bool              I_CLOSE_ONLY_FRI_EN = false;             // Use Friday window
+string            I_CLOSE_ONLY_FRI_START = "02:00";        // Friday begin HH:mm (local)
+string            I_CLOSE_ONLY_FRI_END = "06:00";        // Friday end HH:mm (local)
 
-input bool              I_CLOSE_ONLY_WEEKEND_ENABLED = true;           // Weekend strip; combined with daily rows (OR)
-input bool              I_CLOSE_ONLY_WEEKEND_START_CLOSE_ALL = true; // Saturday START: close all EA orders (master + slave)
-input string            I_CLOSE_ONLY_WEEKEND_PRE_FRIDAY = "02:00"; // Friday time (local): PRE — enter close-only
-input string            I_CLOSE_ONLY_WEEKEND_START_SAT = "03:00"; // Saturday (local): START time for close-all-orders (master+slave)
-input string            I_CLOSE_ONLY_WEEKEND_END_MON = "07:00";    // Monday time (local): END — leave close-only
+bool              I_CLOSE_ONLY_WEEKEND_ENABLED = true;           // Weekend strip; combined with daily rows (OR)
+bool              I_CLOSE_ONLY_WEEKEND_START_CLOSE_ALL = true; // Saturday START: close all EA orders (master + slave)
+string            I_CLOSE_ONLY_WEEKEND_PRE_FRIDAY = "02:00"; // Friday time (local): PRE — enter close-only
+string            I_CLOSE_ONLY_WEEKEND_START_SAT = "03:00"; // Saturday (local): START time for close-all-orders (master+slave)
+string            I_CLOSE_ONLY_WEEKEND_END_MON = "07:00";    // Monday time (local): END — leave close-only
 
-input bool              I_DND_SCHEDULE_MASTER = true;             // Master: time-based do-not-disturb (local clock)
-input bool              I_DND_MON_EN = true;                      // Use Monday window
-input string            I_DND_MON_START = "03:40";                 // Monday begin HH:mm (local)
-input string            I_DND_MON_END = "05:20";                   // Monday end HH:mm (local)
-input bool              I_DND_TUE_EN = true;                      // Use Tuesday window
-input string            I_DND_TUE_START = "03:40";                 // Tuesday begin HH:mm (local)
-input string            I_DND_TUE_END = "05:20";                   // Tuesday end HH:mm (local)
-input bool              I_DND_WED_EN = true;                      // Use Wednesday window
-input string            I_DND_WED_START = "03:40";                 // Wednesday begin HH:mm (local)
-input string            I_DND_WED_END = "05:20";                   // Wednesday end HH:mm (local)
-input bool              I_DND_THU_EN = true;                      // Use Thursday window
-input string            I_DND_THU_START = "03:40";                 // Thursday begin HH:mm (local)
-input string            I_DND_THU_END = "05:20";                   // Thursday end HH:mm (local)
-input bool              I_DND_FRI_EN = true;                      // Use Friday window
-input string            I_DND_FRI_START = "03:40";                 // Friday begin HH:mm (local)
-input string            I_DND_FRI_END = "05:20";                   // Friday end HH:mm (local)
-input bool              I_DND_WEEKEND_ENABLED = true;             // Weekend strip; combined with daily rows (OR)
-input string            I_DND_WEEKEND_START_SAT = "03:40";         // Saturday time (local): START — enter DND
-input string            I_DND_WEEKEND_END_MON = "05:20";           // Monday time (local): END — leave DND
+bool              I_DND_SCHEDULE_MASTER = true;             // Master: time-based do-not-disturb (local clock)
+bool              I_DND_MON_EN = true;                      // Use Monday window
+string            I_DND_MON_START = "03:40";                 // Monday begin HH:mm (local)
+string            I_DND_MON_END = "05:20";                   // Monday end HH:mm (local)
+bool              I_DND_TUE_EN = true;                      // Use Tuesday window
+string            I_DND_TUE_START = "03:40";                 // Tuesday begin HH:mm (local)
+string            I_DND_TUE_END = "05:20";                   // Tuesday end HH:mm (local)
+bool              I_DND_WED_EN = true;                      // Use Wednesday window
+string            I_DND_WED_START = "03:40";                 // Wednesday begin HH:mm (local)
+string            I_DND_WED_END = "05:20";                   // Wednesday end HH:mm (local)
+bool              I_DND_THU_EN = true;                      // Use Thursday window
+string            I_DND_THU_START = "03:40";                 // Thursday begin HH:mm (local)
+string            I_DND_THU_END = "05:20";                   // Thursday end HH:mm (local)
+bool              I_DND_FRI_EN = true;                      // Use Friday window
+string            I_DND_FRI_START = "03:40";                 // Friday begin HH:mm (local)
+string            I_DND_FRI_END = "05:20";                   // Friday end HH:mm (local)
+bool              I_DND_WEEKEND_ENABLED = true;             // Weekend strip; combined with daily rows (OR)
+string            I_DND_WEEKEND_START_SAT = "03:40";         // Saturday time (local): START — enter DND
+string            I_DND_WEEKEND_END_MON = "05:20";           // Monday time (local): END — leave DND
 
 ServerSocket *G_SERVER = NULL;
 ClientSocket *G_PEER = NULL;
 
 string G_SYMBOL = "";
 bool   G_HANDSHAKE_OK = false;
+ulong  G_SLAVE_HELLO_SENT_MS = 0;
 bool   G_OPEN_SIGNAL_REQUESTED = false;
 bool   G_CLOSE_SIGNAL_REQUESTED = false;
 string G_OPEN_SIGNAL_REASON = "UI_BUTTON";
@@ -238,6 +265,7 @@ int    G_PAIR_SLAVE_TICKET = -1;
 bool   G_SLAVE_PAIR_OPEN_REPORT = false;
 int    G_SLAVE_EA_OPEN_COUNT = 0;
 ulong  G_LAST_SLAVE_PAIR_STATUS_MS = 0;
+bool   G_LINK_PAIR_STATUS_SEEN = false;
 ulong  G_PAIR_OPENED_MS = 0;
 ulong  G_PAIR_OPEN_INTENT_MS = 0;
 bool   G_DEGRADED = false;
@@ -779,6 +807,27 @@ string LockScopeName()
    return "PAIR_ACTION";
 }
 
+// Tick count can wrap or a leftover token can sit ahead of this clock.
+// Treating that as zero age blocks stale reclaim forever.
+ulong LockHeldAgeMs(const double held, const ulong now_ms)
+{
+   if(held <= 0.0)
+      return 0;
+   const ulong held_ms = (ulong)MathFloor(held);
+   if(held_ms > now_ms)
+      return (ulong)MathMax(1, I_LOCK_STALE_MS);
+   return now_ms - held_ms;
+}
+
+bool LockTokenMatches(const double held, const double token)
+{
+   if(held <= 0.0 || token <= 0.0)
+      return false;
+   if(MathAbs(held - token) <= 0.001)
+      return true;
+   return (MathFloor(held) == MathFloor(token));
+}
+
 string LockActionStateText(const string key, const string own_key, const double own_token)
 {
    if(StringLen(key) == 0)
@@ -790,9 +839,7 @@ string LockActionStateText(const string key, const string own_key, const double 
    double held = GlobalVariableGet(key);
    if(held <= 0.0)
       return "free";
-   ulong held_ms = (ulong)MathFloor(MathMax(0.0, held));
-   ulong now_ms = NowMs();
-   ulong age_ms = (now_ms > held_ms) ? (now_ms - held_ms) : 0;
+   const ulong age_ms = LockHeldAgeMs(held, NowMs());
    return StringFormat("busy/%I64ums", age_ms);
 }
 
@@ -1068,8 +1115,7 @@ bool TryAcquireActionLock(const string action, const string reason, string &key_
    }
 
    double held = GlobalVariableGet(key_out);
-   ulong held_ms = (ulong)MathFloor(MathMax(0.0, held));
-   ulong age_ms = (now_ms > held_ms) ? (now_ms - held_ms) : 0;
+   ulong age_ms = LockHeldAgeMs(held, now_ms);
    if(age_ms >= (ulong)stale_ms && GlobalVariableSetOnCondition(key_out, token_out, held))
    {
       LockDebugLog("STALE_RECOVER", action, key_out, StringFormat("reason=%s age_ms=%I64u old=%.6f new=%.6f", reason, age_ms, held, token_out));
@@ -1102,7 +1148,7 @@ void ReleaseActionLock(const string action, const string reason, string &key_ref
    if(GlobalVariableCheck(key_ref))
    {
       double held = GlobalVariableGet(key_ref);
-      if(MathAbs(held - token_ref) <= 0.000001)
+      if(LockTokenMatches(held, token_ref))
          released = GlobalVariableSetOnCondition(key_ref, 0.0, held);
       else
          skip_not_owner = true;
@@ -1121,6 +1167,33 @@ void ReleaseAllActionLocks(const string reason)
 {
    ReleaseActionLock("OPEN", reason, G_OPEN_LOCK_KEY, G_OPEN_LOCK_TOKEN);
    ReleaseActionLock("CLOSE", reason, G_CLOSE_LOCK_KEY, G_CLOSE_LOCK_TOKEN);
+}
+
+void ReclaimOneStaleActionLock(const string action)
+{
+   if(!I_LOCK_ENABLED)
+      return;
+   const string key = BuildActionLockKey(action);
+   if(!GlobalVariableCheck(key))
+      return;
+   const double held = GlobalVariableGet(key);
+   if(held <= 0.0)
+      return;
+   const ulong age_ms = LockHeldAgeMs(held, NowMs());
+   if(age_ms < (ulong)MathMax(1, I_LOCK_STALE_MS))
+      return;
+   if(!GlobalVariableSetOnCondition(key, 0.0, held))
+      return;
+   SyncLog(StringFormat("[SFX-SYNC] [LOCK][%s][RECLAIM_STALE] key=%s age_ms=%I64u held=%.6f",
+                        action, key, age_ms, held));
+}
+
+void ReclaimStaleActionLocks()
+{
+   if(I_ROLE != ROLE_SOURCE_MASTER)
+      return;
+   ReclaimOneStaleActionLock("OPEN");
+   ReclaimOneStaleActionLock("CLOSE");
 }
 
 string SideToString(const ENUM_SIDE side)
@@ -2175,6 +2248,69 @@ void SlaveCheckPendingOpenTimeout()
    G_SLAVE_PENDING_OPEN_DEADLINE_MS = 0;
 }
 
+int MasterCountEaTickets(int &sole_ticket, bool &sole_is_buy)
+{
+   sole_ticket = -1;
+   sole_is_buy = true;
+   int count = 0;
+   const int n = OrdersTotal();
+   for(int i = n - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderCloseTime() != 0)
+         continue;
+      if(OrderMagicNumber() != OrderMagic())
+         continue;
+      if(OrderSymbol() != G_SYMBOL)
+         continue;
+      const int typ = OrderType();
+      if(typ != OP_BUY && typ != OP_SELL)
+         continue;
+      count++;
+      sole_ticket = OrderTicket();
+      sole_is_buy = (typ == OP_BUY);
+   }
+   return count;
+}
+
+void MasterTryAdoptOpenPair(const string pair_key, const int slave_ticket, const bool slave_open, const int slave_count)
+{
+   if(G_PAIR_ACTIVE || G_OPEN_TX_ACTIVE || G_CLOSE_TX_ACTIVE || G_FORCE_FLAT_ACTIVE)
+      return;
+   const bool slave_has_leg = (slave_open || slave_ticket > 0 || slave_count > 0);
+   if(!slave_has_leg || StringLen(pair_key) == 0)
+      return;
+   int ticket = -1;
+   bool is_buy = true;
+   const int n = MasterCountEaTickets(ticket, is_buy);
+   if(n != 1 || ticket <= 0)
+   {
+      if(n > 1)
+         SyncLog(StringFormat("[SFX-SYNC] pair adopt skipped: master EA legs=%d", n));
+      return;
+   }
+   G_PAIR_ACTIVE = true;
+   G_PAIR_KEY = pair_key;
+   G_PAIR_MASTER_TICKET = ticket;
+   if(slave_ticket > 0)
+      G_PAIR_SLAVE_TICKET = slave_ticket;
+   G_SLAVE_PAIR_OPEN_REPORT = (slave_open || slave_count > 0);
+   G_PAIR_OPENED_MS = NowMs();
+   G_DEGRADED = false;
+   G_ORPHAN_DETECT_STREAK = 0;
+   if(DiffIsMasterAuto())
+   {
+      G_DIFF_AUTO_EFF_SIDE = is_buy ? SIDE_BUY : SIDE_SELL;
+      G_DIFF_AUTO_SIDE_LOCKED = true;
+      G_DIFF_AUTO_EVER_OPENED = true;
+   }
+   const string ln = StringFormat("[SFX-SYNC] pair adopted after restart pair_key=%s mticket=%d sticket=%d",
+                                  G_PAIR_KEY, G_PAIR_MASTER_TICKET, G_PAIR_SLAVE_TICKET);
+   SyncLog(ln);
+   ExpertPrintLn(ln);
+}
+
 void MasterRecoverOrphanLegsIfNeeded()
 {
    if(I_ROLE != ROLE_SOURCE_MASTER)
@@ -2183,6 +2319,13 @@ void MasterRecoverOrphanLegsIfNeeded()
       return;
    if(PairWithinSettleGrace())
       return;
+   if(!G_HANDSHAKE_OK || !G_LINK_PAIR_STATUS_SEEN)
+      return;
+   if(G_SLAVE_PAIR_OPEN_REPORT || G_SLAVE_EA_OPEN_COUNT > 0 || G_PAIR_SLAVE_TICKET > 0)
+   {
+      G_ORPHAN_DETECT_STREAK = 0;
+      return;
+   }
    if(I_ORPHAN_RECOVERY_COOLDOWN_MS > 0 && G_LAST_ORPHAN_RECOVERY_MS > 0)
    {
       if((NowMs() - G_LAST_ORPHAN_RECOVERY_MS) < (ulong)I_ORPHAN_RECOVERY_COOLDOWN_MS)
@@ -2805,6 +2948,8 @@ void HandleMasterIncomingPacket(const string msg)
          return;
       }
       G_HANDSHAKE_OK = true;
+      G_LINK_PAIR_STATUS_SEEN = false;
+      G_LAST_SLAVE_PAIR_STATUS_MS = 0;
       SendMsg(G_PEER, StringFormat("HELLO_ACK;YES;%s", SFX_SYNC_EA_VERSION));
       ExpertPrintLn(StringFormat("Handshake OK slave_account=%s ver=%s", p[2], peer_version));
       SyncLog(StringFormat("[SFX-SYNC] Slave handshake success account=%s ver=%s", p[2], peer_version));
@@ -2843,6 +2988,8 @@ void HandleMasterIncomingPacket(const string msg)
       G_SLAVE_PAIR_OPEN_REPORT = slave_open_in;
       G_SLAVE_EA_OPEN_COUNT = slave_ea_open_count;
       G_LAST_SLAVE_PAIR_STATUS_MS = NowMs();
+      G_LINK_PAIR_STATUS_SEEN = true;
+      MasterTryAdoptOpenPair(pair_key_in, slave_ticket_in, slave_open_in, slave_ea_open_count);
       // Peer status only. Disconnect zeros these flags without a status frame,
       // so a dropped close result can finish here once both legs are actually flat.
       if(G_PAIR_ACTIVE && !G_OPEN_TX_ACTIVE && !G_CLOSE_TX_ACTIVE && !G_FORCE_FLAT_ACTIVE
@@ -3234,6 +3381,8 @@ void MasterLoop()
       {
          G_PEER = tmp;
          G_HANDSHAKE_OK = false;
+         G_LINK_PAIR_STATUS_SEEN = false;
+         G_LAST_SLAVE_PAIR_STATUS_MS = 0;
       }
    }
 
@@ -3263,7 +3412,8 @@ void MasterLoop()
       if(!G_PAIR_ACTIVE && !G_OPEN_TX_ACTIVE && !G_CLOSE_TX_ACTIVE && !G_FORCE_FLAT_ACTIVE
          && !PairWithinSettleGrace())
       {
-         if(G_SLAVE_EA_OPEN_COUNT > 0 || G_SLAVE_PAIR_OPEN_REPORT || G_PAIR_SLAVE_TICKET > 0)
+         if((G_SLAVE_EA_OPEN_COUNT > 0 || G_SLAVE_PAIR_OPEN_REPORT || G_PAIR_SLAVE_TICKET > 0)
+            && !MasterHasAnyLiveEaLeg())
             StartForceFlatSlave("SLAVE_ORPHAN_RECONCILE");
       }
 
@@ -3391,7 +3541,8 @@ void MasterLoop()
          }
       }
       MasterHandleDisconnectDuringTransactions();
-      MasterRecoverOrphanLegsIfNeeded();
+      G_LINK_PAIR_STATUS_SEEN = false;
+      G_LAST_SLAVE_PAIR_STATUS_MS = 0;
       G_SLAVE_EA_OPEN_COUNT = 0;
       G_SLAVE_PAIR_OPEN_REPORT = false;
       G_PAIR_SLAVE_TICKET = -1;
@@ -3409,9 +3560,11 @@ void SlaveLoop()
    {
       G_PEER = new ClientSocket(I_MASTER_IP, I_PORT);
       G_HANDSHAKE_OK = false;
+      G_SLAVE_HELLO_SENT_MS = 0;
       if(G_PEER != NULL && G_PEER.IsSocketConnected())
       {
          SendMsg(G_PEER, StringFormat("HELLO;%s;%d;%s", I_SECRET, AccountNumber(), SFX_SYNC_EA_VERSION));
+         G_SLAVE_HELLO_SENT_MS = NowMs();
       }
    }
 
@@ -3425,6 +3578,20 @@ void SlaveLoop()
             HandleSlaveIncomingPacket(msg);
       }
       while(StringLen(msg) > 0);
+
+      if(!G_HANDSHAKE_OK)
+      {
+         if(G_SLAVE_HELLO_SENT_MS == 0)
+            G_SLAVE_HELLO_SENT_MS = NowMs();
+         else if((NowMs() - G_SLAVE_HELLO_SENT_MS) > (ulong)MathMax(1000, I_PAIR_STATUS_STALE_MS))
+         {
+            SyncLog("[SFX-SYNC] slave hello timed out — reconnecting");
+            CloseClient(G_PEER);
+            G_HANDSHAKE_OK = false;
+            G_SLAVE_HELLO_SENT_MS = 0;
+            return;
+         }
+      }
 
       SlaveCheckPendingOpenTimeout();
 
@@ -3595,6 +3762,7 @@ int OnInit()
    SyncClearLogFiles();
    CreateButtons();
    SyncLogSessionStart();
+   ReclaimStaleActionLocks();
    EventSetMillisecondTimer((uint)MathMax(50, I_LOOP_MS));
    RefreshChartComment();
    return(INIT_SUCCEEDED);

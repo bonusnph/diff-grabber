@@ -8,7 +8,7 @@ double G_LITE_MAX_LOT = 0.30;
 // Last server date the EA may run (inclusive). Stops at 00:00 the next server day.
 datetime G_LITE_EXPIRE_DATE = D'2027.03.01';
 
-#define SFX_SYNC_EA_VERSION "1.20"
+#define SFX_SYNC_EA_VERSION "1.21"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -229,6 +229,7 @@ ClientSocket *G_PEER = NULL;
 
 string G_SYMBOL = "";
 bool   G_HANDSHAKE_OK = false;
+ulong  G_SLAVE_HELLO_SENT_MS = 0;
 bool   G_OPEN_SIGNAL_REQUESTED = false;
 bool   G_CLOSE_SIGNAL_REQUESTED = false;
 string G_OPEN_SIGNAL_REASON = "UI_BUTTON";
@@ -243,6 +244,7 @@ int    G_PAIR_SLAVE_TICKET = -1;
 bool   G_SLAVE_PAIR_OPEN_REPORT = false;
 int    G_SLAVE_EA_OPEN_COUNT = 0;
 ulong  G_LAST_SLAVE_PAIR_STATUS_MS = 0;
+bool   G_LINK_PAIR_STATUS_SEEN = false;
 ulong  G_PAIR_OPENED_MS = 0;
 ulong  G_PAIR_OPEN_INTENT_MS = 0;
 bool   G_DEGRADED = false;
@@ -784,6 +786,27 @@ string LockScopeName()
    return "PAIR_ACTION";
 }
 
+// Tick count can wrap or a leftover token can sit ahead of this clock.
+// Treating that as zero age blocks stale reclaim forever.
+ulong LockHeldAgeMs(const double held, const ulong now_ms)
+{
+   if(held <= 0.0)
+      return 0;
+   const ulong held_ms = (ulong)MathFloor(held);
+   if(held_ms > now_ms)
+      return (ulong)MathMax(1, I_LOCK_STALE_MS);
+   return now_ms - held_ms;
+}
+
+bool LockTokenMatches(const double held, const double token)
+{
+   if(held <= 0.0 || token <= 0.0)
+      return false;
+   if(MathAbs(held - token) <= 0.001)
+      return true;
+   return (MathFloor(held) == MathFloor(token));
+}
+
 string LockActionStateText(const string key, const string own_key, const double own_token)
 {
    if(StringLen(key) == 0)
@@ -795,9 +818,7 @@ string LockActionStateText(const string key, const string own_key, const double 
    double held = GlobalVariableGet(key);
    if(held <= 0.0)
       return "free";
-   ulong held_ms = (ulong)MathFloor(MathMax(0.0, held));
-   ulong now_ms = NowMs();
-   ulong age_ms = (now_ms > held_ms) ? (now_ms - held_ms) : 0;
+   const ulong age_ms = LockHeldAgeMs(held, NowMs());
    return StringFormat("busy/%I64ums", age_ms);
 }
 
@@ -1073,8 +1094,7 @@ bool TryAcquireActionLock(const string action, const string reason, string &key_
    }
 
    double held = GlobalVariableGet(key_out);
-   ulong held_ms = (ulong)MathFloor(MathMax(0.0, held));
-   ulong age_ms = (now_ms > held_ms) ? (now_ms - held_ms) : 0;
+   ulong age_ms = LockHeldAgeMs(held, now_ms);
    if(age_ms >= (ulong)stale_ms && GlobalVariableSetOnCondition(key_out, token_out, held))
    {
       LockDebugLog("STALE_RECOVER", action, key_out, StringFormat("reason=%s age_ms=%I64u old=%.6f new=%.6f", reason, age_ms, held, token_out));
@@ -1107,7 +1127,7 @@ void ReleaseActionLock(const string action, const string reason, string &key_ref
    if(GlobalVariableCheck(key_ref))
    {
       double held = GlobalVariableGet(key_ref);
-      if(MathAbs(held - token_ref) <= 0.000001)
+      if(LockTokenMatches(held, token_ref))
          released = GlobalVariableSetOnCondition(key_ref, 0.0, held);
       else
          skip_not_owner = true;
@@ -1126,6 +1146,33 @@ void ReleaseAllActionLocks(const string reason)
 {
    ReleaseActionLock("OPEN", reason, G_OPEN_LOCK_KEY, G_OPEN_LOCK_TOKEN);
    ReleaseActionLock("CLOSE", reason, G_CLOSE_LOCK_KEY, G_CLOSE_LOCK_TOKEN);
+}
+
+void ReclaimOneStaleActionLock(const string action)
+{
+   if(!I_LOCK_ENABLED)
+      return;
+   const string key = BuildActionLockKey(action);
+   if(!GlobalVariableCheck(key))
+      return;
+   const double held = GlobalVariableGet(key);
+   if(held <= 0.0)
+      return;
+   const ulong age_ms = LockHeldAgeMs(held, NowMs());
+   if(age_ms < (ulong)MathMax(1, I_LOCK_STALE_MS))
+      return;
+   if(!GlobalVariableSetOnCondition(key, 0.0, held))
+      return;
+   SyncLog(StringFormat("[SFX-SYNC] [LOCK][%s][RECLAIM_STALE] key=%s age_ms=%I64u held=%.6f",
+                        action, key, age_ms, held));
+}
+
+void ReclaimStaleActionLocks()
+{
+   if(I_ROLE != ROLE_SOURCE_MASTER)
+      return;
+   ReclaimOneStaleActionLock("OPEN");
+   ReclaimOneStaleActionLock("CLOSE");
 }
 
 string SideToString(const ENUM_SIDE side)
@@ -2180,6 +2227,69 @@ void SlaveCheckPendingOpenTimeout()
    G_SLAVE_PENDING_OPEN_DEADLINE_MS = 0;
 }
 
+int MasterCountEaTickets(int &sole_ticket, bool &sole_is_buy)
+{
+   sole_ticket = -1;
+   sole_is_buy = true;
+   int count = 0;
+   const int n = OrdersTotal();
+   for(int i = n - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderCloseTime() != 0)
+         continue;
+      if(OrderMagicNumber() != OrderMagic())
+         continue;
+      if(OrderSymbol() != G_SYMBOL)
+         continue;
+      const int typ = OrderType();
+      if(typ != OP_BUY && typ != OP_SELL)
+         continue;
+      count++;
+      sole_ticket = OrderTicket();
+      sole_is_buy = (typ == OP_BUY);
+   }
+   return count;
+}
+
+void MasterTryAdoptOpenPair(const string pair_key, const int slave_ticket, const bool slave_open, const int slave_count)
+{
+   if(G_PAIR_ACTIVE || G_OPEN_TX_ACTIVE || G_CLOSE_TX_ACTIVE || G_FORCE_FLAT_ACTIVE)
+      return;
+   const bool slave_has_leg = (slave_open || slave_ticket > 0 || slave_count > 0);
+   if(!slave_has_leg || StringLen(pair_key) == 0)
+      return;
+   int ticket = -1;
+   bool is_buy = true;
+   const int n = MasterCountEaTickets(ticket, is_buy);
+   if(n != 1 || ticket <= 0)
+   {
+      if(n > 1)
+         SyncLog(StringFormat("[SFX-SYNC] pair adopt skipped: master EA legs=%d", n));
+      return;
+   }
+   G_PAIR_ACTIVE = true;
+   G_PAIR_KEY = pair_key;
+   G_PAIR_MASTER_TICKET = ticket;
+   if(slave_ticket > 0)
+      G_PAIR_SLAVE_TICKET = slave_ticket;
+   G_SLAVE_PAIR_OPEN_REPORT = (slave_open || slave_count > 0);
+   G_PAIR_OPENED_MS = NowMs();
+   G_DEGRADED = false;
+   G_ORPHAN_DETECT_STREAK = 0;
+   if(DiffIsMasterAuto())
+   {
+      G_DIFF_AUTO_EFF_SIDE = is_buy ? SIDE_BUY : SIDE_SELL;
+      G_DIFF_AUTO_SIDE_LOCKED = true;
+      G_DIFF_AUTO_EVER_OPENED = true;
+   }
+   const string ln = StringFormat("[SFX-SYNC] pair adopted after restart pair_key=%s mticket=%d sticket=%d",
+                                  G_PAIR_KEY, G_PAIR_MASTER_TICKET, G_PAIR_SLAVE_TICKET);
+   SyncLog(ln);
+   ExpertPrintLn(ln);
+}
+
 void MasterRecoverOrphanLegsIfNeeded()
 {
    if(I_ROLE != ROLE_SOURCE_MASTER)
@@ -2188,6 +2298,13 @@ void MasterRecoverOrphanLegsIfNeeded()
       return;
    if(PairWithinSettleGrace())
       return;
+   if(!G_HANDSHAKE_OK || !G_LINK_PAIR_STATUS_SEEN)
+      return;
+   if(G_SLAVE_PAIR_OPEN_REPORT || G_SLAVE_EA_OPEN_COUNT > 0 || G_PAIR_SLAVE_TICKET > 0)
+   {
+      G_ORPHAN_DETECT_STREAK = 0;
+      return;
+   }
    if(I_ORPHAN_RECOVERY_COOLDOWN_MS > 0 && G_LAST_ORPHAN_RECOVERY_MS > 0)
    {
       if((NowMs() - G_LAST_ORPHAN_RECOVERY_MS) < (ulong)I_ORPHAN_RECOVERY_COOLDOWN_MS)
@@ -2810,6 +2927,8 @@ void HandleMasterIncomingPacket(const string msg)
          return;
       }
       G_HANDSHAKE_OK = true;
+      G_LINK_PAIR_STATUS_SEEN = false;
+      G_LAST_SLAVE_PAIR_STATUS_MS = 0;
       SendMsg(G_PEER, StringFormat("HELLO_ACK;YES;%s", SFX_SYNC_EA_VERSION));
       ExpertPrintLn(StringFormat("Handshake OK slave_account=%s ver=%s", p[2], peer_version));
       SyncLog(StringFormat("[SFX-SYNC] Slave handshake success account=%s ver=%s", p[2], peer_version));
@@ -2848,6 +2967,8 @@ void HandleMasterIncomingPacket(const string msg)
       G_SLAVE_PAIR_OPEN_REPORT = slave_open_in;
       G_SLAVE_EA_OPEN_COUNT = slave_ea_open_count;
       G_LAST_SLAVE_PAIR_STATUS_MS = NowMs();
+      G_LINK_PAIR_STATUS_SEEN = true;
+      MasterTryAdoptOpenPair(pair_key_in, slave_ticket_in, slave_open_in, slave_ea_open_count);
       // Peer status only. Disconnect zeros these flags without a status frame,
       // so a dropped close result can finish here once both legs are actually flat.
       if(G_PAIR_ACTIVE && !G_OPEN_TX_ACTIVE && !G_CLOSE_TX_ACTIVE && !G_FORCE_FLAT_ACTIVE
@@ -3239,6 +3360,8 @@ void MasterLoop()
       {
          G_PEER = tmp;
          G_HANDSHAKE_OK = false;
+         G_LINK_PAIR_STATUS_SEEN = false;
+         G_LAST_SLAVE_PAIR_STATUS_MS = 0;
       }
    }
 
@@ -3268,7 +3391,8 @@ void MasterLoop()
       if(!G_PAIR_ACTIVE && !G_OPEN_TX_ACTIVE && !G_CLOSE_TX_ACTIVE && !G_FORCE_FLAT_ACTIVE
          && !PairWithinSettleGrace())
       {
-         if(G_SLAVE_EA_OPEN_COUNT > 0 || G_SLAVE_PAIR_OPEN_REPORT || G_PAIR_SLAVE_TICKET > 0)
+         if((G_SLAVE_EA_OPEN_COUNT > 0 || G_SLAVE_PAIR_OPEN_REPORT || G_PAIR_SLAVE_TICKET > 0)
+            && !MasterHasAnyLiveEaLeg())
             StartForceFlatSlave("SLAVE_ORPHAN_RECONCILE");
       }
 
@@ -3396,7 +3520,8 @@ void MasterLoop()
          }
       }
       MasterHandleDisconnectDuringTransactions();
-      MasterRecoverOrphanLegsIfNeeded();
+      G_LINK_PAIR_STATUS_SEEN = false;
+      G_LAST_SLAVE_PAIR_STATUS_MS = 0;
       G_SLAVE_EA_OPEN_COUNT = 0;
       G_SLAVE_PAIR_OPEN_REPORT = false;
       G_PAIR_SLAVE_TICKET = -1;
@@ -3414,9 +3539,11 @@ void SlaveLoop()
    {
       G_PEER = new ClientSocket(I_MASTER_IP, I_PORT);
       G_HANDSHAKE_OK = false;
+      G_SLAVE_HELLO_SENT_MS = 0;
       if(G_PEER != NULL && G_PEER.IsSocketConnected())
       {
          SendMsg(G_PEER, StringFormat("HELLO;%s;%d;%s", I_SECRET, AccountNumber(), SFX_SYNC_EA_VERSION));
+         G_SLAVE_HELLO_SENT_MS = NowMs();
       }
    }
 
@@ -3430,6 +3557,20 @@ void SlaveLoop()
             HandleSlaveIncomingPacket(msg);
       }
       while(StringLen(msg) > 0);
+
+      if(!G_HANDSHAKE_OK)
+      {
+         if(G_SLAVE_HELLO_SENT_MS == 0)
+            G_SLAVE_HELLO_SENT_MS = NowMs();
+         else if((NowMs() - G_SLAVE_HELLO_SENT_MS) > (ulong)MathMax(1000, I_PAIR_STATUS_STALE_MS))
+         {
+            SyncLog("[SFX-SYNC] slave hello timed out — reconnecting");
+            CloseClient(G_PEER);
+            G_HANDSHAKE_OK = false;
+            G_SLAVE_HELLO_SENT_MS = 0;
+            return;
+         }
+      }
 
       SlaveCheckPendingOpenTimeout();
 
@@ -3656,6 +3797,7 @@ int OnInit()
    SyncClearLogFiles();
    CreateButtons();
    SyncLogSessionStart();
+   ReclaimStaleActionLocks();
    EventSetMillisecondTimer((uint)MathMax(50, I_LOOP_MS));
    RefreshChartComment();
    return(INIT_SUCCEEDED);
