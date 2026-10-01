@@ -3,7 +3,7 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.21"
+#define SFX_SYNC_EA_VERSION "1.22"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -72,7 +72,7 @@ struct DpmEvent
    datetime eventTime;
 };
 
-// Inputs hidden to the lite surface, plus diff confirm strictness.
+// Inputs hidden to the lite surface.
 // Restore the input keyword on these names to roll back:
 // I_PORT, I_MASTER_SIDE, I_DYN_LOT_ENABLED, I_DYN_LOT_MIN, I_DYN_LOT_MAX,
 // I_DYN_LOT_STEP_UP, I_DYN_LOT_STEP_DOWN, I_DYN_LOT_PROFIT_STREAK_N,
@@ -82,6 +82,7 @@ struct DpmEvent
 // I_DIFF_SIGNAL_MODE_VAL, I_DIFF_OPEN_THRESHOLD_PTS, I_DIFF_CLOSE_THRESHOLD_PTS,
 // I_DIFF_QUOTES_FRESH_MS, I_DIFF_QUOTES_FRESH_AUTO, I_DIFF_MAX_SPREAD_SELF,
 // I_DIFF_MAX_SPREAD_PEER, I_DIFF_OPEN_COOLDOWN_SEC, I_DIFF_CLOSE_COOLDOWN_SEC,
+// I_DIFF_HYSTERESIS_PTS, I_DIFF_EPSILON_PTS, I_DIFF_REAL_CONFIRM, I_DIFF_CONFIRM_TICKS,
 // I_DIFF_CONFIRM_TIMEOUT_MS, I_DIFF_TIME_GATE_OPEN_MS, I_DIFF_TIME_GATE_CLOSE_MS,
 // I_DIFF_TIME_GATE_HYSTERESIS_OFFSET, I_DIFF_TIME_GATE_TIMEOUT_MS,
 // I_DPM_ENABLED, I_DPM_CSV_ENABLED, I_DPM_HUD_ROWS, I_DPM_TRACK_OPEN, I_DPM_TRACK_CLOSE,
@@ -170,10 +171,10 @@ int               I_DIFF_CLOSE_COOLDOWN_SEC = 300;            // Base delay befo
 int               I_DIFF_AVG_PERIOD = 9;                  // EMA period for AVG mode
 bool              I_DIFF_USE_PREFILTER_MEDIAN = true;     // Median filter before EMA (AVG mode)
 int               I_DIFF_PREFILTER_WINDOW = 3;            // Median window (odd, >=3)
-input int               I_DIFF_HYSTERESIS_PTS = 0;                // Extra points on open threshold (AVG mode)
-input int               I_DIFF_EPSILON_PTS = 0;                   // Extra margin for real-diff confirmation
-input bool              I_DIFF_REAL_CONFIRM = true;             // After AVG trigger, require raw diff confirmation
-input int               I_DIFF_CONFIRM_TICKS = 2;                 // Ticks in a row for confirmation
+int               I_DIFF_HYSTERESIS_PTS = 0;                // Extra points on open threshold (AVG mode)
+int               I_DIFF_EPSILON_PTS = 1;                   // Extra margin for real-diff confirmation
+bool              I_DIFF_REAL_CONFIRM = true;             // After AVG trigger, require raw diff confirmation
+int               I_DIFF_CONFIRM_TICKS = 2;                 // Ticks in a row for confirmation
 int               I_DIFF_CONFIRM_TIMEOUT_MS = 300;        // Abandon pending confirm after (ms)
 int               I_DIFF_AVG_SIGNAL_COOLDOWN_MS = 400;      // Min gap between AVG open signals (ms)
 

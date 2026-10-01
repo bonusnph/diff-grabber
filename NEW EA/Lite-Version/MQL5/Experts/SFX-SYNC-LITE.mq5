@@ -6,9 +6,9 @@
 // Lite hard cap for I_LOT. Edit this value to change the maximum lot.
 double G_LITE_MAX_LOT = 0.30;
 // Last server date the EA may run (inclusive). Stops at 00:00 the next server day.
-datetime G_LITE_EXPIRE_DATE = D'2027.03.01';
+datetime G_LITE_EXPIRE_DATE = D'2027.02.01';
 
-#define SFX_SYNC_EA_VERSION "1.21"
+#define SFX_SYNC_EA_VERSION "1.22"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -550,12 +550,14 @@ void RefreshChartComment()
 {
    string lines = SyncPortTag() + "\n\n";
    lines += StringFormat(
-      "Config: version=%s lot=%s open=%s(%d) close=%s(%d)\n\n",
+      "Config: version=%s lot=%s open=%s(%d) close=%s(%d)\n",
       SFX_SYNC_EA_VERSION,
       DoubleToString(I_LOT, 2),
       OpenModeToString(I_OPEN_MODE), (int)I_OPEN_MODE,
       CloseModeToString(I_CLOSE_MODE), (int)I_CLOSE_MODE
    );
+   lines += SymbolFillingHudLine(StringLen(G_SYMBOL) > 0 ? G_SYMBOL : _Symbol);
+   lines += "\n";
    if(I_ROLE == ROLE_SOURCE_MASTER)
    {
       lines += "ROLE: MASTER\n";
@@ -1281,6 +1283,38 @@ bool ParseMsg(const string raw, string &parts[])
    return StringSplit(msg, ';', parts) > 0;
 }
 
+ENUM_ORDER_TYPE_FILLING SymbolOrderFilling(const string sym)
+{
+   const int filling = (int)SymbolInfoInteger(sym, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_FOK) != 0)
+      return ORDER_FILLING_FOK;
+   if((filling & SYMBOL_FILLING_IOC) != 0)
+      return ORDER_FILLING_IOC;
+   return ORDER_FILLING_RETURN;
+}
+
+string OrderFillingName(const ENUM_ORDER_TYPE_FILLING mode)
+{
+   if(mode == ORDER_FILLING_FOK)
+      return "FOK";
+   if(mode == ORDER_FILLING_IOC)
+      return "IOC";
+   return "RETURN";
+}
+
+string SymbolFillingHudLine(const string sym)
+{
+   const int filling = (int)SymbolInfoInteger(sym, SYMBOL_FILLING_MODE);
+   string broker = "";
+   if((filling & SYMBOL_FILLING_FOK) != 0)
+      broker = "FOK";
+   if((filling & SYMBOL_FILLING_IOC) != 0)
+      broker += (StringLen(broker) > 0 ? "+" : "") + "IOC";
+   if(StringLen(broker) == 0)
+      broker = "RETURN";
+   return StringFormat("Fill: use=%s  broker=%s\n", OrderFillingName(SymbolOrderFilling(sym)), broker);
+}
+
 int OpenOrder(const ENUM_ORDER_TYPE type, const double lots, int &err_out)
 {
    err_out = 0;
@@ -1301,7 +1335,7 @@ int OpenOrder(const ENUM_ORDER_TYPE type, const double lots, int &err_out)
    req.volume = lots;
    req.deviation = (uint)MathMax(0, I_SLIPPAGE);
    req.type = type;
-   req.type_filling = ORDER_FILLING_FOK;
+   req.type_filling = SymbolOrderFilling(sym);
    req.type_time = ORDER_TIME_GTC;
    req.price = (type == ORDER_TYPE_BUY) ? NormalizeDouble(tk.ask, sym_digits) : NormalizeDouble(tk.bid, sym_digits);
 

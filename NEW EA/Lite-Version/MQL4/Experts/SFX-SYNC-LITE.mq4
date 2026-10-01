@@ -6,9 +6,9 @@
 // Lite hard cap for I_LOT. Edit this value to change the maximum lot.
 double G_LITE_MAX_LOT = 0.30;
 // Last server date the EA may run (inclusive). Stops at 00:00 the next server day.
-datetime G_LITE_EXPIRE_DATE = D'2027.03.01';
+datetime G_LITE_EXPIRE_DATE = D'2027.02.01';
 
-#define SFX_SYNC_EA_VERSION "1.21"
+#define SFX_SYNC_EA_VERSION "1.22"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
