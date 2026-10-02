@@ -56,6 +56,15 @@
 	let wdPromptSaving = false;
 	let wdPromptError = '';
 	let stagedWdPendings: Array<{ unit: number; account_number: string; amount: number; note: string }> = [];
+	let settingsGroupClearUnit: number | null = null;
+	let pendingGroupWd: {
+		unit: number;
+		previous: number;
+		next: number;
+		create: boolean;
+		account: string;
+		note: string;
+	} | null = null;
 	let walletNameEditing = false;
 	let walletNameDraft = '';
 	let walletAdjustOpen = false;
@@ -345,6 +354,7 @@
 		settingsWalletCredit = 0;
 		settingsSaveError = '';
 		stagedWdPendings = [];
+		clearSettingsGroupDraft();
 		if (walletPrompt?.kind === 'settings-dp') walletPrompt = null;
 		if (wdPrompt?.kind === 'settings-wd') wdPrompt = null;
 		draftPlAlert = { ...plAlertSettings };
@@ -356,6 +366,7 @@
 		settingsWalletCredit = 0;
 		settingsSaveError = '';
 		stagedWdPendings = [];
+		clearSettingsGroupDraft();
 		if (walletPrompt?.kind === 'settings-dp') walletPrompt = null;
 		if (wdPrompt?.kind === 'settings-wd') wdPrompt = null;
 		showSettingsModal = false;
@@ -965,15 +976,74 @@
 		}
 	}
 
+	function clearSettingsGroupDraft() {
+		settingsGroupClearUnit = null;
+		pendingGroupWd = null;
+	}
+
+	function revertNoteInput(event: Event, previous: number) {
+		const input = event.target as HTMLInputElement;
+		input.value = previous > 0 ? String(previous) : '0';
+	}
+
+	function handleSettingsWdEdit(unit: number, event: Event) {
+		const previous = unitNoteAmount(draftWithdrawals, unit);
+		const next = parseNoteInput(event);
+		revertNoteInput(event, previous);
+		if (next === previous || wdPrompt || walletPrompt) return;
+		openWdPrompt({ kind: 'settings-wd', unit, previous, next });
+	}
+
+	function handleSettingsDpEdit(unit: number, event: Event) {
+		const previous = unitNoteAmount(draftDeposits, unit);
+		const next = parseNoteInput(event);
+		revertNoteInput(event, previous);
+		if (next === previous || wdPrompt || walletPrompt) return;
+		walletPrompt = { kind: 'settings-dp', unit, previous, next };
+	}
+
 	function requestSettingsDpClear(unit: number) {
 		const previous = unitNoteAmount(draftDeposits, unit);
-		if (previous <= 0) return;
+		if (previous <= 0 || wdPrompt || walletPrompt) return;
 		walletPrompt = { kind: 'settings-dp', unit, previous, next: 0 };
+	}
+
+	function requestSettingsGroupClear(unit: number) {
+		const wd = unitNoteAmount(draftWithdrawals, unit);
+		const dp = unitNoteAmount(draftDeposits, unit);
+		if ((wd <= 0 && dp <= 0) || wdPrompt || walletPrompt) return;
+		if (wd > 0 && dp > 0) {
+			settingsGroupClearUnit = unit;
+			pendingGroupWd = null;
+			openWdPrompt({ kind: 'settings-wd', unit, previous: wd, next: 0 });
+			return;
+		}
+		settingsGroupClearUnit = null;
+		if (wd > 0) requestSettingsWdClear(unit);
+		else requestSettingsDpClear(unit);
 	}
 
 	function dismissWalletPrompt() {
 		if (walletPromptSaving) return;
+		if (walletPrompt?.kind === 'settings-dp') clearSettingsGroupDraft();
 		walletPrompt = null;
+	}
+
+	function applyPendingGroupWd() {
+		if (!pendingGroupWd) return;
+		const wd = pendingGroupWd;
+		draftWithdrawals = { ...draftWithdrawals, [wd.unit]: wd.next };
+		if (wd.create && wd.account) {
+			stagedWdPendings = [
+				...stagedWdPendings,
+				{
+					unit: wd.unit,
+					account_number: wd.account,
+					amount: wdPendingAmount(wd.previous, wd.next),
+					note: wd.note
+				}
+			];
+		}
 	}
 
 	async function confirmWalletPrompt(applyToWallet: boolean) {
@@ -981,8 +1051,10 @@
 		const prompt = walletPrompt;
 		const effect = walletEffect(prompt.previous, prompt.next);
 		if (prompt.kind === 'settings-dp') {
-			draftDeposits = { ...draftDeposits, [prompt.unit]: 0 };
+			if (pendingGroupWd && pendingGroupWd.unit === prompt.unit) applyPendingGroupWd();
+			draftDeposits = { ...draftDeposits, [prompt.unit]: prompt.next };
 			if (applyToWallet) settingsWalletCredit = roundMoney(settingsWalletCredit + effect);
+			clearSettingsGroupDraft();
 			walletPrompt = null;
 			return;
 		}
@@ -1031,6 +1103,7 @@
 
 	function dismissWdPrompt() {
 		if (wdPromptSaving) return;
+		if (wdPrompt?.kind === 'settings-wd') clearSettingsGroupDraft();
 		wdPrompt = null;
 		wdPromptAccount = '';
 		wdPromptNote = '';
@@ -1074,19 +1147,46 @@
 		const prompt = wdPrompt;
 		const amount = wdPendingAmount(prompt.previous, prompt.next);
 		if (prompt.kind === 'settings-wd') {
-			if (create) {
-				if (!wdPromptAccount || amount <= 0) {
-					wdPromptError = 'Select an account';
-					return;
-				}
-				stagedWdPendings = [
-					...stagedWdPendings.filter((item) => item.unit !== prompt.unit),
-					{ unit: prompt.unit, account_number: wdPromptAccount, amount, note: currentWdPromptNote() }
-				];
-			} else {
-				stagedWdPendings = stagedWdPendings.filter((item) => item.unit !== prompt.unit);
+			if (create && (!wdPromptAccount || amount <= 0)) {
+				wdPromptError = 'Select an account';
+				return;
 			}
-			draftWithdrawals = { ...draftWithdrawals, [prompt.unit]: 0 };
+			const staged = create
+				? {
+						unit: prompt.unit,
+						account_number: wdPromptAccount,
+						amount,
+						note: currentWdPromptNote()
+					}
+				: null;
+			const continueGroup =
+				settingsGroupClearUnit === prompt.unit &&
+				prompt.next === 0 &&
+				unitNoteAmount(draftDeposits, prompt.unit) > 0;
+			if (continueGroup) {
+				pendingGroupWd = {
+					unit: prompt.unit,
+					previous: prompt.previous,
+					next: prompt.next,
+					create: Boolean(staged),
+					account: staged?.account_number ?? '',
+					note: staged?.note ?? ''
+				};
+				wdPrompt = null;
+				wdPromptAccount = '';
+				wdPromptNote = '';
+				wdPromptError = '';
+				walletPrompt = {
+					kind: 'settings-dp',
+					unit: prompt.unit,
+					previous: unitNoteAmount(draftDeposits, prompt.unit),
+					next: 0
+				};
+				return;
+			}
+			if (staged) stagedWdPendings = [...stagedWdPendings, staged];
+			draftWithdrawals = { ...draftWithdrawals, [prompt.unit]: prompt.next };
+			clearSettingsGroupDraft();
 			wdPrompt = null;
 			wdPromptAccount = '';
 			wdPromptNote = '';
@@ -3369,21 +3469,45 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					<fieldset>
 						<legend class="block text-sm font-medium text-[#f5f5f5] mb-2">WD / DP Notes</legend>
 						<p class="text-xs text-[#ececec] mb-2">
-							One WD Note and one DP Note per unit group. Clearing a row applies when you press Save. A DP clear can update Wallet, and a WD clear can add a pending withdrawal.
+							Each unit group has WD on the left and DP on the right. Edit a value, clear one side, or clear the group. DP changes can update Wallet, and WD changes can add a pending withdrawal, using the same prompts as the dashboard. Notes and those follow-ups apply when you press Save.
 						</p>
-						<div class="space-y-2 max-h-64 overflow-y-auto pr-1">
+						<div class="space-y-2 max-h-96 overflow-y-auto pr-1">
 							{#each settingsNoteUnits as unit}
-								<div class="bg-stone-700/50 border border-stone-600 rounded-xl px-3 py-2 space-y-2">
-									<div class="text-sm text-[#f5f5f5]">Unit {unit === 0 ? 'Unknown' : unit} ({getDraftUnitDisplayName(unit)})</div>
-									{#if unitNoteAmount(draftWithdrawals, unit) > 0}
-										<div class="flex items-center justify-between gap-2">
-											<span class="text-xs text-[#ececec]">WD Note (+)</span>
-											<div class="flex items-center gap-2">
-												<span class="text-xs text-[#ececec] tabular-nums">{formatNumber(unitNoteAmount(draftWithdrawals, unit), false)}</span>
+								{@const wd = unitNoteAmount(draftWithdrawals, unit)}
+								{@const dp = unitNoteAmount(draftDeposits, unit)}
+								<div class="bg-stone-700/50 border border-stone-600 rounded-xl px-3 py-2.5">
+									<div class="flex items-center justify-between gap-2 mb-2">
+										<div class="text-sm text-[#f5f5f5] min-w-0 truncate">Unit {unit === 0 ? 'Unknown' : unit} ({getDraftUnitDisplayName(unit)})</div>
+										<button
+											type="button"
+											on:click={() => requestSettingsGroupClear(unit)}
+											class="fac-minus shrink-0 hover:fac-minus transition-colors"
+											title="Clear WD and DP for this group"
+											aria-label={`Remove WD and DP notes for unit ${unit}`}
+										>
+											<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+											</svg>
+										</button>
+									</div>
+									<div class="grid grid-cols-2 gap-3">
+										<div class="min-w-0">
+											<div class="text-[11px] text-[#ececec]">WD Note (+)</div>
+											<div class="mt-1 flex items-center gap-1.5">
+												<input
+													type="number"
+													min="0"
+													step="0.01"
+													value={wd}
+													on:change={(e) => handleSettingsWdEdit(unit, e)}
+													class="w-full min-w-0 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm tabular-nums focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+													aria-label={`WD Note for unit ${unit}`}
+												/>
 												<button
 													type="button"
 													on:click={() => requestSettingsWdClear(unit)}
-													class="fac-minus hover:fac-minus transition-colors"
+													disabled={wd <= 0}
+													class="fac-minus shrink-0 hover:fac-minus transition-colors disabled:opacity-30"
 													aria-label={`Remove WD note for unit ${unit}`}
 												>
 													<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3392,16 +3516,23 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												</button>
 											</div>
 										</div>
-									{/if}
-									{#if unitNoteAmount(draftDeposits, unit) > 0}
-										<div class="flex items-center justify-between gap-2">
-											<span class="text-xs text-[#ececec]">DP Note (-)</span>
-											<div class="flex items-center gap-2">
-												<span class="text-xs text-[#ececec] tabular-nums">{formatNumber(unitNoteAmount(draftDeposits, unit), false)}</span>
+										<div class="min-w-0">
+											<div class="text-[11px] text-[#ececec]">DP Note (-)</div>
+											<div class="mt-1 flex items-center gap-1.5">
+												<input
+													type="number"
+													min="0"
+													step="0.01"
+													value={dp}
+													on:change={(e) => handleSettingsDpEdit(unit, e)}
+													class="w-full min-w-0 min-h-11 border border-stone-600 bg-stone-700 text-[#f5f5f5] rounded-md px-2 text-right text-sm tabular-nums focus:ring-1 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+													aria-label={`DP Note for unit ${unit}`}
+												/>
 												<button
 													type="button"
 													on:click={() => requestSettingsDpClear(unit)}
-													class="fac-minus hover:fac-minus transition-colors"
+													disabled={dp <= 0}
+													class="fac-minus shrink-0 hover:fac-minus transition-colors disabled:opacity-30"
 													aria-label={`Remove DP note for unit ${unit}`}
 												>
 													<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3410,7 +3541,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												</button>
 											</div>
 										</div>
-									{/if}
+									</div>
 								</div>
 							{/each}
 							{#if settingsNoteUnits.length === 0}
@@ -3831,6 +3962,11 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					Unit {walletPrompt.unit === 0 ? 'Unknown' : walletPrompt.unit} DP Note
 					{formatNumber(walletPrompt.previous, false)} → {formatNumber(walletPrompt.next, false)}
 				</p>
+				{#if pendingGroupWd && pendingGroupWd.unit === walletPrompt.unit}
+					<p class="text-sm text-[#ececec] mb-3">
+						WD Note for this group is cleared together with this DP Note. Closing this dialog keeps both notes.
+					</p>
+				{/if}
 				<p class="text-sm text-[#f5f5f5] mb-1 tabular-nums">
 					Difference {formatNumber(Math.abs(effect), false)}
 					{effect >= 0 ? 'added to Wallet' : 'deducted from Wallet'}
@@ -3845,14 +3981,14 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							on:click={() => confirmWalletPrompt(false)}
 							class="min-h-11 px-4 py-2 rounded-xl bg-stone-700 text-[#f5f5f5] hover:bg-stone-600 transition-colors"
 						>
-							Clear DP only
+							{walletPrompt.next === 0 ? 'Clear DP only' : "Don't update Wallet"}
 						</button>
 						<button
 							type="button"
 							on:click={() => confirmWalletPrompt(true)}
 							class="min-h-11 px-4 py-2 rounded-xl bg-[#f5f5f5] text-[#0a0a0a] hover:bg-white transition-colors"
 						>
-							Clear DP and update Wallet
+							{walletPrompt.next === 0 ? 'Clear DP and update Wallet' : 'Update Wallet'}
 						</button>
 					{:else}
 						<button
@@ -3914,6 +4050,11 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					Unit {wdPrompt.unit === 0 ? 'Unknown' : wdPrompt.unit} WD Note
 					{formatNumber(wdPrompt.previous, false)} → {formatNumber(wdPrompt.next, false)}
 				</p>
+				{#if wdPrompt.kind === 'settings-wd' && settingsGroupClearUnit === wdPrompt.unit}
+					<p class="text-sm text-[#ececec] mb-3">
+						DP Note for this group is next. Closing either dialog keeps both notes.
+					</p>
+				{/if}
 				<p class="text-sm text-[#f5f5f5] mb-3 tabular-nums">
 					Amount {formatNumber(amount, false)}
 				</p>
@@ -3959,7 +4100,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							disabled={wdPromptSaving}
 							class="min-h-11 px-4 py-2 rounded-xl bg-stone-700 text-[#f5f5f5] hover:bg-stone-600 disabled:opacity-50 transition-colors"
 						>
-							Clear WD only
+							{wdPrompt.next === 0 ? 'Clear WD only' : "Don't create"}
 						</button>
 						<button
 							type="button"
@@ -3967,7 +4108,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 							disabled={wdPromptSaving || !wdPromptAccount || amount <= 0}
 							class="min-h-11 px-4 py-2 rounded-xl bg-[#f5f5f5] text-[#0a0a0a] hover:bg-white disabled:opacity-50 transition-colors"
 						>
-							Clear WD and create pending
+							{wdPrompt.next === 0 ? 'Clear WD and create pending' : 'Create pending withdrawal'}
 						</button>
 					{:else}
 						<button
