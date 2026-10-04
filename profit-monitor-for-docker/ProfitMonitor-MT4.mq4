@@ -35,10 +35,6 @@ string NotifyTrim(const string s)
 }
 
 // ==== BEGIN SFX-NOTIFY-SENDER L2/S2/Q2 ====
-#ifndef FILE_REWRITE
-#define FILE_REWRITE 256
-#endif
-
 #define SFX_NOTIFY_QUEUE_FILE "SFX-SYNC-notify-queue.txt"
 #define SFX_NOTIFY_QUEUE_OLD  "SFX-SYNC-notify-queue.txt.old"
 #define SFX_NOTIFY_STATE_FILE "SFX-SYNC-notify-offset.txt"
@@ -54,6 +50,12 @@ string NotifyTrim(const string s)
 #define LEASE_HB_SEC 5
 #define LEASE_STALE_SEC 20
 #define FATAL_COOLDOWN_SEC 1800
+#define NS_OUTAGE_SKIP_SEC 300
+#define NS_LEASE_ABSENT 0
+#define NS_LEASE_EMPTY 1
+#define NS_LEASE_FREE 2
+#define NS_LEASE_OK 3
+#define NS_LEASE_UNREADABLE 4
 #define NS_ROLE_FOLLOWER 0
 #define NS_ROLE_CLAIMING 1
 #define NS_ROLE_HOLDER 2
@@ -83,6 +85,13 @@ bool   G_NS_QNEXT_LOGGED = false;
 bool   G_NS_FAIL_LOGGED = false;
 bool   G_NS_429_LOGGED = false;
 bool   G_NS_INFLIGHT_HUD = false;
+bool   G_NS_FATAL_ALERTED = false;
+bool   G_NS_CH_SKIP_LOGGED_P = false;
+bool   G_NS_CH_SKIP_LOGGED_T = false;
+bool   G_NS_PUSH_UNAVAIL_LOGGED = false;
+string G_NS_OUTAGE_LID = "";
+ulong  G_NS_TG_OUTAGE_MS = 0;
+ulong  G_NS_PUSH_OUTAGE_MS = 0;
 int    G_NS_ERR_BACKOFF_SEC = 5;
 ulong  G_NS_TG_BACKOFF_UNTIL = 0;
 ulong  G_NS_PUSH_BACKOFF_UNTIL = 0;
@@ -133,8 +142,11 @@ void   NotifySenderHud(const string msg);
 void   NotifySenderRefreshFp();
 bool   NotifyLeaseReadRaw(string &raw);
 bool   NotifyLeaseParse(const string raw, string &owner, int &hb, int &gen, string &st, string &fp);
+int    NotifyLeaseProbe(string &owner, int &hb, int &gen, string &st, string &fp);
+void   NotifyLeaseTmpDelete();
 bool   NotifyLeaseWrite(const string owner, const int hb, const int gen, const string st, const string fp);
 bool   NotifyLeaseReadNow(string &owner, int &hb, int &gen, string &st, string &fp);
+bool   NotifyLeaseReadNowRetry(string &owner, int &hb, int &gen, string &st, string &fp);
 bool   NotifyLeaseConfirmOwn();
 void   NotifyLegacyGuardRelease();
 bool   NotifyLegacyGuardTry();
@@ -159,6 +171,9 @@ void   NotifyParseQueueLine(const string field1, string &id, string &ch);
 bool   NotifyPushQuotaOk();
 void   NotifyPushQuotaNote();
 void   NotifyPushRecheck();
+bool   NotifyPushReady();
+bool   NotifyTgReady();
+void   NotifyAdvanceLine(const int line_bytes, const long qsize);
 int    NotifySendPushOne(const string text);
 int    NotifyTelegramPost(const string text);
 void   NotifySenderProcessLine(const bool allow_push, const bool allow_tg);
@@ -511,44 +526,105 @@ bool NotifyLeaseParse(const string raw, string &owner, int &hb, int &gen, string
    return true;
 }
 
+int NotifyLeaseProbe(string &owner, int &hb, int &gen, string &st, string &fp)
+{
+   owner = "";
+   hb = 0;
+   gen = 0;
+   st = "";
+   fp = "";
+   if(!FileIsExist(SFX_NOTIFY_LEASE_FILE, FILE_COMMON))
+      return NS_LEASE_ABSENT;
+   ResetLastError();
+   const int h = FileOpen(SFX_NOTIFY_LEASE_FILE,
+                          FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE)
+      return NS_LEASE_UNREADABLE;
+   string raw = FileReadString(h);
+   FileClose(h);
+   raw = NotifyTrim(raw);
+   if(StringLen(raw) <= 0)
+      return NS_LEASE_EMPTY;
+   if(!NotifyLeaseParse(raw, owner, hb, gen, st, fp))
+      return NS_LEASE_UNREADABLE;
+   if(st == "FREE" || StringLen(owner) <= 0)
+      return NS_LEASE_FREE;
+   return NS_LEASE_OK;
+}
+
+void NotifyLeaseTmpDelete()
+{
+   if(StringLen(G_NS_LEASE_TMP) <= 0)
+      return;
+   FileDelete(G_NS_LEASE_TMP, FILE_COMMON);
+}
+
 bool NotifyLeaseWrite(const string owner, const int hb, const int gen, const string st, const string fp)
 {
-   ResetLastError();
-   const int h = FileOpen(G_NS_LEASE_TMP, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
-   if(h == INVALID_HANDLE)
-      return false;
-   FileWriteString(h, StringFormat("L2;owner=%s;hb=%d;gen=%d;st=%s;fp=%s\n",
-                                   owner, hb, gen, st, fp));
-   FileClose(h);
-   if(!FileMove(G_NS_LEASE_TMP, FILE_COMMON, SFX_NOTIFY_LEASE_FILE, FILE_COMMON|FILE_REWRITE))
-      return false;
-   return true;
+   for(int attempt = 0; attempt < 3; attempt++)
+   {
+      if(attempt > 0)
+         Sleep(50 + (MathRand() % 51));
+      ResetLastError();
+      const int h = FileOpen(G_NS_LEASE_TMP, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+      if(h == INVALID_HANDLE)
+         continue;
+      FileWriteString(h, StringFormat("L2;owner=%s;hb=%d;gen=%d;st=%s;fp=%s\n",
+                                      owner, hb, gen, st, fp));
+      FileClose(h);
+      if(FileMove(G_NS_LEASE_TMP, FILE_COMMON, SFX_NOTIFY_LEASE_FILE, FILE_COMMON|FILE_REWRITE))
+         return true;
+      NotifyLeaseTmpDelete();
+   }
+   return false;
 }
 
 bool NotifyLeaseReadNow(string &owner, int &hb, int &gen, string &st, string &fp)
 {
-   string raw = "";
-   if(!NotifyLeaseReadRaw(raw))
-      return false;
-   return NotifyLeaseParse(raw, owner, hb, gen, st, fp);
+   const int kind = NotifyLeaseProbe(owner, hb, gen, st, fp);
+   return (kind == NS_LEASE_OK || kind == NS_LEASE_FREE);
+}
+
+bool NotifyLeaseReadNowRetry(string &owner, int &hb, int &gen, string &st, string &fp)
+{
+   for(int attempt = 0; attempt < 3; attempt++)
+   {
+      if(attempt > 0)
+         Sleep(50 + (MathRand() % 51));
+      const int kind = NotifyLeaseProbe(owner, hb, gen, st, fp);
+      if(kind == NS_LEASE_UNREADABLE)
+         continue;
+      return (kind == NS_LEASE_OK || kind == NS_LEASE_FREE);
+   }
+   return false;
 }
 
 bool NotifyLeaseConfirmOwn()
 {
-   string owner = "";
-   int hb = 0;
-   int gen = 0;
-   string st = "";
-   string fp = "";
-   if(!NotifyLeaseReadNow(owner, hb, gen, st, fp))
-      return false;
-   if(owner != G_NS_OWNER)
-      return false;
-   if(st != "RUN" && st != "CLAIM")
-      return false;
-   G_NS_HB = hb;
-   G_NS_GEN = gen;
-   return true;
+   for(int attempt = 0; attempt < 3; attempt++)
+   {
+      if(attempt > 0)
+         Sleep(50 + (MathRand() % 51));
+      string owner = "";
+      int hb = 0;
+      int gen = 0;
+      string st = "";
+      string fp = "";
+      const int kind = NotifyLeaseProbe(owner, hb, gen, st, fp);
+      if(kind == NS_LEASE_OK)
+      {
+         if(owner != G_NS_OWNER)
+            return false;
+         if(st != "RUN" && st != "CLAIM")
+            return false;
+         G_NS_HB = hb;
+         G_NS_GEN = gen;
+         return true;
+      }
+      if(kind != NS_LEASE_UNREADABLE)
+         return false;
+   }
+   return false;
 }
 
 void NotifyLegacyGuardRelease()
@@ -585,10 +661,23 @@ void NotifyLeaseLost()
 
 void NotifyLeaseWriteFatal()
 {
+   if(!NotifyLeaseConfirmOwn())
+   {
+      NotifyLeaseLost();
+      return;
+   }
    NotifyLeaseWrite(G_NS_OWNER, G_NS_HB, G_NS_GEN, "FATAL", G_NS_FP);
    NotifyLegacyGuardRelease();
    NotifyStateClearMem();
    G_NS_ROLE = NS_ROLE_DEAD;
+   if(!G_NS_FATAL_ALERTED)
+   {
+      const string msg = "NOTIFY sender FATAL (no usable channel) - fix config and re-attach";
+      NotifySenderLog(msg);
+      Alert(G_NS_LOG + " " + msg);
+      NotifySenderHud(msg);
+      G_NS_FATAL_ALERTED = true;
+   }
 }
 
 void NotifyLeaseWriteFree()
@@ -778,6 +867,36 @@ void NotifyStateLoadAsHolder()
       G_NS_LID = "";
       G_NS_P = 2;
       G_NS_T = 0;
+   }
+
+   const string now_id = QueueFirstLineId();
+   const int qh_now = QueueOpenRead();
+   long qsize_now = 0;
+   if(qh_now != INVALID_HANDLE)
+   {
+      qsize_now = (long)FileSize(qh_now);
+      FileClose(qh_now);
+   }
+   if(qsize_now > 0 && qsize_now < G_NS_OFF)
+   {
+      G_NS_OFF = 0;
+      G_NS_FIRST_ID = now_id;
+      G_NS_LID = "";
+      G_NS_P = 0;
+      G_NS_T = 0;
+      NotifyStateWrite();
+      NotifySenderLog("queue smaller than saved offset - reset offset to 0");
+      return;
+   }
+   if(StringLen(G_NS_FIRST_ID) > 0 && StringLen(now_id) > 0 && G_NS_FIRST_ID != now_id)
+   {
+      G_NS_OFF = 0;
+      G_NS_FIRST_ID = now_id;
+      G_NS_LID = "";
+      G_NS_P = 0;
+      G_NS_T = 0;
+      NotifyStateWrite();
+      NotifySenderLog("queue first-line id changed - reset offset to 0");
    }
 }
 
@@ -1137,7 +1256,59 @@ void NotifyPushRecheck()
    {
       G_NS_PUSH_AVAIL = en;
       NotifySenderRefreshFp();
+      if(!en)
+      {
+         if(!G_NS_PUSH_UNAVAIL_LOGGED)
+         {
+            NotifySenderLog("MT Push WRONG_SETTINGS / Notifications OFF");
+            G_NS_PUSH_UNAVAIL_LOGGED = true;
+         }
+      }
+      else
+         G_NS_PUSH_UNAVAIL_LOGGED = false;
    }
+}
+
+bool NotifyPushReady()
+{
+   if(MQLInfoInteger(MQL_TESTER) != 0)
+      return false;
+   if(!G_NS_PUSH_AVAIL)
+      return false;
+   if(G_NS_PUSH_BACKOFF_UNTIL > 0 && NowMs() < G_NS_PUSH_BACKOFF_UNTIL)
+      return false;
+   if(!NotifyPushQuotaOk())
+      return false;
+   return true;
+}
+
+bool NotifyTgReady()
+{
+   if(MQLInfoInteger(MQL_TESTER) != 0)
+      return false;
+   const string token = G_NS_TOKEN;
+   const string chat = NotifyTrim(I_TG_CHAT_ID);
+   if(StringLen(token) == 0 || StringLen(chat) == 0 || G_NS_TG_PERM || !G_NS_TG_AVAIL)
+      return false;
+   if(G_NS_TG_BACKOFF_UNTIL > 0 && NowMs() < G_NS_TG_BACKOFF_UNTIL)
+      return false;
+   return true;
+}
+
+void NotifyAdvanceLine(const int line_bytes, const long qsize)
+{
+   G_NS_OFF += line_bytes;
+   G_NS_P = 0;
+   G_NS_T = 0;
+   G_NS_LID = "";
+   G_NS_OUTAGE_LID = "";
+   G_NS_TG_OUTAGE_MS = 0;
+   G_NS_PUSH_OUTAGE_MS = 0;
+   if(StringLen(G_NS_FIRST_ID) <= 0 && G_NS_OFF > 0)
+      G_NS_FIRST_ID = QueueFirstLineId();
+   NotifyStateWrite();
+   if(G_NS_OFF >= qsize)
+      MaybeRotateQueue();
 }
 
 int NotifySendPushOne(const string text)
@@ -1365,6 +1536,10 @@ void NotifySenderProcessLine(const bool allow_push, const bool allow_tg)
    if(G_NS_P == 1)
    {
       G_NS_P = 2;
+      const string hudp = StringFormat("NOTIFY_INFLIGHT_UNCONFIRMED id=%s ch=P", G_NS_LID);
+      NotifySenderLog(hudp);
+      NotifySenderHud(hudp);
+      G_NS_INFLIGHT_HUD = true;
       if(!NotifyStateWrite())
          return;
    }
@@ -1377,44 +1552,32 @@ void NotifySenderProcessLine(const bool allow_push, const bool allow_tg)
       G_NS_INFLIGHT_HUD = true;
       if(!NotifyStateWrite())
          return;
-      G_NS_OFF += line_bytes;
-      G_NS_P = 0;
-      G_NS_T = 0;
-      G_NS_LID = "";
-      if(StringLen(G_NS_FIRST_ID) <= 0 && G_NS_OFF > 0)
-         G_NS_FIRST_ID = QueueFirstLineId();
-      NotifyStateWrite();
+      NotifyAdvanceLine(line_bytes, qsize);
       return;
    }
 
    const bool wantP = (ch == "P" || ch == "B");
    const bool wantT = (ch == "T" || ch == "B");
-   const bool canP = G_NS_PUSH_AVAIL;
-   const bool canT = (G_NS_TG_AVAIL && !G_NS_TG_PERM);
-   const bool anyDoneOrDoable = ((wantP && (G_NS_P == 2 || canP)) ||
-                                 (wantT && (G_NS_T == 2 || canT)));
-   if((wantP || wantT) && !anyDoneOrDoable)
+   bool canP = G_NS_PUSH_AVAIL;
+   bool canT = (G_NS_TG_AVAIL && !G_NS_TG_PERM);
+   if(!canP && !canT)
    {
       NotifyLeaseWriteFatal();
-      NotifySenderLog("FATAL: no usable channel for this queue line");
       return;
    }
    if(wantP && G_NS_P != 2 && !canP)
    {
       G_NS_P = 2;
-      const ulong nowp = NowMs();
       const string warn = "MT Push requested by queue but this sender terminal has no MetaQuotes ID / Notifications OFF (Tools > Options > Notifications)";
+      if(!G_NS_PUSH_UNAVAIL_LOGGED)
+      {
+         NotifySenderLog(warn);
+         G_NS_PUSH_UNAVAIL_LOGGED = true;
+      }
       if(!G_NS_PUSH_ALERT_DONE)
       {
-         NotifySenderLog(warn);
          Alert(G_NS_LOG + " " + warn);
          G_NS_PUSH_ALERT_DONE = true;
-         G_NS_PUSH_PRINT_MS = nowp;
-      }
-      else if(G_NS_PUSH_PRINT_MS == 0 || (nowp - G_NS_PUSH_PRINT_MS) >= 60000)
-      {
-         NotifySenderLog(warn);
-         G_NS_PUSH_PRINT_MS = nowp;
       }
       if(!NotifyStateWrite())
          return;
@@ -1422,50 +1585,105 @@ void NotifySenderProcessLine(const bool allow_push, const bool allow_tg)
    if(wantT && G_NS_T != 2 && !canT)
    {
       G_NS_T = 2;
+      if(!G_NS_CH_SKIP_LOGGED_T)
+      {
+         NotifySenderLog("Telegram unusable - skipping channel");
+         G_NS_CH_SKIP_LOGGED_T = true;
+      }
       if(!NotifyStateWrite())
          return;
+   }
+
+   if(G_NS_OUTAGE_LID != G_NS_LID)
+   {
+      G_NS_OUTAGE_LID = G_NS_LID;
+      G_NS_TG_OUTAGE_MS = 0;
+      G_NS_PUSH_OUTAGE_MS = 0;
    }
 
    if(wantP && G_NS_P == 0 && canP)
    {
       if(!allow_push)
          return;
-      G_NS_P = 1;
-      if(!NotifyStateWrite())
-         return;
-      const int rc = NotifySendPushOne(text);
-      if(rc == 1)
+      const bool push_backoff = (G_NS_PUSH_BACKOFF_UNTIL > 0 && NowMs() < G_NS_PUSH_BACKOFF_UNTIL);
+      if(!NotifyPushReady())
       {
-         G_NS_P = 2;
-         if(!NotifyStateWrite())
-            return;
-      }
-      else if(rc == 2)
-      {
-         G_NS_P = 2;
-         if(!NotifyStateWrite())
-            return;
-      }
-      else if(rc == -1)
-      {
-         G_NS_P = 0;
-         if(!NotifyStateWrite())
-            return;
-         if(!wantT || !canT)
+         if(push_backoff)
          {
-            NotifyLeaseWriteFatal();
-            NotifySenderLog("FATAL: MT Push unavailable");
-            return;
+            const ulong nowb = NowMs();
+            if(G_NS_PUSH_OUTAGE_MS == 0)
+               G_NS_PUSH_OUTAGE_MS = nowb;
+            if((nowb - G_NS_PUSH_OUTAGE_MS) >= (ulong)NS_OUTAGE_SKIP_SEC * 1000)
+            {
+               G_NS_P = 2;
+               const string skipp = StringFormat("PUSH_SKIPPED_OUTAGE id=%s", G_NS_LID);
+               NotifySenderLog(skipp);
+               NotifySenderHud(skipp);
+               if(!NotifyStateWrite())
+                  return;
+            }
+            else
+               return;
          }
-         G_NS_P = 2;
-         if(!NotifyStateWrite())
+         else
             return;
       }
       else
       {
-         G_NS_P = 0;
-         NotifyStateWrite();
-         return;
+         G_NS_P = 1;
+         if(!NotifyStateWrite())
+            return;
+         const int rc = NotifySendPushOne(text);
+         if(rc == 1)
+         {
+            G_NS_P = 2;
+            G_NS_PUSH_OUTAGE_MS = 0;
+            if(!NotifyStateWrite())
+               return;
+         }
+         else if(rc == 2)
+         {
+            G_NS_P = 2;
+            if(!NotifyStateWrite())
+               return;
+         }
+         else if(rc == -1)
+         {
+            G_NS_P = 2;
+            canP = G_NS_PUSH_AVAIL;
+            canT = (G_NS_TG_AVAIL && !G_NS_TG_PERM);
+            if(!G_NS_PUSH_UNAVAIL_LOGGED)
+            {
+               NotifySenderLog("MT Push unavailable - skipping channel");
+               G_NS_PUSH_UNAVAIL_LOGGED = true;
+            }
+            if(!NotifyStateWrite())
+               return;
+            if(!canP && !canT)
+            {
+               NotifyLeaseWriteFatal();
+               return;
+            }
+         }
+         else
+         {
+            G_NS_P = 0;
+            NotifyStateWrite();
+            const ulong nowf = NowMs();
+            if(G_NS_PUSH_OUTAGE_MS == 0)
+               G_NS_PUSH_OUTAGE_MS = nowf;
+            if((nowf - G_NS_PUSH_OUTAGE_MS) >= (ulong)NS_OUTAGE_SKIP_SEC * 1000)
+            {
+               G_NS_P = 2;
+               const string skipp = StringFormat("PUSH_SKIPPED_OUTAGE id=%s", G_NS_LID);
+               NotifySenderLog(skipp);
+               NotifySenderHud(skipp);
+               if(!NotifyStateWrite())
+                  return;
+            }
+            else
+               return;
+         }
       }
    }
 
@@ -1473,59 +1691,92 @@ void NotifySenderProcessLine(const bool allow_push, const bool allow_tg)
    {
       if(!allow_tg)
          return;
-      G_NS_T = 1;
-      if(!NotifyStateWrite())
-         return;
-      const int rc = NotifyTelegramPost(text);
-      if(rc == 1)
+      const bool tg_backoff = (G_NS_TG_BACKOFF_UNTIL > 0 && NowMs() < G_NS_TG_BACKOFF_UNTIL);
+      if(!NotifyTgReady())
       {
-         G_NS_T = 2;
-         if(!NotifyStateWrite())
-            return;
-      }
-      else if(rc == 2)
-      {
-         G_NS_T = 2;
-         if(!NotifyStateWrite())
-            return;
-      }
-      else if(rc == -2)
-      {
-         G_NS_T = 0;
-         if(!NotifyStateWrite())
-            return;
-         if(!(wantP && (G_NS_P == 2 || canP)))
+         if(tg_backoff)
          {
-            NotifyLeaseWriteFatal();
-            NotifySenderLog("FATAL: Telegram permanently disabled");
-            return;
+            const ulong nowb = NowMs();
+            if(G_NS_TG_OUTAGE_MS == 0)
+               G_NS_TG_OUTAGE_MS = nowb;
+            if((nowb - G_NS_TG_OUTAGE_MS) >= (ulong)NS_OUTAGE_SKIP_SEC * 1000)
+            {
+               G_NS_T = 2;
+               const string skipt = StringFormat("TG_SKIPPED_OUTAGE id=%s", G_NS_LID);
+               NotifySenderLog(skipt);
+               NotifySenderHud(skipt);
+               if(!NotifyStateWrite())
+                  return;
+            }
+            else
+               return;
          }
-         G_NS_T = 2;
-         if(!NotifyStateWrite())
+         else
             return;
       }
       else
       {
-         G_NS_T = 0;
-         NotifyStateWrite();
-         return;
+         G_NS_T = 1;
+         if(!NotifyStateWrite())
+            return;
+         const int rc = NotifyTelegramPost(text);
+         if(rc == 1)
+         {
+            G_NS_T = 2;
+            G_NS_TG_OUTAGE_MS = 0;
+            if(!NotifyStateWrite())
+               return;
+         }
+         else if(rc == 2)
+         {
+            G_NS_T = 2;
+            if(!NotifyStateWrite())
+               return;
+         }
+         else if(rc == -2)
+         {
+            G_NS_T = 2;
+            canP = G_NS_PUSH_AVAIL;
+            canT = (G_NS_TG_AVAIL && !G_NS_TG_PERM);
+            if(!G_NS_CH_SKIP_LOGGED_T)
+            {
+               NotifySenderLog("Telegram permanently disabled - skipping channel");
+               G_NS_CH_SKIP_LOGGED_T = true;
+            }
+            if(!NotifyStateWrite())
+               return;
+            if(!canP && !canT)
+            {
+               NotifyLeaseWriteFatal();
+               return;
+            }
+         }
+         else
+         {
+            G_NS_T = 0;
+            NotifyStateWrite();
+            const ulong nowf = NowMs();
+            if(G_NS_TG_OUTAGE_MS == 0)
+               G_NS_TG_OUTAGE_MS = nowf;
+            if((nowf - G_NS_TG_OUTAGE_MS) >= (ulong)NS_OUTAGE_SKIP_SEC * 1000)
+            {
+               G_NS_T = 2;
+               const string skipt = StringFormat("TG_SKIPPED_OUTAGE id=%s", G_NS_LID);
+               NotifySenderLog(skipt);
+               NotifySenderHud(skipt);
+               if(!NotifyStateWrite())
+                  return;
+            }
+            else
+               return;
+         }
       }
    }
 
    const bool pdone = (!wantP || G_NS_P == 2);
    const bool tdone = (!wantT || G_NS_T == 2);
    if(pdone && tdone)
-   {
-      G_NS_OFF += line_bytes;
-      G_NS_P = 0;
-      G_NS_T = 0;
-      G_NS_LID = "";
-      if(StringLen(G_NS_FIRST_ID) <= 0 && G_NS_OFF > 0)
-         G_NS_FIRST_ID = QueueFirstLineId();
-      NotifyStateWrite();
-      if(G_NS_OFF >= qsize)
-         MaybeRotateQueue();
-   }
+      NotifyAdvanceLine(line_bytes, qsize);
 }
 
 void NotifyLeaseFollowerTick()
@@ -1542,12 +1793,32 @@ void NotifyLeaseFollowerTick()
    int gen = 0;
    string st = "";
    string fp = "";
-   const bool have = NotifyLeaseReadNow(owner, hb, gen, st, fp);
-   if(!have || st == "FREE" || StringLen(owner) <= 0)
+   const int kind = NotifyLeaseProbe(owner, hb, gen, st, fp);
+   if(kind == NS_LEASE_UNREADABLE)
+      return;
+   if(kind == NS_LEASE_OK && owner == G_NS_OWNER && (st == "RUN" || st == "CLAIM"))
+   {
+      G_NS_HB = hb;
+      G_NS_GEN = gen;
+      if(st == "CLAIM")
+      {
+         G_NS_HB++;
+         if(!NotifyLeaseWrite(G_NS_OWNER, G_NS_HB, G_NS_GEN, "RUN", G_NS_FP))
+            return;
+      }
+      if(G_NS_LOCK == INVALID_HANDLE)
+         NotifyLegacyGuardTry();
+      G_NS_ROLE = NS_ROLE_HOLDER;
+      G_NS_LAST_HB_MS = now;
+      NotifyStateLoadAsHolder();
+      NotifySenderLog("lease holder RUN");
+      return;
+   }
+   if(kind == NS_LEASE_ABSENT || kind == NS_LEASE_EMPTY || kind == NS_LEASE_FREE)
    {
       G_NS_OBS_KEY = "";
       G_NS_CLAIM_FROM_STALE = false;
-      G_NS_GEN = have ? (gen + 1) : 1;
+      G_NS_GEN = (kind == NS_LEASE_FREE) ? (gen + 1) : 1;
       G_NS_HB = 1;
       if(!NotifyLeaseWrite(G_NS_OWNER, G_NS_HB, G_NS_GEN, "CLAIM", G_NS_FP))
          return;
@@ -1608,7 +1879,24 @@ void NotifyLeaseConfirmClaim()
    int gen = 0;
    string st = "";
    string fp = "";
-   if(!NotifyLeaseReadNow(owner, hb, gen, st, fp) || owner != G_NS_OWNER || st != "CLAIM" || gen != G_NS_GEN)
+   bool claim_ok = false;
+   for(int attempt = 0; attempt < 3; attempt++)
+   {
+      if(attempt > 0)
+         Sleep(50 + (MathRand() % 51));
+      const int kind = NotifyLeaseProbe(owner, hb, gen, st, fp);
+      if(kind == NS_LEASE_UNREADABLE)
+         continue;
+      if(kind != NS_LEASE_OK || owner != G_NS_OWNER || st != "CLAIM" || gen != G_NS_GEN)
+      {
+         G_NS_BACKOFF_UNTIL_MS = now + (ulong)(1000 + (MathRand() % 4001));
+         NotifyLeaseBecomeFollower();
+         return;
+      }
+      claim_ok = true;
+      break;
+   }
+   if(!claim_ok)
    {
       G_NS_BACKOFF_UNTIL_MS = now + (ulong)(1000 + (MathRand() % 4001));
       NotifyLeaseBecomeFollower();
@@ -1636,7 +1924,7 @@ void NotifyLeaseConfirmClaim()
       NotifyLeaseBecomeFollower();
       return;
    }
-   if(!NotifyLeaseReadNow(owner, hb, gen, st, fp) || owner != G_NS_OWNER || st != "RUN")
+   if(!NotifyLeaseReadNowRetry(owner, hb, gen, st, fp) || owner != G_NS_OWNER || st != "RUN")
    {
       G_NS_BACKOFF_UNTIL_MS = now + (ulong)(1000 + (MathRand() % 4001));
       NotifyLeaseBecomeFollower();
@@ -1653,6 +1941,8 @@ void NotifyLeaseMaybeRenew()
    const ulong now = NowMs();
    if(G_NS_LAST_HB_MS != 0 && (now - G_NS_LAST_HB_MS) < (ulong)LEASE_HB_SEC * 1000)
       return;
+   if(G_NS_LOCK == INVALID_HANDLE)
+      NotifyLegacyGuardTry();
    if(!NotifyLeaseConfirmOwn())
    {
       NotifyLeaseLost();
@@ -1669,7 +1959,7 @@ void NotifyLeaseMaybeRenew()
    int gen = 0;
    string st = "";
    string fp = "";
-   if(!NotifyLeaseReadNow(owner, hb, gen, st, fp) || owner != G_NS_OWNER || st != "RUN")
+   if(!NotifyLeaseReadNowRetry(owner, hb, gen, st, fp) || owner != G_NS_OWNER || st != "RUN")
    {
       NotifyLeaseLost();
       return;
@@ -1717,6 +2007,13 @@ void NotifySenderInit(const string kind, const int timeout_ms)
    G_NS_FAIL_LOGGED = false;
    G_NS_429_LOGGED = false;
    G_NS_INFLIGHT_HUD = false;
+   G_NS_FATAL_ALERTED = false;
+   G_NS_CH_SKIP_LOGGED_P = false;
+   G_NS_CH_SKIP_LOGGED_T = false;
+   G_NS_PUSH_UNAVAIL_LOGGED = false;
+   G_NS_OUTAGE_LID = "";
+   G_NS_TG_OUTAGE_MS = 0;
+   G_NS_PUSH_OUTAGE_MS = 0;
    G_NS_ERR_BACKOFF_SEC = 5;
    G_NS_PUSH_ERR_BACKOFF_SEC = 5;
    G_NS_TG_BACKOFF_UNTIL = 0;
@@ -1740,10 +2037,13 @@ void NotifySenderInit(const string kind, const int timeout_ms)
    NotifyStateClearMem();
 
    const long login = (long)AccountInfoInteger(ACCOUNT_LOGIN);
-   MathSrand((int)(GetTickCount() ^ (int)ChartID() ^ (int)login));
+   MathSrand((int)(GetMicrosecondCount() ^ GetTickCount() ^ (int)ChartID() ^ (int)login));
+   const uint us = (uint)GetMicrosecondCount();
    const int n1 = MathRand();
    const int n2 = MathRand();
-   G_NS_NONCE = StringFormat("%04X%04X", n1 & 0xFFFF, n2 & 0xFFFF);
+   const int n3 = MathRand();
+   G_NS_NONCE = StringFormat("%04X%04X%04X%04X",
+                             (int)(us & 0xFFFF), n1 & 0xFFFF, n2 & 0xFFFF, n3 & 0xFFFF);
    const string path = TerminalInfoString(TERMINAL_DATA_PATH);
    const string ph = NotifyHex8u(NotifyFnv1a32(path));
    G_NS_OWNER = StringFormat("%s:%I64d:%s:%I64d:%s",
@@ -1792,6 +2092,7 @@ void NotifySenderDeinit()
       return;
    if(G_NS_ROLE == NS_ROLE_HOLDER || G_NS_ROLE == NS_ROLE_CLAIMING)
       NotifyLeaseWriteFree();
+   NotifyLeaseTmpDelete();
    NotifyLegacyGuardRelease();
    G_NS_ACTIVE = false;
    G_NS_ROLE = NS_ROLE_FOLLOWER;
