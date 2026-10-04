@@ -214,12 +214,13 @@ input int         I_FILL_AUDIT_HOLD_SEC = 30;   // Fill audit: seconds to keep l
 input bool        I_NEG_DIFF_FORCE_ENABLED = false; // Close-only after consecutive losing pair fills (realized pts)
 input int         I_NEG_DIFF_FORCE_PTS = -1;        // Hit when realized fill pts of a completed pair-tx <= this
 input int         I_NEG_DIFF_FORCE_COUNT = 5;       // Consecutive losing OPEN or CLOSE pair-tx before close-only
-input bool        I_NEG_DIFF_FORCE_CLEAR_STATE = false; // On attach: delete this port's + legacy neg-diff keys
-input ENUM_SFX_NOTIFY I_NOTIFY_CHANNEL = NOTIFY_OFF; // Notification channel
+input bool        I_NEG_DIFF_FORCE_CLEAR_STATE = false; // One-shot: delete this port's neg-diff keys (then set false)
+input ENUM_SFX_NOTIFY I_NOTIFY_CHANNEL = NOTIFY_OFF; // Notification channel (MT Push/Both for time-critical)
 input int         I_PUSH_MIN_INTERVAL_SEC = 60;     // Min seconds between same-event alerts
 input bool        I_NOTIFY_TEST_ON_INIT = false;    // Send one test alert on attach
-input string      I_TG_BOT_TOKEN = "";              // Telegram bot token (from @BotFather)
+input string      I_TG_BOT_TOKEN = "";              // Optional token; prefer I_TG_TOKEN_FILE (never logged)
 input string      I_TG_CHAT_ID = "";                // Telegram chat id (user or -group)
+input string      I_TG_TOKEN_FILE = "SFX-SYNC-telegram-token.txt"; // Common Files token if I_TG_BOT_TOKEN empty
 
 bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
 int               I_DIFF_ZONE_STABILITY_TICKS = 7;         // Ticks in positive zone required
@@ -4119,6 +4120,7 @@ void OnTimer()
    if(I_ROLE == ROLE_SOURCE_MASTER) MasterLoop();
    else SlaveLoop();
    RefreshChartComment();
+   NotifyFlushPending();
    NotifyDrainTelegram();
 }
 

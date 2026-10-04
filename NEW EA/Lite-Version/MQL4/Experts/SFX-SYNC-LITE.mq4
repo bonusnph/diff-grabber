@@ -192,12 +192,13 @@ int               I_FILL_AUDIT_HOLD_SEC = 30;   // Fill audit: seconds to keep l
 input bool        I_NEG_DIFF_FORCE_ENABLED = false; // Close-only after consecutive losing pair fills (realized pts)
 input int         I_NEG_DIFF_FORCE_PTS = -1;        // Hit when realized fill pts of a completed pair-tx <= this
 input int         I_NEG_DIFF_FORCE_COUNT = 5;       // Consecutive losing OPEN or CLOSE pair-tx before close-only
-input bool        I_NEG_DIFF_FORCE_CLEAR_STATE = false; // On attach: delete this port's + legacy neg-diff keys
+input bool        I_NEG_DIFF_FORCE_CLEAR_STATE = false; // One-shot: delete this port's neg-diff keys (then set false)
 ENUM_SFX_NOTIFY   I_NOTIFY_CHANNEL = NOTIFY_OFF;
 int               I_PUSH_MIN_INTERVAL_SEC = 60;
 bool              I_NOTIFY_TEST_ON_INIT = false;
 string            I_TG_BOT_TOKEN = "";
 string            I_TG_CHAT_ID = "";
+string            I_TG_TOKEN_FILE = "SFX-SYNC-telegram-token.txt";
 
 bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
 int               I_DIFF_ZONE_STABILITY_TICKS = 7;         // Ticks in positive zone required
@@ -2942,6 +2943,12 @@ void StartCloseTransaction(const string reason)
       SyncLog(StringFormat("[SFX-SYNC] CLOSE blocked code=%s detail=%s", guard_code, guard_detail));
       return;
    }
+   if(G_FORCE_FLAT_ACTIVE)
+   {
+      if(reason == "UI_BUTTON")
+         NotifyCloseRejectedDuringForceFlat();
+      return;
+   }
    if(G_CLOSE_TX_ACTIVE || G_OPEN_TX_ACTIVE) return;
    if(!G_PAIR_ACTIVE)
    {
@@ -3945,6 +3952,7 @@ int OnInit()
    CreateButtons();
    SyncLogSessionStart();
    NegDiffRestoreState();
+   NotifyOnInit();
    ReclaimStaleActionLocks();
    EventSetMillisecondTimer((uint)MathMax(50, I_LOOP_MS));
    RefreshChartComment();
@@ -3984,6 +3992,8 @@ void OnTimer()
    if(I_ROLE == ROLE_SOURCE_MASTER) MasterLoop();
    else SlaveLoop();
    RefreshChartComment();
+   NotifyFlushPending();
+   NotifyDrainTelegram();
 }
 
 void OnTick()
@@ -4007,8 +4017,16 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    }
    if(id == CHARTEVENT_OBJECT_CLICK && sparam == "SFX_CLOSE_NOW" && I_ROLE == ROLE_SOURCE_MASTER)
    {
-      G_CLOSE_SIGNAL_REASON = "UI_BUTTON";
-      G_CLOSE_SIGNAL_REQUESTED = true;
+      if(G_FORCE_FLAT_ACTIVE)
+      {
+         ObjectSetInteger(0, "SFX_CLOSE_NOW", OBJPROP_STATE, false);
+         NotifyCloseRejectedDuringForceFlat();
+      }
+      else
+      {
+         G_CLOSE_SIGNAL_REASON = "UI_BUTTON";
+         G_CLOSE_SIGNAL_REQUESTED = true;
+      }
    }
    if(id == CHARTEVENT_OBJECT_CLICK && sparam == "SFX_CLOSE_ONLY" && I_ROLE == ROLE_SOURCE_MASTER)
    {

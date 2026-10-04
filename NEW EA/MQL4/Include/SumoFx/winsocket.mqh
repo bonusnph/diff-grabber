@@ -374,6 +374,7 @@ class ClientSocket
       bool IsSocketConnected() {return mConnected;}
       int GetLastSocketError() {return mLastWSAError;}
       ulong GetSocketHandle() {return (mSocket32 ? mSocket32 : mSocket64);}
+      bool HasPendingReceive() {return (StringLen(mPendingReceiveData) > 0);}
       
       // Buffer sizes, overwriteable once the class has been created
       int ReceiveBufferSize;
