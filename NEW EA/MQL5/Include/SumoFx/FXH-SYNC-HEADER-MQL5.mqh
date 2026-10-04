@@ -505,6 +505,377 @@ int      G_NEG_HIST_COUNT = 0;
 bool     G_FA_LAST_REALIZED_OK = false;
 double   G_FA_LAST_REALIZED_PTS = 0.0;
 
+#define SFX_NEG_GV_MAX 63
+#define SFX_NOTIFY_Q_MAX 20
+#define SFX_NOTIFY_EVT_CAP 24
+#define SFX_NOTIFY_MSG_MAX 255
+#define SFX_NOTIFY_GLOBAL_MIN_MS 5000
+#define SFX_NOTIFY_TG_TIMEOUT_MS 3000
+#define SFX_NOTIFY_TG_FAIL_LIMIT 3
+
+string   G_NOTIFY_EVT_NAME[24];
+ulong    G_NOTIFY_EVT_LAST_MS[24];
+int      G_NOTIFY_EVT_SUPP[24];
+int      G_NOTIFY_EVT_N = 0;
+ulong    G_NOTIFY_LAST_ANY_MS = 0;
+string   G_TG_QUEUE[20];
+int      G_TG_QUEUE_N = 0;
+int      G_TG_QUEUE_DROPS = 0;
+int      G_TG_FAIL_STREAK = 0;
+bool     G_TG_FAIL_LOGGED = false;
+bool     G_TG_DISABLED = false;
+bool     G_NOTIFY_PUSH_OK = false;
+bool     G_NOTIFY_TG_OK = false;
+string   G_HUD_BANNER = "";
+ulong    G_HUD_BANNER_UNTIL_MS = 0;
+string   G_NOTIFY_HUD_STICKY = "";
+bool     G_NOTIFY_PAIR_BROKEN_EPISODE = false;
+
+string NotifyTrim(const string s)
+{
+   return StringTrimRight(StringTrimLeft(s));
+}
+
+string NotifyMaskToken(const string token)
+{
+   const int n = StringLen(token);
+   if(n <= 0)
+      return "(empty)";
+   if(n <= 4)
+      return "****";
+   return StringSubstr(token, 0, 4) + "***";
+}
+
+string NotifyHex2(const int c)
+{
+   string h = "0123456789ABCDEF";
+   return StringSubstr(h, (c >> 4) & 15, 1) + StringSubstr(h, c & 15, 1);
+}
+
+string NotifyUrlEncode(const string s)
+{
+   uchar bytes[];
+   const int n = StringToCharArray(s, bytes, 0, WHOLE_ARRAY, CP_UTF8);
+   int last = n;
+   if(last > 0 && bytes[last - 1] == 0)
+      last--;
+   string out = "";
+   for(int i = 0; i < last; i++)
+   {
+      int c = (int)bytes[i];
+      if(c < 0)
+         c += 256;
+      const bool unres = ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+                          (c >= 'a' && c <= 'z') || c == '-' || c == '_' ||
+                          c == '.' || c == '~');
+      if(unres)
+         out += CharToString((uchar)c);
+      else
+         out += "%" + NotifyHex2(c);
+   }
+   return out;
+}
+
+string NotifyClip255(const string s)
+{
+   if(StringLen(s) <= SFX_NOTIFY_MSG_MAX)
+      return s;
+   return StringSubstr(s, 0, SFX_NOTIFY_MSG_MAX);
+}
+
+string NotifyRoleName()
+{
+   return (I_ROLE == ROLE_SOURCE_MASTER) ? "MASTER" : "SLAVE";
+}
+
+bool NotifyPushWanted()
+{
+   return (I_NOTIFY_CHANNEL == NOTIFY_MT_PUSH || I_NOTIFY_CHANNEL == NOTIFY_BOTH);
+}
+
+bool NotifyTelegramWanted()
+{
+   return (I_NOTIFY_CHANNEL == NOTIFY_TELEGRAM || I_NOTIFY_CHANNEL == NOTIFY_BOTH);
+}
+
+bool NotifyPushActive()
+{
+   return (NotifyPushWanted() && G_NOTIFY_PUSH_OK);
+}
+
+bool NotifyTelegramActive()
+{
+   return (NotifyTelegramWanted() && G_NOTIFY_TG_OK && !G_TG_DISABLED);
+}
+
+void HudBannerSet(const string msg, const int hold_sec)
+{
+   G_HUD_BANNER = msg;
+   G_HUD_BANNER_UNTIL_MS = NowMs() + (ulong)MathMax(1, hold_sec) * 1000;
+}
+
+string HudBannerBlock()
+{
+   string out = "";
+   if(StringLen(G_NOTIFY_HUD_STICKY) > 0)
+      out += "\nNOTIFY: " + G_NOTIFY_HUD_STICKY + "\n";
+   if(StringLen(G_HUD_BANNER) > 0 && NowMs() <= G_HUD_BANNER_UNTIL_MS)
+      out += "\nNOTIFY: " + G_HUD_BANNER + "\n";
+   return out;
+}
+
+int NotifyEvtIndex(const string ev)
+{
+   for(int i = 0; i < G_NOTIFY_EVT_N; i++)
+   {
+      if(G_NOTIFY_EVT_NAME[i] == ev)
+         return i;
+   }
+   if(G_NOTIFY_EVT_N >= SFX_NOTIFY_EVT_CAP)
+      return 0;
+   const int idx = G_NOTIFY_EVT_N;
+   G_NOTIFY_EVT_NAME[idx] = ev;
+   G_NOTIFY_EVT_LAST_MS[idx] = 0;
+   G_NOTIFY_EVT_SUPP[idx] = 0;
+   G_NOTIFY_EVT_N++;
+   return idx;
+}
+
+string NotifyBuildText(const string ev, const string extra, const int suppressed)
+{
+   string msg = StringFormat("SFX-SYNC v%s %I64d %s p%d %s %s",
+                             SFX_SYNC_EA_VERSION,
+                             AccountInfoInteger(ACCOUNT_LOGIN),
+                             G_SYMBOL,
+                             (int)I_PORT,
+                             NotifyRoleName(),
+                             ev);
+   if(StringLen(extra) > 0)
+      msg += " " + extra;
+   if(suppressed > 0)
+      msg += StringFormat(" (+%d suppressed)", suppressed);
+   return NotifyClip255(msg);
+}
+
+void NotifySendPush(const string text)
+{
+   ResetLastError();
+   if(!SendNotification(text))
+   {
+      const int err = GetLastError();
+      const string ln = StringFormat("[SFX-SYNC] SendNotification failed err=%d", err);
+      Print(ln);
+      SyncLog(ln);
+   }
+}
+
+void NotifyTelegramEnqueue(const string text)
+{
+   if(G_TG_QUEUE_N >= SFX_NOTIFY_Q_MAX)
+   {
+      for(int i = 1; i < SFX_NOTIFY_Q_MAX; i++)
+         G_TG_QUEUE[i - 1] = G_TG_QUEUE[i];
+      G_TG_QUEUE_N = SFX_NOTIFY_Q_MAX - 1;
+      G_TG_QUEUE_DROPS++;
+   }
+   G_TG_QUEUE[G_TG_QUEUE_N] = text;
+   G_TG_QUEUE_N++;
+}
+
+void NotifyTelegramNoteFail(const int http, const int err)
+{
+   G_TG_FAIL_STREAK++;
+   if(!G_TG_FAIL_LOGGED)
+   {
+      const string ln = StringFormat(
+         "[SFX-SYNC] Telegram send failed http=%d err=%d (allow https://api.telegram.org for WebRequest)",
+         http, err);
+      Print(ln);
+      SyncLog(ln);
+      G_TG_FAIL_LOGGED = true;
+   }
+   if(G_TG_FAIL_STREAK >= SFX_NOTIFY_TG_FAIL_LIMIT)
+   {
+      G_TG_DISABLED = true;
+      SyncLog("[SFX-SYNC] Telegram auto-disabled until restart after consecutive send failures");
+   }
+}
+
+bool NotifyTelegramPost(const string text)
+{
+   if(MQLInfoInteger(MQL_TESTER) != 0)
+      return false;
+   const string token = NotifyTrim(I_TG_BOT_TOKEN);
+   const string chat = NotifyTrim(I_TG_CHAT_ID);
+   if(StringLen(token) == 0 || StringLen(chat) == 0)
+      return false;
+   const string url = "https://api.telegram.org/bot" + token + "/sendMessage";
+   const string body = "chat_id=" + NotifyUrlEncode(chat) + "&text=" + NotifyUrlEncode(text);
+   const string headers = "Content-Type: application/x-www-form-urlencoded\r\n";
+   char postData[];
+   char resultData[];
+   string resultHeaders;
+   StringToCharArray(body, postData, 0, StringLen(body));
+   ResetLastError();
+   const int http = WebRequest("POST", url, headers, SFX_NOTIFY_TG_TIMEOUT_MS, postData, resultData, resultHeaders);
+   const int err = GetLastError();
+   if(http == -1 || http == 4014 || http == 4060 || http != 200)
+   {
+      NotifyTelegramNoteFail(http, err);
+      return false;
+   }
+   G_TG_FAIL_STREAK = 0;
+   G_TG_FAIL_LOGGED = false;
+   return true;
+}
+
+void NotifyDrainTelegramEx(const bool ignore_trade_busy)
+{
+   if(!NotifyTelegramActive())
+      return;
+   if(G_TG_QUEUE_N <= 0)
+      return;
+   if(MQLInfoInteger(MQL_TESTER) != 0)
+      return;
+   if(!ignore_trade_busy && (G_OPEN_TX_ACTIVE || G_CLOSE_TX_ACTIVE || G_FORCE_FLAT_ACTIVE))
+      return;
+   const string text = G_TG_QUEUE[0];
+   for(int i = 1; i < G_TG_QUEUE_N; i++)
+      G_TG_QUEUE[i - 1] = G_TG_QUEUE[i];
+   G_TG_QUEUE_N--;
+   if(G_TG_QUEUE_DROPS > 0)
+   {
+      const string marked = NotifyClip255(text + StringFormat(" (qdrop=%d)", G_TG_QUEUE_DROPS));
+      G_TG_QUEUE_DROPS = 0;
+      NotifyTelegramPost(marked);
+      return;
+   }
+   NotifyTelegramPost(text);
+}
+
+void NotifyDrainTelegram()
+{
+   NotifyDrainTelegramEx(false);
+}
+
+void NotifyEvent(const string ev, const string extra)
+{
+   if(I_NOTIFY_CHANNEL == NOTIFY_OFF)
+      return;
+   const bool want_push = NotifyPushActive();
+   const bool want_tg = NotifyTelegramActive();
+   if(!want_push && !want_tg)
+      return;
+
+   const int idx = NotifyEvtIndex(ev);
+   const ulong now = NowMs();
+   const ulong per_ms = (ulong)MathMax(1, I_PUSH_MIN_INTERVAL_SEC) * 1000;
+   ulong glob_ms = (ulong)SFX_NOTIFY_GLOBAL_MIN_MS;
+   if(per_ms < glob_ms)
+      glob_ms = per_ms;
+
+   bool blocked = false;
+   if(G_NOTIFY_EVT_LAST_MS[idx] > 0 && (now - G_NOTIFY_EVT_LAST_MS[idx]) < per_ms)
+      blocked = true;
+   if(G_NOTIFY_LAST_ANY_MS > 0 && (now - G_NOTIFY_LAST_ANY_MS) < glob_ms)
+      blocked = true;
+   if(blocked)
+   {
+      G_NOTIFY_EVT_SUPP[idx]++;
+      return;
+   }
+
+   const int supp = G_NOTIFY_EVT_SUPP[idx];
+   G_NOTIFY_EVT_SUPP[idx] = 0;
+   G_NOTIFY_EVT_LAST_MS[idx] = now;
+   G_NOTIFY_LAST_ANY_MS = now;
+   const string text = NotifyBuildText(ev, extra, supp);
+   if(want_push)
+      NotifySendPush(text);
+   if(want_tg)
+      NotifyTelegramEnqueue(text);
+}
+
+void NotifyEventAndFlushTg(const string ev, const string extra)
+{
+   NotifyEvent(ev, extra);
+   NotifyDrainTelegramEx(true);
+}
+
+void NotifyPairBrokenOnce(const string extra)
+{
+   if(G_NOTIFY_PAIR_BROKEN_EPISODE)
+      return;
+   G_NOTIFY_PAIR_BROKEN_EPISODE = true;
+   NotifyEvent("PAIR_BROKEN", extra);
+}
+
+void NotifyPairBrokenReset()
+{
+   G_NOTIFY_PAIR_BROKEN_EPISODE = false;
+}
+
+void NotifyCloseRejectedDuringForceFlat()
+{
+   const string msg = "[SFX-SYNC] CLOSE rejected: force-flat is in progress. Press CLOSE again after it finishes.";
+   Print(msg);
+   SyncLog(msg);
+   ExpertPrintLn(msg);
+   Alert(msg);
+   HudBannerSet("CLOSE rejected — force-flat in progress. Press again after it finishes.", 6);
+   NotifyEvent("CLOSE_REJECTED", "force-flat active");
+}
+
+void NotifyOnInit()
+{
+   G_NOTIFY_PUSH_OK = false;
+   G_NOTIFY_TG_OK = false;
+   G_NOTIFY_HUD_STICKY = "";
+   if(I_NOTIFY_CHANNEL == NOTIFY_OFF)
+      return;
+
+   if(NotifyPushWanted())
+   {
+      if(TerminalInfoInteger(TERMINAL_NOTIFICATIONS_ENABLED) == 0)
+      {
+         const string warn = "[SFX-SYNC] MT push selected but Notifications are OFF. Enable Tools > Options > Notifications and enter the MetaQuotes ID from the mobile app.";
+         Print(warn);
+         SyncLog(warn);
+         HudBannerSet("MT push: Notifications / MetaQuotes ID not configured", 20);
+         G_NOTIFY_HUD_STICKY = "MT push: Notifications / MetaQuotes ID not configured";
+      }
+      else
+         G_NOTIFY_PUSH_OK = true;
+   }
+
+   if(NotifyTelegramWanted())
+   {
+      const string token = NotifyTrim(I_TG_BOT_TOKEN);
+      const string chat = NotifyTrim(I_TG_CHAT_ID);
+      if(StringLen(token) == 0 || StringLen(chat) == 0)
+      {
+         const string why = (StringLen(token) == 0 && StringLen(chat) == 0)
+            ? "bot token and chat id are empty"
+            : (StringLen(token) == 0 ? "bot token is empty" : "chat id is empty");
+         const string warn = "[SFX-SYNC] Telegram selected but " + why +
+            " — Telegram disabled. Token=" + NotifyMaskToken(token) + ".";
+         Print(warn);
+         SyncLog(warn);
+         Alert("[SFX-SYNC] Telegram selected but " + why + ". Fill I_TG_BOT_TOKEN and I_TG_CHAT_ID.");
+         HudBannerSet("Telegram: token/chat id missing — skipped", 20);
+         if(StringLen(G_NOTIFY_HUD_STICKY) > 0)
+            G_NOTIFY_HUD_STICKY += " | Telegram: token/chat id missing";
+         else
+            G_NOTIFY_HUD_STICKY = "Telegram: token/chat id missing — skipped";
+      }
+      else
+         G_NOTIFY_TG_OK = true;
+   }
+
+   if(I_NOTIFY_TEST_ON_INIT)
+      NotifyEvent("NOTIFY_TEST", "init");
+}
+
 int NegDiffNeedCount()
 {
    return MathMax(1, I_NEG_DIFF_FORCE_COUNT);
@@ -644,16 +1015,133 @@ void NegDiffApply(const bool isOpen)
       NegDiffLatchCloseOnly(false);
       SyncLog(StringFormat("[SFX-SYNC] neg-diff force trigger side=%s streak=%d realized_pts=%.1f",
                            isOpen ? "OPEN" : "CLOSE", streak, pts));
+      NotifyEvent("NEG_DIFF_FORCE",
+                  StringFormat("side=%s streak=%d/%d pts=%.1f",
+                               isOpen ? "OPEN" : "CLOSE", streak, NegDiffNeedCount(), pts));
    }
    NegDiffPersistState();
 }
 
+string NegDiffSanitizeSym(const string raw)
+{
+   string out = raw;
+   StringReplace(out, ".", "_");
+   StringReplace(out, " ", "_");
+   StringReplace(out, "-", "_");
+   StringReplace(out, "/", "_");
+   StringReplace(out, "\\", "_");
+   StringReplace(out, ":", "_");
+   return out;
+}
+
+int NegDiffHash32(const string s)
+{
+   long h = 5381;
+   const int n = StringLen(s);
+   for(int i = 0; i < n; i++)
+   {
+      h = (h * 33) + (long)StringGetCharacter(s, i);
+      h = h % 1000000007;
+      if(h < 0)
+         h = -h;
+   }
+   return (int)h;
+}
+
+string NegDiffAccountId()
+{
+   return StringFormat("%I64d", AccountInfoInteger(ACCOUNT_LOGIN));
+}
+
+string NegDiffGvKeyLegacy(const string side)
+{
+   return StringFormat("SFXNEG_%s_%s_%s", NegDiffAccountId(), NegDiffSanitizeSym(G_SYMBOL), side);
+}
+
 string NegDiffGvKey(const string side)
 {
-   string sym = G_SYMBOL;
-   StringReplace(sym, ".", "_");
-   StringReplace(sym, " ", "_");
-   return StringFormat("SFXNEG_%I64d_%s_%s", AccountInfoInteger(ACCOUNT_LOGIN), sym, side);
+   const string acc = NegDiffAccountId();
+   const string port = IntegerToString((int)I_PORT);
+   const string sym = NegDiffSanitizeSym(G_SYMBOL);
+   string key = StringFormat("SFXNEG_%s_%s_%s_%s", acc, port, sym, side);
+   if(StringLen(key) <= SFX_NEG_GV_MAX)
+      return key;
+   const string hashed = "H" + IntegerToString(NegDiffHash32(G_SYMBOL + "|" + acc + "|" + port));
+   key = StringFormat("SFXNEG_%s_%s_%s_%s", acc, port, hashed, side);
+   if(StringLen(key) <= SFX_NEG_GV_MAX)
+      return key;
+   return StringFormat("SN_%s_%s_%s", port, hashed, side);
+}
+
+string NegDiffGvKeyMig()
+{
+   const string acc = NegDiffAccountId();
+   const string port = IntegerToString((int)I_PORT);
+   string key = StringFormat("SFXNMIG_%s_%s_%s", acc, port, NegDiffSanitizeSym(G_SYMBOL));
+   if(StringLen(key) <= SFX_NEG_GV_MAX)
+      return key;
+   key = StringFormat("SFXNMIG_%s_%s_H%s", acc, port, IntegerToString(NegDiffHash32(G_SYMBOL)));
+   if(StringLen(key) <= SFX_NEG_GV_MAX)
+      return key;
+   return StringFormat("SM_%s_H%s", port, IntegerToString(NegDiffHash32(G_SYMBOL + "|" + acc)));
+}
+
+bool NegDiffHaveKeys(const bool port_keys)
+{
+   if(port_keys)
+      return (GlobalVariableCheck(NegDiffGvKey("OPEN")) ||
+              GlobalVariableCheck(NegDiffGvKey("CLOSE")) ||
+              GlobalVariableCheck(NegDiffGvKey("OPENL")) ||
+              GlobalVariableCheck(NegDiffGvKey("CLOSEL")));
+   return (GlobalVariableCheck(NegDiffGvKeyLegacy("OPEN")) ||
+           GlobalVariableCheck(NegDiffGvKeyLegacy("CLOSE")) ||
+           GlobalVariableCheck(NegDiffGvKeyLegacy("OPENL")) ||
+           GlobalVariableCheck(NegDiffGvKeyLegacy("CLOSEL")));
+}
+
+void NegDiffCopyGv(const string from_key, const string to_key)
+{
+   if(GlobalVariableCheck(from_key))
+      GlobalVariableSet(to_key, GlobalVariableGet(from_key));
+}
+
+void NegDiffMigrateLegacyIfNeeded()
+{
+   const string mig = NegDiffGvKeyMig();
+   if(GlobalVariableCheck(mig) && GlobalVariableGet(mig) >= 0.5)
+      return;
+   if(NegDiffHaveKeys(true))
+   {
+      GlobalVariableSet(mig, 1.0);
+      return;
+   }
+   if(!NegDiffHaveKeys(false))
+      return;
+   NegDiffCopyGv(NegDiffGvKeyLegacy("OPEN"), NegDiffGvKey("OPEN"));
+   NegDiffCopyGv(NegDiffGvKeyLegacy("CLOSE"), NegDiffGvKey("CLOSE"));
+   NegDiffCopyGv(NegDiffGvKeyLegacy("OPENL"), NegDiffGvKey("OPENL"));
+   NegDiffCopyGv(NegDiffGvKeyLegacy("CLOSEL"), NegDiffGvKey("CLOSEL"));
+   GlobalVariableSet(mig, 1.0);
+   SyncLog(StringFormat(
+      "[SFX-SYNC] neg-diff migrated legacy GV -> per-port keys login=%s port=%d symbol=%s (legacy keys kept)",
+      NegDiffAccountId(), (int)I_PORT, G_SYMBOL));
+}
+
+void NegDiffClearPortKeys()
+{
+   GlobalVariableDel(NegDiffGvKey("OPEN"));
+   GlobalVariableDel(NegDiffGvKey("CLOSE"));
+   GlobalVariableDel(NegDiffGvKey("OPENL"));
+   GlobalVariableDel(NegDiffGvKey("CLOSEL"));
+   GlobalVariableDel(NegDiffGvKeyMig());
+}
+
+void NegDiffClearLegacyKeys()
+{
+   GlobalVariableDel(NegDiffGvKeyLegacy("OPEN"));
+   GlobalVariableDel(NegDiffGvKeyLegacy("CLOSE"));
+   GlobalVariableDel(NegDiffGvKeyLegacy("OPENL"));
+   GlobalVariableDel(NegDiffGvKeyLegacy("CLOSEL"));
 }
 
 void NegDiffPersistState()
@@ -668,10 +1156,7 @@ void NegDiffPersistState()
 
 void NegDiffClearPersistedState()
 {
-   GlobalVariableDel(NegDiffGvKey("OPEN"));
-   GlobalVariableDel(NegDiffGvKey("CLOSE"));
-   GlobalVariableDel(NegDiffGvKey("OPENL"));
-   GlobalVariableDel(NegDiffGvKey("CLOSEL"));
+   NegDiffClearPortKeys();
 }
 
 void NegDiffRestoreState()
@@ -681,12 +1166,15 @@ void NegDiffRestoreState()
    if(I_NEG_DIFF_FORCE_CLEAR_STATE)
    {
       NegDiffClearMemory();
-      NegDiffClearPersistedState();
-      SyncLog("[SFX-SYNC] neg-diff persisted state cleared (I_NEG_DIFF_FORCE_CLEAR_STATE)");
+      NegDiffClearPortKeys();
+      NegDiffClearLegacyKeys();
+      SyncLog("[SFX-SYNC] neg-diff persisted state cleared (I_NEG_DIFF_FORCE_CLEAR_STATE) port+legacy keys");
       return;
    }
    if(!I_NEG_DIFF_FORCE_ENABLED)
       return;
+
+   NegDiffMigrateLegacyIfNeeded();
 
    const string kOpen = NegDiffGvKey("OPEN");
    const string kClose = NegDiffGvKey("CLOSE");
@@ -707,10 +1195,11 @@ void NegDiffRestoreState()
       G_NEG_TRIGGER_CLOSE = (GlobalVariableGet(kCloseL) >= 0.5);
    if(G_NEG_TRIGGER_OPEN || G_NEG_TRIGGER_CLOSE)
       G_CLOSE_ONLY_MANUAL_ON = true;
-   SyncLog(StringFormat("[SFX-SYNC] neg-diff restored open=%d/%s close=%d/%s latch=%s",
+   SyncLog(StringFormat("[SFX-SYNC] neg-diff restored open=%d/%s close=%d/%s latch=%s port=%d",
                         G_NEG_STREAK_OPEN, G_NEG_TRIGGER_OPEN ? "TRIGGER" : "ok",
                         G_NEG_STREAK_CLOSE, G_NEG_TRIGGER_CLOSE ? "TRIGGER" : "ok",
-                        (G_NEG_TRIGGER_OPEN || G_NEG_TRIGGER_CLOSE) ? "ON" : "off"));
+                        (G_NEG_TRIGGER_OPEN || G_NEG_TRIGGER_CLOSE) ? "ON" : "off",
+                        (int)I_PORT));
 }
 
 void NegDiffOnManualCloseOnlyOff()

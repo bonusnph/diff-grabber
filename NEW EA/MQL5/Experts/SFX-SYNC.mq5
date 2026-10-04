@@ -3,7 +3,7 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.26"
+#define SFX_SYNC_EA_VERSION "1.27"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -52,6 +52,14 @@ enum ENUM_LOCK_SCOPE
    LOCK_SCOPE_PAIR_ACTION = 0,
    LOCK_SCOPE_PAIR_ANY_ACTION = 1,
    LOCK_SCOPE_GROUP_GLOBAL = 2
+};
+
+enum ENUM_SFX_NOTIFY
+{
+   NOTIFY_OFF = 0,       // Off
+   NOTIFY_MT_PUSH = 1,   // MT Push
+   NOTIFY_TELEGRAM = 2,  // Telegram
+   NOTIFY_BOTH = 3       // Both
 };
 
 struct DpmEvent
@@ -205,7 +213,12 @@ input int         I_FILL_AUDIT_HOLD_SEC = 30;   // Fill audit: seconds to keep l
 input bool        I_NEG_DIFF_FORCE_ENABLED = false; // Close-only after consecutive losing pair fills (realized pts)
 input int         I_NEG_DIFF_FORCE_PTS = -1;        // Hit when realized fill pts of a completed pair-tx <= this
 input int         I_NEG_DIFF_FORCE_COUNT = 5;       // Consecutive losing OPEN or CLOSE pair-tx before close-only
-input bool        I_NEG_DIFF_FORCE_CLEAR_STATE = false; // On attach: delete persisted neg-diff streak/latch for this login+symbol
+input bool        I_NEG_DIFF_FORCE_CLEAR_STATE = false; // On attach: delete this port's + legacy neg-diff keys
+input ENUM_SFX_NOTIFY I_NOTIFY_CHANNEL = NOTIFY_OFF; // Notification channel
+input int         I_PUSH_MIN_INTERVAL_SEC = 60;     // Min seconds between same-event alerts
+input bool        I_NOTIFY_TEST_ON_INIT = false;    // Send one test alert on attach
+input string      I_TG_BOT_TOKEN = "";              // Telegram bot token (from @BotFather)
+input string      I_TG_CHAT_ID = "";                // Telegram chat id (user or -group)
 
 bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
 int               I_DIFF_ZONE_STABILITY_TICKS = 7;         // Ticks in positive zone required
@@ -703,6 +716,7 @@ void RefreshChartComment()
       ClearDegradedRefreshButton();
    }
 
+   lines += HudBannerBlock();
    Comment(lines);
 }
 
@@ -2561,6 +2575,7 @@ void MasterRecoverOrphanLegsIfNeeded()
 
    G_LAST_ORPHAN_RECOVERY_MS = NowMs();
    SyncLog(StringFormat("[SFX-SYNC] ORPHAN master leg detected count=%d", ArraySize(orphan_tickets)));
+   NotifyEvent("MASTER_ORPHAN", StringFormat("count=%d", ArraySize(orphan_tickets)));
    bool all_closed = true;
    bool any_closed = false;
    for(int j = 0; j < ArraySize(orphan_tickets); j++)
@@ -2628,6 +2643,9 @@ void StartForceFlatSlave(const string reason)
    SendMsg(G_PEER, StringFormat("FORCE_FLAT;%s;%s", G_FORCE_FLAT_TX_ID, reason));
    SyncLog(StringFormat("[SFX-SYNC] FORCE_FLAT sent tx_id=%s reason=%s retries=%d",
                         G_FORCE_FLAT_TX_ID, reason, G_FORCE_FLAT_RETRY_LEFT));
+   NotifyEvent("FORCE_FLAT", reason);
+   if(reason == "SLAVE_ORPHAN_RECONCILE")
+      NotifyEvent("SLAVE_ORPHAN", reason);
 }
 
 void MonitorForceFlatState()
@@ -2658,6 +2676,7 @@ void MonitorForceFlatState()
 
    SyncLog(StringFormat("[SFX-SYNC] FORCE_FLAT timeout tx_id=%s reason=%s",
                         G_FORCE_FLAT_TX_ID, G_FORCE_FLAT_REASON));
+   NotifyEvent("FORCE_FLAT_TIMEOUT", G_FORCE_FLAT_REASON);
    FillAuditLogEvent("FORCE_FLAT", "FORCE_FLAT_TIMEOUT", G_PAIR_KEY, G_FORCE_FLAT_TX_ID,
                      FillAuditMasterPositionIsBuy(G_PAIR_MASTER_TICKET),
                      G_PAIR_MASTER_TICKET, G_PAIR_SLAVE_TICKET, false, false);
@@ -2730,8 +2749,11 @@ void PrintLogMasterCloseIntent(const string tag)
 
 void MarkDegraded(const string reason)
 {
+   const bool already = G_DEGRADED;
    G_DEGRADED = true;
    SyncLog(StringFormat("[SFX-SYNC] DEGRADED: %s", reason));
+   if(!already)
+      NotifyEvent("DEGRADED", reason);
 }
 
 // Scan local terminal for any live EA position (same magic + symbol).
@@ -2839,17 +2861,19 @@ bool TryRescueHedge()
       G_PAIR_MASTER_TICKET = rescue_ticket;
       G_PAIR_ACTIVE = true;
       G_DEGRADED = false;
-      const string ln_ok = StringFormat("[SFX-SYNC] Rescue hedge success ticket=%d attempt=%d", rescue_ticket, G_RESCUE_ATTEMPTS_USED);
+      const       string ln_ok = StringFormat("[SFX-SYNC] Rescue hedge success ticket=%d attempt=%d", rescue_ticket, G_RESCUE_ATTEMPTS_USED);
       ExpertPrintLn(ln_ok);
       SyncLog(ln_ok);
+      NotifyEvent("RESCUE_OK", StringFormat("ticket=%d attempt=%d", rescue_ticket, G_RESCUE_ATTEMPTS_USED));
       FillAuditLogEvent("RESCUE", "RESCUE_HEDGE", G_PAIR_KEY, G_PAIR_KEY,
                         G_PAIR_MASTER_SIDE == SIDE_BUY, rescue_ticket, G_PAIR_SLAVE_TICKET, true, true);
       G_RESCUE_ATTEMPTS_USED = 0;
       return true;
    }
-   const string ln_fail = StringFormat("[SFX-SYNC] Rescue hedge failed err=%d attempt=%d", err, G_RESCUE_ATTEMPTS_USED);
+   const    string ln_fail = StringFormat("[SFX-SYNC] Rescue hedge failed err=%d attempt=%d", err, G_RESCUE_ATTEMPTS_USED);
    ExpertPrintLn(ln_fail);
    SyncLog(ln_fail);
+   NotifyEvent("RESCUE_FAIL", StringFormat("err=%d attempt=%d", err, G_RESCUE_ATTEMPTS_USED));
    FillAuditLogEvent("RESCUE", "RESCUE_HEDGE", G_PAIR_KEY, G_PAIR_KEY,
                      G_PAIR_MASTER_SIDE == SIDE_BUY, -1, G_PAIR_SLAVE_TICKET, true, false);
    return false;
@@ -2870,6 +2894,7 @@ void FinalizeOpenCommit()
    G_RESCUE_ATTEMPTS_USED = 0;
    SendMsg(G_PEER, StringFormat("COMMIT;%s", G_OPEN_TX_ID));
    const string diff_commit = (G_DIFF_LAST_OPEN_INTENT_TAG == "DIFF_OPEN") ? (" " + DiffOpenParenLabel()) : "";
+   NotifyPairBrokenReset();
    SyncLog(StringFormat("[SFX-SYNC] OPEN committed pair_key=%s%s", G_PAIR_KEY, diff_commit));
    ExpertPrintLn(StringFormat("[SFX-SYNC] COMMIT pair_key=%s symbol=%s mticket=%d slave_ticket=%d%s",
                                  G_PAIR_KEY, G_SYMBOL, G_PAIR_MASTER_TICKET, G_PAIR_SLAVE_TICKET, diff_commit));
@@ -2900,6 +2925,8 @@ void RollbackOpenNow(const string why)
    );
    SyncLog(rollback_ln);
    ExpertPrintLn(rollback_ln);
+   if(G_OPEN_MASTER_OK && G_OPEN_MASTER_TICKET > 0 && !master_leg_closed)
+      NotifyEvent("MASTER_ORPHAN", StringFormat("rollback leftover ticket=%d why=%s", G_OPEN_MASTER_TICKET, why));
    G_PAIR_OPEN_INTENT_MS = 0;
    ResetOpenTxState();
 }
@@ -2921,6 +2948,7 @@ void CompleteCloseSuccess()
    NegDiffApply(false);
    const string cr = G_CLOSE_REASON;
    const string cr_disp = (cr == "DIFF_CLOSE") ? DiffCloseParenLabel() : cr;
+   NotifyPairBrokenReset();
    SyncLog(StringFormat("[SFX-SYNC] CLOSE success pair_key=%s reason=%s", G_PAIR_KEY, cr_disp));
    ExpertPrintLn(StringFormat("[SFX-SYNC] CLOSE success pair_key=%s reason=%s", G_PAIR_KEY, cr_disp));
    G_PAIR_ACTIVE = false;
@@ -3142,7 +3170,13 @@ void StartCloseTransaction(const string reason)
       SyncLog(StringFormat("[SFX-SYNC] CLOSE blocked code=%s detail=%s", guard_code, guard_detail));
       return;
    }
-   if(G_CLOSE_TX_ACTIVE || G_OPEN_TX_ACTIVE || G_FORCE_FLAT_ACTIVE) return;
+   if(G_FORCE_FLAT_ACTIVE)
+   {
+      if(reason == "UI_BUTTON")
+         NotifyCloseRejectedDuringForceFlat();
+      return;
+   }
+   if(G_CLOSE_TX_ACTIVE || G_OPEN_TX_ACTIVE) return;
    if(!G_PAIR_ACTIVE)
    {
       SyncLog("[SFX-SYNC] CLOSE skipped: no active pair");
@@ -3163,6 +3197,8 @@ void StartCloseTransaction(const string reason)
    }
    G_CLOSE_LOCK_KEY = close_lock_key;
    G_CLOSE_LOCK_TOKEN = close_lock_token;
+   if(reason == "PAIR_BROKEN")
+      NotifyPairBrokenOnce("");
 
    if(reason == "DIFF_CLOSE")
       G_DIFF_LAST_CLOSE_SIGNAL_MS = NowMs();
@@ -3240,6 +3276,9 @@ void HandleMasterIncomingPacket(const string msg)
          Alert(StringFormat("[SFX-SYNC] Version mismatch local=%s peer=%s — EA detaching",
                             SFX_SYNC_EA_VERSION,
                             StringLen(peer_version) > 0 ? peer_version : "<unknown>"));
+         NotifyEventAndFlushTg("VERSION_MISMATCH",
+                               StringFormat("local=%s peer=%s", SFX_SYNC_EA_VERSION,
+                                            StringLen(peer_version) > 0 ? peer_version : "<unknown>"));
          SendMsg(G_PEER, StringFormat("HELLO_ACK;VERSION_MISMATCH;%s", SFX_SYNC_EA_VERSION));
          CloseClient(G_PEER);
          ExpertRemove();
@@ -3433,6 +3472,7 @@ void HandleMasterIncomingPacket(const string msg)
       }
       else if(G_FORCE_FLAT_RETRY_LEFT <= 0)
       {
+         NotifyEvent("FORCE_FLAT_FAIL", G_FORCE_FLAT_REASON);
          MarkDegraded("FORCE_FLAT_FAIL");
          ResetForceFlatState();
       }
@@ -3476,6 +3516,8 @@ void HandleSlaveIncomingPacket(const string msg)
          ExpertPrintLn(ln);
          Alert(StringFormat("[SFX-SYNC] Version mismatch local=%s master=%s — EA detaching",
                             SFX_SYNC_EA_VERSION, peer_v));
+         NotifyEventAndFlushTg("VERSION_MISMATCH",
+                               StringFormat("local=%s master=%s", SFX_SYNC_EA_VERSION, peer_v));
          G_HANDSHAKE_OK = false;
          CloseClient(G_PEER);
          ExpertRemove();
@@ -4115,6 +4157,7 @@ int OnInit()
    CreateButtons();
    SyncLogSessionStart();
    NegDiffRestoreState();
+   NotifyOnInit();
    ReclaimStaleActionLocks();
    EventSetMillisecondTimer((int)MathMax(50, I_LOOP_MS));
    RefreshChartComment();
@@ -4141,6 +4184,7 @@ void OnTimer()
    if(I_ROLE == ROLE_SOURCE_MASTER) MasterLoop();
    else SlaveLoop();
    RefreshChartComment();
+   NotifyDrainTelegram();
 }
 
 void OnTick()
@@ -4160,8 +4204,16 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    }
    if(id == CHARTEVENT_OBJECT_CLICK && sparam == "SFX_CLOSE_NOW" && I_ROLE == ROLE_SOURCE_MASTER)
    {
-      G_CLOSE_SIGNAL_REASON = "UI_BUTTON";
-      G_CLOSE_SIGNAL_REQUESTED = true;
+      if(G_FORCE_FLAT_ACTIVE)
+      {
+         ObjectSetInteger(0, "SFX_CLOSE_NOW", OBJPROP_STATE, false);
+         NotifyCloseRejectedDuringForceFlat();
+      }
+      else
+      {
+         G_CLOSE_SIGNAL_REASON = "UI_BUTTON";
+         G_CLOSE_SIGNAL_REQUESTED = true;
+      }
    }
    if(id == CHARTEVENT_OBJECT_CLICK && sparam == "SFX_CLOSE_ONLY" && I_ROLE == ROLE_SOURCE_MASTER)
    {
