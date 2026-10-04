@@ -205,6 +205,7 @@ input int         I_FILL_AUDIT_HOLD_SEC = 30;   // Fill audit: seconds to keep l
 input bool        I_NEG_DIFF_FORCE_ENABLED = false; // Close-only after consecutive losing pair fills (realized pts)
 input int         I_NEG_DIFF_FORCE_PTS = -1;        // Hit when realized fill pts of a completed pair-tx <= this
 input int         I_NEG_DIFF_FORCE_COUNT = 5;       // Consecutive losing OPEN or CLOSE pair-tx before close-only
+input bool        I_NEG_DIFF_FORCE_CLEAR_STATE = false; // On attach: delete persisted neg-diff streak/latch for this login+symbol
 
 bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
 int               I_DIFF_ZONE_STABILITY_TICKS = 7;         // Ticks in positive zone required
@@ -2593,6 +2594,8 @@ void MasterHandleDisconnectDuringTransactions()
    if(G_CLOSE_TX_ACTIVE)
    {
       SyncLog(StringFormat("[SFX-SYNC] CLOSE reset due to disconnect tx_id=%s", G_CLOSE_TX_ID));
+      FillAuditFinish(false);
+      NegDiffDisarmClose();
       ResetCloseTxState();
    }
    ResetForceFlatState();
@@ -2655,6 +2658,9 @@ void MonitorForceFlatState()
 
    SyncLog(StringFormat("[SFX-SYNC] FORCE_FLAT timeout tx_id=%s reason=%s",
                         G_FORCE_FLAT_TX_ID, G_FORCE_FLAT_REASON));
+   FillAuditLogEvent("FORCE_FLAT", "FORCE_FLAT_TIMEOUT", G_PAIR_KEY, G_FORCE_FLAT_TX_ID,
+                     FillAuditMasterPositionIsBuy(G_PAIR_MASTER_TICKET),
+                     G_PAIR_MASTER_TICKET, G_PAIR_SLAVE_TICKET, false, false);
    MarkDegraded("FORCE_FLAT_TIMEOUT");
    ResetForceFlatState();
 }
@@ -3865,9 +3871,12 @@ void MasterLoop()
          }
          else if(NowMs() >= G_OPEN_DISCONNECT_DEADLINE_MS)
          {
+            FillAuditFinish(false);
+            NegDiffDisarmOpen();
+            bool closed = false;
             if(G_OPEN_MASTER_OK && G_OPEN_MASTER_TICKET > 0)
             {
-               const bool closed = CloseTicketIfOpenWithPolicy(G_OPEN_MASTER_TICKET, false);
+               closed = CloseTicketIfOpenWithPolicy(G_OPEN_MASTER_TICKET, false);
                SyncLog(StringFormat("[SFX-SYNC] OPEN disconnect grace expired tx_id=%s ticket=%d closed=%s",
                                     G_OPEN_TX_ID, G_OPEN_MASTER_TICKET, closed ? "true" : "false"));
                if(closed)
@@ -3877,6 +3886,9 @@ void MasterLoop()
             {
                SyncLog(StringFormat("[SFX-SYNC] OPEN disconnect grace expired (no master leg) tx_id=%s", G_OPEN_TX_ID));
             }
+            FillAuditLogEvent("OPEN_ROLLBACK", "DISCONNECT", G_OPEN_TX_ID, G_OPEN_TX_ID,
+                              G_OPEN_SIDE == "BUY", G_OPEN_MASTER_TICKET, G_OPEN_SLAVE_TICKET,
+                              true, closed);
             G_OPEN_DISCONNECT_DEADLINE_MS = 0;
             ResetOpenTxState();
          }
@@ -4102,6 +4114,7 @@ int OnInit()
    SyncClearLogFiles();
    CreateButtons();
    SyncLogSessionStart();
+   NegDiffRestoreState();
    ReclaimStaleActionLocks();
    EventSetMillisecondTimer((int)MathMax(50, I_LOOP_MS));
    RefreshChartComment();

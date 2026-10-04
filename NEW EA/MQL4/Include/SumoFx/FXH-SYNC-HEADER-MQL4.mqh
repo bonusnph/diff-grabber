@@ -625,11 +625,78 @@ void NegDiffApply(const bool isOpen)
       SyncLog(StringFormat("[SFX-SYNC] neg-diff force trigger side=%s streak=%d realized_pts=%.1f",
                            isOpen ? "OPEN" : "CLOSE", streak, pts));
    }
+   NegDiffPersistState();
+}
+
+string NegDiffGvKey(const string side)
+{
+   string sym = G_SYMBOL;
+   StringReplace(sym, ".", "_");
+   StringReplace(sym, " ", "_");
+   return StringFormat("SFXNEG_%I64d_%s_%s", AccountInfoInteger(ACCOUNT_LOGIN), sym, side);
+}
+
+void NegDiffPersistState()
+{
+   if(I_ROLE != ROLE_SOURCE_MASTER)
+      return;
+   GlobalVariableSet(NegDiffGvKey("OPEN"), (double)G_NEG_STREAK_OPEN);
+   GlobalVariableSet(NegDiffGvKey("CLOSE"), (double)G_NEG_STREAK_CLOSE);
+   GlobalVariableSet(NegDiffGvKey("OPENL"), G_NEG_TRIGGER_OPEN ? 1.0 : 0.0);
+   GlobalVariableSet(NegDiffGvKey("CLOSEL"), G_NEG_TRIGGER_CLOSE ? 1.0 : 0.0);
+}
+
+void NegDiffClearPersistedState()
+{
+   GlobalVariableDel(NegDiffGvKey("OPEN"));
+   GlobalVariableDel(NegDiffGvKey("CLOSE"));
+   GlobalVariableDel(NegDiffGvKey("OPENL"));
+   GlobalVariableDel(NegDiffGvKey("CLOSEL"));
+}
+
+void NegDiffRestoreState()
+{
+   if(I_ROLE != ROLE_SOURCE_MASTER)
+      return;
+   if(I_NEG_DIFF_FORCE_CLEAR_STATE)
+   {
+      NegDiffClearMemory();
+      NegDiffClearPersistedState();
+      SyncLog("[SFX-SYNC] neg-diff persisted state cleared (I_NEG_DIFF_FORCE_CLEAR_STATE)");
+      return;
+   }
+   if(!I_NEG_DIFF_FORCE_ENABLED)
+      return;
+
+   const string kOpen = NegDiffGvKey("OPEN");
+   const string kClose = NegDiffGvKey("CLOSE");
+   const string kOpenL = NegDiffGvKey("OPENL");
+   const string kCloseL = NegDiffGvKey("CLOSEL");
+   const bool have = (GlobalVariableCheck(kOpen) || GlobalVariableCheck(kClose) ||
+                      GlobalVariableCheck(kOpenL) || GlobalVariableCheck(kCloseL));
+   if(!have)
+      return;
+
+   if(GlobalVariableCheck(kOpen))
+      G_NEG_STREAK_OPEN = (int)MathMax(0, GlobalVariableGet(kOpen));
+   if(GlobalVariableCheck(kClose))
+      G_NEG_STREAK_CLOSE = (int)MathMax(0, GlobalVariableGet(kClose));
+   if(GlobalVariableCheck(kOpenL))
+      G_NEG_TRIGGER_OPEN = (GlobalVariableGet(kOpenL) >= 0.5);
+   if(GlobalVariableCheck(kCloseL))
+      G_NEG_TRIGGER_CLOSE = (GlobalVariableGet(kCloseL) >= 0.5);
+   if(G_NEG_TRIGGER_OPEN || G_NEG_TRIGGER_CLOSE)
+      G_CLOSE_ONLY_MANUAL_ON = true;
+   SyncLog(StringFormat("[SFX-SYNC] neg-diff restored open=%d/%s close=%d/%s latch=%s",
+                        G_NEG_STREAK_OPEN, G_NEG_TRIGGER_OPEN ? "TRIGGER" : "ok",
+                        G_NEG_STREAK_CLOSE, G_NEG_TRIGGER_CLOSE ? "TRIGGER" : "ok",
+                        (G_NEG_TRIGGER_OPEN || G_NEG_TRIGGER_CLOSE) ? "ON" : "off"));
 }
 
 void NegDiffOnManualCloseOnlyOff()
 {
    NegDiffClearMemory();
+   NegDiffClearPersistedState();
    SyncLog("[SFX-SYNC] neg-diff force counters cleared (close-only turned off)");
 }
 
@@ -2108,8 +2175,25 @@ void SetDiffHudTitleMode(const bool autosync_armed)
 }
 
 // Capture globals live in the expert, above OpenOrder. This module only reads them.
+// event_timestamp is TimeLocal / GetLocalTime (VPS), not TimeCurrent (broker server).
 #define FILL_AUDIT_SCHEMA_VER "v2"
 #define FILL_AUDIT_CSV_HEADER "event_timestamp,symbol,master_account,slave_account,action,reason,pair_id,tx_id,master_side,master_ticket,slave_ticket,signal_pts,master_bid,master_ask,slave_bid,slave_ask,master_request,master_fill,master_slip_pts,master_slip_class,slave_request,slave_fill,slave_slip_pts,slave_slip_class,realized_pts,gap_pts,flagged,prices_ok,master_exec_ms,slave_exec_ms,pair_span_ms,open_mode,close_mode"
+
+struct SfxSystemTime
+{
+   ushort wYear;
+   ushort wMonth;
+   ushort wDayOfWeek;
+   ushort wDay;
+   ushort wHour;
+   ushort wMinute;
+   ushort wSecond;
+   ushort wMilliseconds;
+};
+
+#import "kernel32.dll"
+   void GetLocalTime(SfxSystemTime &st);
+#import
 
 bool   G_FA_ACTIVE = false;
 bool   G_FA_FINALIZED = false;
@@ -2146,8 +2230,7 @@ string G_FA_DETAIL_TEXT = "";
 bool   G_FA_CSV_PENDING = false;
 string G_FA_CSV_BUFFER = "";
 bool   G_FA_CSV_HEADER = false;
-datetime G_FA_TS_LOCAL = 0;
-ulong    G_FA_TS_US = 0;
+bool   G_FA_SIGNAL_OK = false;
 
 void FillAuditClearCapture()
 {
@@ -2278,19 +2361,11 @@ string FillAuditCsvFileName()
 
 string FillAuditEventTimestamp()
 {
-   const datetime local = TimeLocal();
-   const ulong us = GetMicrosecondCount();
-   if(G_FA_TS_LOCAL != local)
-   {
-      G_FA_TS_LOCAL = local;
-      G_FA_TS_US = us;
-   }
-   int ms = (int)((us - G_FA_TS_US) / 1000);
-   if(ms < 0)
-      ms = 0;
-   if(ms > 999)
-      ms = 999;
-   return StringFormat("%s.%03d", TimeToString(local, TIME_DATE | TIME_MINUTES | TIME_SECONDS), ms);
+   SfxSystemTime st;
+   GetLocalTime(st);
+   return StringFormat("%04d.%02d.%02d %02d:%02d:%02d.%03d",
+                      st.wYear, st.wMonth, st.wDay,
+                      st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
 }
 
 string FillAuditCsvPrice(const bool ok, const double px)
@@ -2331,6 +2406,7 @@ void FillAuditNoteTickets(const int masterTicket, const int slaveTicket)
 
 void FillAuditResetSession()
 {
+   G_FA_SIGNAL_OK = false;
    G_FA_MASTER_OK = false;
    G_FA_SLAVE_OK = false;
    G_FA_MASTER_REQ = 0.0;
@@ -2367,7 +2443,7 @@ void FillAuditQueueRow(const bool pricesOk, const double realized, const double 
       G_FA_MASTER_BUY ? "BUY" : "SELL",
       FillAuditCsvTicket(G_FA_MASTER_TICKET),
       FillAuditCsvTicket(G_FA_SLAVE_TICKET),
-      FillAuditCsvDouble(true, G_FA_SIGNAL, 4),
+      FillAuditCsvDouble(G_FA_SIGNAL_OK, G_FA_SIGNAL, 4),
       FillAuditCsvPrice(G_FA_M_BID > 0.0, G_FA_M_BID),
       FillAuditCsvPrice(G_FA_M_ASK > 0.0, G_FA_M_ASK),
       FillAuditCsvPrice(G_FA_S_BID > 0.0, G_FA_S_BID),
@@ -2458,6 +2534,7 @@ void FillAuditBegin(const bool isOpen, const string txId, const bool masterBuy, 
    else
       G_FA_SIGNAL = isOpen ? DiffOpenPtsFor(masterBuy) : DiffClosePtsFor(masterBuy);
    FillAuditResetSession();
+   G_FA_SIGNAL_OK = true;
    if(!isOpen)
    {
       G_FA_MASTER_TICKET = G_PAIR_MASTER_TICKET;
@@ -2535,6 +2612,7 @@ void FillAuditLogEvent(const string action, const string reason, const string pa
    G_FA_S_BID = G_DIFF_SLAVE_BID;
    G_FA_S_ASK = G_DIFF_SLAVE_ASK;
    G_FA_SIGNAL = 0.0;
+   G_FA_SIGNAL_OK = false;
    FillAuditResetSession();
    G_FA_MASTER_TICKET = masterTicket;
    G_FA_SLAVE_TICKET = slaveTicket;
