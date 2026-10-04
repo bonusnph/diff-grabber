@@ -3268,16 +3268,19 @@ void HandleMasterIncomingPacket(const string msg)
       if(peer_version != SFX_SYNC_PROTOCOL_VERSION)
       {
          const string ln = StringFormat(
-            "[SFX-SYNC] HELLO version mismatch local=%s peer=%s — rejecting and detaching",
+            "[SFX-SYNC] HELLO version mismatch ea=%s protocol=%s peer=%s - rejecting and detaching",
+            SFX_SYNC_EA_VERSION,
             SFX_SYNC_PROTOCOL_VERSION,
             StringLen(peer_version) > 0 ? peer_version : "<unknown>");
          SyncLog(ln);
          ExpertPrintLn(ln);
-         Alert(StringFormat("[SFX-SYNC] Version mismatch local=%s peer=%s — EA detaching",
+         Alert(StringFormat("[SFX-SYNC] Version mismatch ea=%s protocol=%s peer=%s - EA detaching",
+                            SFX_SYNC_EA_VERSION,
                             SFX_SYNC_PROTOCOL_VERSION,
                             StringLen(peer_version) > 0 ? peer_version : "<unknown>"));
          NotifyEventAndFlushTg("VERSION_MISMATCH",
-                               StringFormat("local=%s peer=%s", SFX_SYNC_PROTOCOL_VERSION,
+                               StringFormat("ea=%s protocol=%s peer=%s", SFX_SYNC_EA_VERSION,
+                                            SFX_SYNC_PROTOCOL_VERSION,
                                             StringLen(peer_version) > 0 ? peer_version : "<unknown>"));
          SendMsg(G_PEER, StringFormat("HELLO_ACK;VERSION_MISMATCH;%s", SFX_SYNC_PROTOCOL_VERSION));
          CloseClient(G_PEER);
@@ -3510,14 +3513,15 @@ void HandleSlaveIncomingPacket(const string msg)
       {
          const string peer_v = (ArraySize(p) >= 3) ? p[2] : "<unknown>";
          const string ln = StringFormat(
-            "[SFX-SYNC] HELLO_ACK VERSION_MISMATCH local=%s master=%s — detaching",
-            SFX_SYNC_PROTOCOL_VERSION, peer_v);
+            "[SFX-SYNC] HELLO_ACK VERSION_MISMATCH ea=%s protocol=%s master=%s - detaching",
+            SFX_SYNC_EA_VERSION, SFX_SYNC_PROTOCOL_VERSION, peer_v);
          SyncLog(ln);
          ExpertPrintLn(ln);
-         Alert(StringFormat("[SFX-SYNC] Version mismatch local=%s master=%s — EA detaching",
-                            SFX_SYNC_PROTOCOL_VERSION, peer_v));
+         Alert(StringFormat("[SFX-SYNC] Version mismatch ea=%s protocol=%s master=%s - EA detaching",
+                            SFX_SYNC_EA_VERSION, SFX_SYNC_PROTOCOL_VERSION, peer_v));
          NotifyEventAndFlushTg("VERSION_MISMATCH",
-                               StringFormat("local=%s master=%s", SFX_SYNC_PROTOCOL_VERSION, peer_v));
+                               StringFormat("ea=%s protocol=%s master=%s",
+                                            SFX_SYNC_EA_VERSION, SFX_SYNC_PROTOCOL_VERSION, peer_v));
          G_HANDSHAKE_OK = false;
          CloseClient(G_PEER);
          ExpertRemove();

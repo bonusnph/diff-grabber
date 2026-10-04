@@ -512,6 +512,7 @@ double   G_FA_LAST_REALIZED_PTS = 0.0;
 #define SFX_NEG_GV_MAX 63
 #define SFX_NOTIFY_MSG_MAX 255
 #define SFX_NOTIFY_QUEUE_FILE "SFX-SYNC-notify-queue.txt"
+#define SFX_NOTIFY_PEND_FILE_MAX 4
 
 int NegDiffNeedCount();
 void NegDiffMaybeTouchDaily();
@@ -523,14 +524,15 @@ ulong    G_HUD_BANNER_UNTIL_MS = 0;
 string   G_NOTIFY_HUD_STICKY = "";
 string   G_NEG_HUD_STICKY = "";
 bool     G_NOTIFY_PAIR_BROKEN_EPISODE = false;
-string   G_NOTIFY_FILE_PENDING = "";
+string   G_NOTIFY_FILE_PENDING[4];
+int      G_NOTIFY_FILE_PENDING_N = 0;
 int      G_NOTIFY_SEQ = 0;
 
 string NotifyTrim(const string s)
 {
    string t = s;
-   t = StringTrimLeft(t);
-   t = StringTrimRight(t);
+   StringTrimLeft(t);
+   StringTrimRight(t);
    return t;
 }
 
@@ -628,14 +630,28 @@ void NotifySendPush(const string text)
 bool NotifyQueueFileAppend(const string line)
 {
    ResetLastError();
-   const int h = FileOpen(SFX_NOTIFY_QUEUE_FILE,
-                          FILE_READ|FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   int h = FileOpen(SFX_NOTIFY_QUEUE_FILE,
+                    FILE_READ|FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE)
+   {
+      ResetLastError();
+      h = FileOpen(SFX_NOTIFY_QUEUE_FILE,
+                   FILE_WRITE|FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   }
    if(h == INVALID_HANDLE)
       return false;
    FileSeek(h, 0, SEEK_END);
    const uint wrote = FileWriteString(h, line);
    FileClose(h);
    return (wrote > 0);
+}
+
+void NotifyQueuePendingAdd(const string line)
+{
+   if(G_NOTIFY_FILE_PENDING_N >= SFX_NOTIFY_PEND_FILE_MAX)
+      return;
+   G_NOTIFY_FILE_PENDING[G_NOTIFY_FILE_PENDING_N] = line;
+   G_NOTIFY_FILE_PENDING_N++;
 }
 
 void NotifyQueueEnqueue(const string text)
@@ -652,17 +668,26 @@ void NotifyQueueEnqueue(const string text)
                                  G_NOTIFY_SEQ);
    const string line = id + "\t" + NotifySanitizeLine(text) + "\n";
    if(!NotifyQueueFileAppend(line))
-      G_NOTIFY_FILE_PENDING = line;
+      NotifyQueuePendingAdd(line);
 }
 
 void NotifyQueueRetryPending()
 {
    if(!NotifyIsMasterSender())
       return;
-   if(StringLen(G_NOTIFY_FILE_PENDING) <= 0)
-      return;
-   if(NotifyQueueFileAppend(G_NOTIFY_FILE_PENDING))
-      G_NOTIFY_FILE_PENDING = "";
+   int keep = 0;
+   for(int i = 0; i < G_NOTIFY_FILE_PENDING_N; i++)
+   {
+      if(NotifyQueueFileAppend(G_NOTIFY_FILE_PENDING[i]))
+         G_NOTIFY_FILE_PENDING[i] = "";
+      else
+      {
+         if(keep != i)
+            G_NOTIFY_FILE_PENDING[keep] = G_NOTIFY_FILE_PENDING[i];
+         keep++;
+      }
+   }
+   G_NOTIFY_FILE_PENDING_N = keep;
 }
 
 void NotifySendChannels(const string text)
@@ -681,7 +706,7 @@ void NotifySendChannels(const string text)
 string NotifyNegDiffForceText(const bool isOpen, const int streak, const double pts)
 {
    return NotifyClip255(StringFormat(
-      "SFX-SYNC v%s NEG_DIFF_FORCE %s %s p%d login=%I64d %s pts=%.1f th=%d streak=%d/%d %s. Close-only is ON — check and decide whether to resume.",
+      "SFX-SYNC v%s NEG_DIFF_FORCE %s %s p%d login=%I64d %s pts=%.1f th=%d streak=%d/%d %s. Close-only is ON - check and decide whether to resume.",
       SFX_SYNC_EA_VERSION,
       isOpen ? "OPEN" : "CLOSE",
       G_SYMBOL,
@@ -751,14 +776,21 @@ void NotifyOnInit()
 {
    G_NOTIFY_PUSH_OK = false;
    G_NOTIFY_HUD_STICKY = "";
-   G_NOTIFY_FILE_PENDING = "";
+   G_NOTIFY_FILE_PENDING_N = 0;
+   for(int pi = 0; pi < SFX_NOTIFY_PEND_FILE_MAX; pi++)
+      G_NOTIFY_FILE_PENDING[pi] = "";
    G_NOTIFY_SEQ = 0;
    G_NOTIFY_PAIR_BROKEN_EPISODE = false;
    if(I_NOTIFY_CHANNEL == NOTIFY_OFF)
       return;
 #ifndef SFX_SYNC_LITE
    if(!NotifyIsMasterSender())
+   {
+      const string ign = "[SFX-SYNC] I_NOTIFY_CHANNEL is set but notifications are ignored on the slave (master only)";
+      Print(ign);
+      SyncLog(ign);
       return;
+   }
 
    if(NotifyPushWanted())
    {
@@ -780,7 +812,6 @@ void NotifyOnInit()
       const string warn = "[SFX-SYNC] Telegram selected: attach SFX-SYNC-NOTIFIER on another chart. Token/chat id live in the notifier (Common Files token file). Allow WebRequest https://api.telegram.org on that terminal.";
       Print(warn);
       SyncLog(warn);
-      Alert(warn);
       HudBannerSet("Telegram: attach SFX-SYNC-NOTIFIER on another chart", 20);
       NotifyHudStickyAppend("Telegram: attach SFX-SYNC-NOTIFIER");
    }

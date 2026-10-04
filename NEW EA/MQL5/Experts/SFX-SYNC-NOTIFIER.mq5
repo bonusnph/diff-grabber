@@ -2,6 +2,7 @@
 //|                                            SFX-SYNC-NOTIFIER.mq5 |
 //| Standalone Telegram sender for SFX-SYNC. Attach on any other     |
 //| chart so WebRequest cannot stall the trading EA.                 |
+//| One notifier per PC (SFXNOTIFIER_LOCK).                          |
 //+------------------------------------------------------------------+
 #define SFX_SYNC_NOTIFIER_VERSION "1.28"
 
@@ -11,12 +12,15 @@
 #property description "SFX-SYNC Telegram notifier. Token/chat id live here, never in SFX-SYNC."
 
 #define SFX_NOTIFY_QUEUE_FILE "SFX-SYNC-notify-queue.txt"
-#define SFX_NOTIFY_SENT_FILE  "SFX-SYNC-notify-sent.txt"
-#define SFX_NOTIFY_SENT_CAP   400
+#define SFX_NOTIFY_QUEUE_OLD  "SFX-SYNC-notify-queue.txt.old"
+#define SFX_NOTIFY_STATE_FILE "SFX-SYNC-notify-offset.txt"
 #define SFX_NOTIFY_TG_TIMEOUT_MS 5000
 #define SFX_NOTIFY_TG_RETRY_MAX_SEC 300
 #define SFX_NOTIFY_TG_BACKOFF_DEFAULT_SEC 30
 #define SFX_NOTIFY_FAIL_PRINT_MS 60000
+#define SFX_NOTIFY_ROTATE_BYTES 65536
+#define SFX_NOTIFIER_LOCK_GV "SFXNOTIFIER_LOCK"
+#define SFX_NOTIFIER_LOCK_STALE_SEC 30
 
 input string I_TG_BOT_TOKEN = "";              // Optional token; prefer I_TG_TOKEN_FILE (never logged)
 input string I_TG_CHAT_ID = "";                // Telegram chat id (user or -group)
@@ -25,25 +29,28 @@ input int    I_POLL_SEC = 2;                   // Queue poll interval (seconds)
 
 string G_RESOLVED_TOKEN = "";
 bool   G_TG_OK = false;
-string G_SENT_IDS[400];
-int    G_SENT_N = 0;
+bool   G_PERM_DISABLED = false;
+bool   G_PERM_LOGGED = false;
 ulong  G_BACKOFF_UNTIL_MS = 0;
 int    G_ERR_BACKOFF_SEC = 5;
 bool   G_FAIL_LOGGED = false;
 bool   G_429_LOGGED = false;
 ulong  G_LAST_FAIL_PRINT_MS = 0;
 ulong  G_429_LAST_PRINT_MS = 0;
+long   G_QUEUE_OFFSET = 0;
+bool   G_HAVE_LOCK = false;
+bool   G_LOCK_LOGGED = false;
 
 ulong NowMs()
 {
-   return (ulong)GetTickCount();
+   return GetTickCount64();
 }
 
 string NotifyTrim(const string s)
 {
    string t = s;
-   t = StringTrimLeft(t);
-   t = StringTrimRight(t);
+   StringTrimLeft(t);
+   StringTrimRight(t);
    return t;
 }
 
@@ -166,7 +173,9 @@ string NotifyUrlEncode(const string s)
    string out = "";
    for(int i = 0; i < last; i++)
    {
-      const int c = (int)bytes[i];
+      int c = (int)bytes[i];
+      if(c < 0)
+         c += 256;
       const bool unres = ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
                           (c >= 'a' && c <= 'z') || c == '-' || c == '_' ||
                           c == '.' || c == '~');
@@ -210,64 +219,138 @@ int NotifyExtractRetryAfterSec(const string src)
    return val;
 }
 
-bool SentIdKnown(const string id)
-{
-   for(int i = 0; i < G_SENT_N; i++)
-   {
-      if(G_SENT_IDS[i] == id)
-         return true;
-   }
-   return false;
-}
-
-void SentIdRemember(const string id)
-{
-   if(StringLen(id) <= 0 || SentIdKnown(id))
-      return;
-   if(G_SENT_N >= SFX_NOTIFY_SENT_CAP)
-   {
-      for(int i = 1; i < SFX_NOTIFY_SENT_CAP; i++)
-         G_SENT_IDS[i - 1] = G_SENT_IDS[i];
-      G_SENT_N = SFX_NOTIFY_SENT_CAP - 1;
-   }
-   G_SENT_IDS[G_SENT_N] = id;
-   G_SENT_N++;
-}
-
-void SentIdsLoad()
-{
-   G_SENT_N = 0;
-   ResetLastError();
-   const int h = FileOpen(SFX_NOTIFY_SENT_FILE,
-                          FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
-   if(h == INVALID_HANDLE)
-      return;
-   while(!FileIsEnding(h))
-   {
-      const string line = NotifyTrim(FileReadString(h));
-      if(StringLen(line) > 0)
-         SentIdRemember(line);
-   }
-   FileClose(h);
-}
-
-bool SentIdPersist(const string id)
+int QueueOpenRead()
 {
    ResetLastError();
-   const int h = FileOpen(SFX_NOTIFY_SENT_FILE,
-                          FILE_READ|FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   return FileOpen(SFX_NOTIFY_QUEUE_FILE,
+                   FILE_READ|FILE_BIN|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+}
+
+bool OffsetSave()
+{
+   ResetLastError();
+   const int h = FileOpen(SFX_NOTIFY_STATE_FILE,
+                          FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
    if(h == INVALID_HANDLE)
       return false;
-   FileSeek(h, 0, SEEK_END);
-   const uint wrote = FileWriteString(h, id + "\n");
+   FileWriteString(h, StringFormat("%I64d\n", G_QUEUE_OFFSET));
    FileClose(h);
-   return (wrote > 0);
+   return true;
 }
 
-void MarkSent(const string id)
+long OffsetLoad()
 {
-   SentIdRemember(id);
-   SentIdPersist(id);
+   ResetLastError();
+   const int h = FileOpen(SFX_NOTIFY_STATE_FILE,
+                          FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE)
+      return -1;
+   const string raw = NotifyTrim(FileReadString(h));
+   FileClose(h);
+   if(StringLen(raw) <= 0)
+      return 0;
+   return StringToInteger(raw);
+}
+
+int CountCompleteLines(const int h, const long upto)
+{
+   int n = 0;
+   FileSeek(h, 0, SEEK_SET);
+   long pos = 0;
+   while(pos < upto && !FileIsEnding(h))
+   {
+      const int c = FileReadInteger(h, CHAR_VALUE);
+      pos++;
+      if(c == '\n')
+         n++;
+   }
+   return n;
+}
+
+void OffsetInitOnAttach()
+{
+   const bool have_state = FileIsExist(SFX_NOTIFY_STATE_FILE, FILE_COMMON);
+   const int qh = QueueOpenRead();
+   long qsize = 0;
+   if(qh != INVALID_HANDLE)
+      qsize = (long)FileSize(qh);
+
+   if(!have_state)
+   {
+      int skipped = 0;
+      if(qh != INVALID_HANDLE)
+         skipped = CountCompleteLines(qh, qsize);
+      G_QUEUE_OFFSET = qsize;
+      if(qh != INVALID_HANDLE)
+         FileClose(qh);
+      OffsetSave();
+      Print(StringFormat("[SFX-SYNC-NOTIFIER] first attach: skipped %d existing queue line(s), offset=%I64d",
+                         skipped, G_QUEUE_OFFSET));
+      return;
+   }
+
+   if(qh != INVALID_HANDLE)
+      FileClose(qh);
+   const long loaded = OffsetLoad();
+   G_QUEUE_OFFSET = (loaded < 0) ? 0 : loaded;
+   if(qsize > 0 && G_QUEUE_OFFSET > qsize)
+      G_QUEUE_OFFSET = 0;
+}
+
+void NotifierLockRelease()
+{
+   if(!G_HAVE_LOCK)
+      return;
+   if(GlobalVariableCheck(SFX_NOTIFIER_LOCK_GV))
+      GlobalVariableDel(SFX_NOTIFIER_LOCK_GV);
+   G_HAVE_LOCK = false;
+}
+
+bool NotifierLockTry()
+{
+   const datetime now = TimeLocal();
+   if(G_HAVE_LOCK)
+   {
+      GlobalVariableSet(SFX_NOTIFIER_LOCK_GV, (double)now);
+      return true;
+   }
+   if(GlobalVariableCheck(SFX_NOTIFIER_LOCK_GV))
+   {
+      const datetime held = (datetime)GlobalVariableGet(SFX_NOTIFIER_LOCK_GV);
+      if(held > 0 && (now - held) < SFX_NOTIFIER_LOCK_STALE_SEC)
+      {
+         if(!G_LOCK_LOGGED)
+         {
+            Print("[SFX-SYNC-NOTIFIER] another notifier holds SFXNOTIFIER_LOCK - this instance will not send (one notifier per PC)");
+            G_LOCK_LOGGED = true;
+         }
+         return false;
+      }
+   }
+   GlobalVariableSet(SFX_NOTIFIER_LOCK_GV, (double)now);
+   G_HAVE_LOCK = true;
+   G_LOCK_LOGGED = false;
+   return true;
+}
+
+void MaybeRotateQueue()
+{
+   const int rh = QueueOpenRead();
+   if(rh == INVALID_HANDLE)
+      return;
+   const long qsize = (long)FileSize(rh);
+   FileClose(rh);
+   if(G_QUEUE_OFFSET < qsize)
+      return;
+   if(qsize < SFX_NOTIFY_ROTATE_BYTES)
+      return;
+   ResetLastError();
+   FileDelete(SFX_NOTIFY_QUEUE_OLD, FILE_COMMON);
+   if(!FileMove(SFX_NOTIFY_QUEUE_FILE, FILE_COMMON, SFX_NOTIFY_QUEUE_OLD, FILE_COMMON))
+      return;
+   G_QUEUE_OFFSET = 0;
+   OffsetSave();
+   Print("[SFX-SYNC-NOTIFIER] rotated queue file to SFX-SYNC-notify-queue.txt.old");
 }
 
 int NotifyTelegramPost(const string text)
@@ -281,18 +364,34 @@ int NotifyTelegramPost(const string text)
    const string url = "https://api.telegram.org/bot" + token + "/sendMessage";
    const string body = "chat_id=" + NotifyUrlEncode(chat) + "&text=" + NotifyUrlEncode(text);
    const string headers = "Content-Type: application/x-www-form-urlencoded\r\n";
-   uchar postData[];
-   uchar resultData[];
+   char postData[];
+   char resultData[];
    string resultHeaders;
-   StringToCharArray(body, postData, 0, StringLen(body), CP_UTF8);
+   StringToCharArray(body, postData, 0, StringLen(body));
    ResetLastError();
    const int http = WebRequest("POST", url, headers, SFX_NOTIFY_TG_TIMEOUT_MS, postData, resultData, resultHeaders);
    const int err = GetLastError();
+   if(http == 400 || http == 401 || http == 403 || http == 404)
+   {
+      if(!G_PERM_LOGGED)
+      {
+         const string warn = StringFormat(
+            "[SFX-SYNC-NOTIFIER] Telegram permanent HTTP %d - sending disabled until reinit (token not logged). Revoke and replace the bot token if this is 401.",
+            http);
+         Print(warn);
+         Alert(warn);
+         G_PERM_LOGGED = true;
+      }
+      G_PERM_DISABLED = true;
+      G_TG_OK = false;
+      NotifierLockRelease();
+      return -2;
+   }
    if(http == 429)
    {
       int sec = NotifyExtractRetryAfterSec(resultHeaders);
       if(sec <= 0)
-         sec = NotifyExtractRetryAfterSec(CharArrayToString(resultData, 0, WHOLE_ARRAY, CP_UTF8));
+         sec = NotifyExtractRetryAfterSec(CharArrayToString(resultData));
       if(sec <= 0)
          sec = SFX_NOTIFY_TG_BACKOFF_DEFAULT_SEC;
       if(sec > SFX_NOTIFY_TG_RETRY_MAX_SEC)
@@ -332,55 +431,115 @@ int NotifyTelegramPost(const string text)
    return 1;
 }
 
+bool BytesToLine(uchar &buf[], const int n, string &out_line, int &line_bytes)
+{
+   int nl = -1;
+   for(int i = 0; i < n; i++)
+   {
+      if((int)buf[i] == '\n')
+      {
+         nl = i;
+         break;
+      }
+   }
+   if(nl < 0)
+      return false;
+   line_bytes = nl + 1;
+   int end = nl;
+   if(end > 0 && (int)buf[end - 1] == '\r')
+      end--;
+   out_line = "";
+   for(int j = 0; j < end; j++)
+      out_line += NotifyCharToStr((int)buf[j]);
+   return true;
+}
+
 void ProcessQueueOnce()
 {
-   if(!G_TG_OK)
+   if(G_PERM_DISABLED || !G_TG_OK)
+      return;
+   if(!NotifierLockTry())
       return;
    if(G_BACKOFF_UNTIL_MS > 0 && NowMs() < G_BACKOFF_UNTIL_MS)
       return;
-   ResetLastError();
-   const int h = FileOpen(SFX_NOTIFY_QUEUE_FILE,
-                          FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+
+   const int h = QueueOpenRead();
    if(h == INVALID_HANDLE)
       return;
-   string pending_id = "";
-   string pending_text = "";
-   while(!FileIsEnding(h))
+   const long qsize = (long)FileSize(h);
+   if(qsize < G_QUEUE_OFFSET)
    {
-      const string raw = FileReadString(h);
-      const string line = NotifyTrim(raw);
-      if(StringLen(line) <= 0)
-         continue;
-      const int tab = StringFind(line, "\t");
-      if(tab <= 0)
-         continue;
-      const string id = StringSubstr(line, 0, tab);
-      const string text = StringSubstr(line, tab + 1);
-      if(SentIdKnown(id))
-         continue;
-      pending_id = id;
-      pending_text = text;
-      break;
+      G_QUEUE_OFFSET = 0;
+      OffsetSave();
    }
-   FileClose(h);
-   if(StringLen(pending_id) <= 0)
+   if(G_QUEUE_OFFSET > qsize)
+   {
+      G_QUEUE_OFFSET = 0;
+      OffsetSave();
+   }
+   const int remain = (int)(qsize - G_QUEUE_OFFSET);
+   if(remain <= 0)
+   {
+      FileClose(h);
+      MaybeRotateQueue();
       return;
-   const int rc = NotifyTelegramPost(pending_text);
-   if(rc > 0)
-      MarkSent(pending_id);
+   }
+   FileSeek(h, G_QUEUE_OFFSET, SEEK_SET);
+   uchar buf[];
+   ArrayResize(buf, remain);
+   for(int i = 0; i < remain; i++)
+      buf[i] = (uchar)FileReadInteger(h, CHAR_VALUE);
+   FileClose(h);
+
+   string line = "";
+   int line_bytes = 0;
+   if(!BytesToLine(buf, remain, line, line_bytes))
+      return;
+
+   const string trimmed = NotifyTrim(line);
+   bool advance = false;
+   if(StringLen(trimmed) <= 0)
+      advance = true;
+   else
+   {
+      const int tab = StringFind(trimmed, "\t");
+      if(tab <= 0)
+         advance = true;
+      else
+      {
+         const string text = StringSubstr(trimmed, tab + 1);
+         const int rc = NotifyTelegramPost(text);
+         if(rc > 0)
+            advance = true;
+         else if(rc == -2)
+            return;
+      }
+   }
+   if(advance)
+   {
+      G_QUEUE_OFFSET += line_bytes;
+      OffsetSave();
+      if(G_QUEUE_OFFSET >= qsize)
+         MaybeRotateQueue();
+   }
 }
 
 int OnInit()
 {
    G_RESOLVED_TOKEN = "";
    G_TG_OK = false;
+   G_PERM_DISABLED = false;
+   G_PERM_LOGGED = false;
    G_BACKOFF_UNTIL_MS = 0;
    G_ERR_BACKOFF_SEC = 5;
    G_FAIL_LOGGED = false;
    G_429_LOGGED = false;
    G_LAST_FAIL_PRINT_MS = 0;
    G_429_LAST_PRINT_MS = 0;
-   SentIdsLoad();
+   G_HAVE_LOCK = false;
+   G_LOCK_LOGGED = false;
+   G_QUEUE_OFFSET = 0;
+   OffsetInitOnAttach();
 
    string token = NotifyTrim(I_TG_BOT_TOKEN);
    if(StringLen(token) == 0)
@@ -389,10 +548,10 @@ int OnInit()
 
    if(StringLen(token) > 0 && !NotifyTokenCharsetOk(token))
    {
-      const string warn = "[SFX-SYNC-NOTIFIER] Telegram token has characters outside [0-9A-Za-z:_-] — Telegram disabled.";
+      const string warn = "[SFX-SYNC-NOTIFIER] Telegram token has characters outside [0-9A-Za-z:_-] - Telegram disabled.";
       Print(warn);
       Alert(warn);
-      EventSetTimer(MathMax(1, I_POLL_SEC));
+      EventSetTimer((int)MathMax(1, I_POLL_SEC));
       return INIT_SUCCEEDED;
    }
    if(StringLen(token) == 0 || StringLen(chat) == 0)
@@ -405,19 +564,20 @@ int OnInit()
          ". Chat id via getUpdates. Allow WebRequest for https://api.telegram.org";
       Print(warn);
       Alert("[SFX-SYNC-NOTIFIER] Telegram disabled: " + why + ". Expected token file: " + NotifyTokenFileExpectedPath());
-      EventSetTimer(MathMax(1, I_POLL_SEC));
+      EventSetTimer((int)MathMax(1, I_POLL_SEC));
       return INIT_SUCCEEDED;
    }
 
    G_RESOLVED_TOKEN = token;
    G_TG_OK = true;
-   Print("[SFX-SYNC-NOTIFIER] ready; polling Common Files queue SFX-SYNC-notify-queue.txt");
+   Print("[SFX-SYNC-NOTIFIER] ready; polling Common Files queue SFX-SYNC-notify-queue.txt (one notifier per PC)");
    EventSetTimer((int)MathMax(1, I_POLL_SEC));
    return INIT_SUCCEEDED;
 }
 
 void OnDeinit(const int reason)
 {
+   NotifierLockRelease();
    EventKillTimer();
 }
 
