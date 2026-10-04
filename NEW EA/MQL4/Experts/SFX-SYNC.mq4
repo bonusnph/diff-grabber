@@ -3,7 +3,7 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.28"
+#define SFX_SYNC_EA_VERSION "1.29"
 #ifndef SFX_SYNC_PROTOCOL_VERSION
 #define SFX_SYNC_PROTOCOL_VERSION "1.27"
 #endif
@@ -1560,6 +1560,48 @@ bool RecoverMasterOpenTicketMt4(const ENUM_SIDE side,
    return true;
 }
 
+int CollectMatchingMasterOpenTicketsMt4(const ENUM_SIDE side,
+                                        const double lots,
+                                        const datetime opened_not_before,
+                                        const int &exclude_tickets[],
+                                        const int exclude_n,
+                                        int &tickets_out[],
+                                        int &earliest_out)
+{
+   earliest_out = -1;
+   datetime earliest_time = 0;
+   int n = 0;
+   ArrayResize(tickets_out, OrdersTotal());
+   const int want_type = (side == SIDE_BUY) ? OP_BUY : OP_SELL;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderSymbol() != G_SYMBOL)
+         continue;
+      if(OrderMagicNumber() != OrderMagic())
+         continue;
+      if(OrderType() != want_type)
+         continue;
+      const int tk = OrderTicket();
+      if(TicketInExcludeMt4(tk, exclude_tickets, exclude_n))
+         continue;
+      if(lots > 0.0 && !LotsMatch(OrderLots(), lots))
+         continue;
+      const datetime pos_time = OrderOpenTime();
+      if(opened_not_before > 0 && pos_time + 2 < opened_not_before)
+         continue;
+      tickets_out[n++] = tk;
+      if(earliest_out <= 0 || pos_time < earliest_time)
+      {
+         earliest_time = pos_time;
+         earliest_out = tk;
+      }
+   }
+   ArrayResize(tickets_out, n);
+   return n;
+}
+
 bool CloseTicketIfOpenWithPolicy(const int ticket, const bool retry_transient)
 {
    FillAuditClearCapture();
@@ -3025,11 +3067,47 @@ void StartOpenTransaction()
       G_PAIR_OPEN_INTENT_MS = NowMs();
       SendMsg(G_PEER, BuildOpenIntent());
       const int max_attempts = 1 + MathMax(0, I_MASTER_OPEN_RETRY_COUNT_BALANCED);
+      int known_tickets[];
+      const int known_n = SnapshotEaTicketsMt4(known_tickets);
+      const datetime opened_not_before = TimeCurrent();
       for(int attempt = 1; attempt <= max_attempts; attempt++)
       {
-         int known_tickets[];
-         const int known_n = SnapshotEaTicketsMt4(known_tickets);
-         const datetime opened_not_before = TimeCurrent();
+         if(attempt >= 2)
+         {
+            int recovered_ticket = -1;
+            if(RecoverMasterOpenTicketMt4(exec_side, G_OPEN_LOT_SLAVE, opened_not_before, known_tickets, known_n, recovered_ticket))
+            {
+               int match_tickets[];
+               int earliest_ticket = -1;
+               const int match_n = CollectMatchingMasterOpenTicketsMt4(exec_side, G_OPEN_LOT_SLAVE, opened_not_before,
+                                                                      known_tickets, known_n, match_tickets, earliest_ticket);
+               if(match_n > 1)
+               {
+                  string suspect_list = "";
+                  for(int mi = 0; mi < match_n; mi++)
+                  {
+                     if(mi > 0)
+                        suspect_list += ",";
+                     suspect_list += IntegerToString(match_tickets[mi]);
+                  }
+                  if(earliest_ticket > 0)
+                     recovered_ticket = earliest_ticket;
+                  const string warn = StringFormat("[SFX-SYNC] DUPLICATE_MASTER_SUSPECT tickets=%s", suspect_list);
+                  SyncLog(warn);
+                  ExpertPrintLn(warn);
+                  HudBannerSet(warn, 20);
+               }
+               G_OPEN_MASTER_TICKET = recovered_ticket;
+               G_OPEN_MASTER_OK = true;
+               err = 0;
+               FillAuditNoteRecoveredPosition(recovered_ticket);
+               const string rec_ln = StringFormat("[SFX-SYNC] RETRY_RECOVERED ticket=%d", recovered_ticket);
+               SyncLog(rec_ln);
+               ExpertPrintLn(rec_ln);
+               G_OPEN_LAST_ERROR_MASTER = err;
+               break;
+            }
+         }
          G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), G_OPEN_LOT_SLAVE, err);
          G_OPEN_MASTER_OK = (G_OPEN_MASTER_TICKET > 0);
          if(!G_OPEN_MASTER_OK)
