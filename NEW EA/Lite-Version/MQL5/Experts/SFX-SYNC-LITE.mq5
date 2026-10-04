@@ -1596,9 +1596,10 @@ int CollectMatchingMasterOpenTicketsMt5(const ENUM_SIDE side,
                                         const ulong &exclude_tickets[],
                                         const int exclude_n,
                                         ulong &tickets_out[],
-                                        int &earliest_out)
+                                        ulong &earliest_out,
+                                        const bool require_lots)
 {
-   earliest_out = -1;
+   earliest_out = 0;
    long earliest_msc = -1;
    int n = 0;
    ArrayResize(tickets_out, PositionsTotal());
@@ -1618,21 +1619,33 @@ int CollectMatchingMasterOpenTicketsMt5(const ENUM_SIDE side,
          continue;
       if(TicketInExcludeMt5(pt, exclude_tickets, exclude_n))
          continue;
-      if(lots > 0.0 && !LotsMatch(PositionGetDouble(POSITION_VOLUME), lots))
+      if(require_lots && lots > 0.0 && !LotsMatch(PositionGetDouble(POSITION_VOLUME), lots))
          continue;
       const datetime pos_time = (datetime)PositionGetInteger(POSITION_TIME);
       if(opened_not_before > 0 && pos_time + 2 < opened_not_before)
          continue;
       const long tmsc = (long)PositionGetInteger(POSITION_TIME_MSC);
       tickets_out[n++] = pt;
-      if(earliest_out <= 0 || tmsc < earliest_msc)
+      if(earliest_out == 0 || tmsc < earliest_msc || (tmsc == earliest_msc && pt < earliest_out))
       {
          earliest_msc = tmsc;
-         earliest_out = (int)pt;
+         earliest_out = pt;
       }
    }
    ArrayResize(tickets_out, n);
    return n;
+}
+
+string FormatMatchTicketsMt5(const ulong &tickets[], const int n)
+{
+   string list = "";
+   for(int i = 0; i < n; i++)
+   {
+      if(i > 0)
+         list += ",";
+      list += StringFormat("%I64u", tickets[i]);
+   }
+   return list;
 }
 
 bool CloseTicketIfOpenWithPolicy(const int ticket, const bool retry_transient)
@@ -3113,6 +3126,7 @@ void StartOpenTransaction()
       ulong known_tickets[];
       const int known_n = SnapshotEaTicketsMt5(known_tickets);
       const datetime opened_not_before = TimeCurrent();
+      int last_send_attempt = 0;
       for(int attempt = 1; attempt <= max_attempts; attempt++)
       {
          if(attempt >= 2)
@@ -3121,36 +3135,64 @@ void StartOpenTransaction()
             if(RecoverMasterOpenTicketMt5(exec_side, G_OPEN_LOT_SLAVE, opened_not_before, known_tickets, known_n, recovered_ticket))
             {
                ulong match_tickets[];
-               int earliest_ticket = -1;
+               ulong earliest_ticket = 0;
                const int match_n = CollectMatchingMasterOpenTicketsMt5(exec_side, G_OPEN_LOT_SLAVE, opened_not_before,
-                                                                      known_tickets, known_n, match_tickets, earliest_ticket);
+                                                                      known_tickets, known_n, match_tickets, earliest_ticket, true);
                if(match_n > 1)
                {
-                  string suspect_list = "";
-                  for(int mi = 0; mi < match_n; mi++)
-                  {
-                     if(mi > 0)
-                        suspect_list += ",";
-                     suspect_list += IntegerToString((int)match_tickets[mi]);
-                  }
                   if(earliest_ticket > 0)
-                     recovered_ticket = earliest_ticket;
-                  const string warn = StringFormat("[SFX-SYNC] DUPLICATE_MASTER_SUSPECT tickets=%s", suspect_list);
+                     recovered_ticket = (int)earliest_ticket;
+                  const string warn = StringFormat("[SFX-SYNC] DUPLICATE_MASTER_SUSPECT tx_id=%s attempt=%d tickets=%s",
+                                                   G_OPEN_TX_ID, attempt, FormatMatchTicketsMt5(match_tickets, match_n));
                   SyncLog(warn);
                   ExpertPrintLn(warn);
                   HudBannerSet(warn, 20);
+                  Alert(warn);
                }
                G_OPEN_MASTER_TICKET = recovered_ticket;
                G_OPEN_MASTER_OK = true;
                err = 0;
                FillAuditNoteRecoveredPosition((ulong)recovered_ticket);
-               const string rec_ln = StringFormat("[SFX-SYNC] RETRY_RECOVERED ticket=%d", recovered_ticket);
+               const string rec_ln = StringFormat("[SFX-SYNC] RETRY_RECOVERED tx_id=%s attempt=%d ticket=%I64u",
+                                                  G_OPEN_TX_ID, attempt, (ulong)recovered_ticket);
                SyncLog(rec_ln);
                ExpertPrintLn(rec_ln);
                G_OPEN_LAST_ERROR_MASTER = err;
                break;
             }
+            ulong partial_tickets[];
+            ulong partial_ticket = 0;
+            const int partial_n = CollectMatchingMasterOpenTicketsMt5(exec_side, G_OPEN_LOT_SLAVE, opened_not_before,
+                                                                     known_tickets, known_n, partial_tickets, partial_ticket, false);
+            if(partial_n >= 1 && partial_ticket > 0)
+            {
+               if(partial_n > 1)
+               {
+                  const string warn = StringFormat("[SFX-SYNC] DUPLICATE_MASTER_SUSPECT tx_id=%s attempt=%d tickets=%s",
+                                                   G_OPEN_TX_ID, attempt, FormatMatchTicketsMt5(partial_tickets, partial_n));
+                  SyncLog(warn);
+                  ExpertPrintLn(warn);
+                  HudBannerSet(warn, 20);
+                  Alert(warn);
+               }
+               double real_lot = 0.0;
+               if(PositionSelectByTicket(partial_ticket))
+                  real_lot = PositionGetDouble(POSITION_VOLUME);
+               G_OPEN_MASTER_TICKET = (int)partial_ticket;
+               G_OPEN_MASTER_OK = true;
+               err = 0;
+               FillAuditNoteRecoveredPosition(partial_ticket);
+               const string pf_ln = StringFormat("[SFX-SYNC] PARTIAL_FILL_SUSPECT tx_id=%s attempt=%d ticket=%I64u lot=%.2f expected=%.2f",
+                                                 G_OPEN_TX_ID, attempt, partial_ticket, real_lot, G_OPEN_LOT_SLAVE);
+               SyncLog(pf_ln);
+               ExpertPrintLn(pf_ln);
+               HudBannerSet(pf_ln, 20);
+               Alert(pf_ln);
+               G_OPEN_LAST_ERROR_MASTER = err;
+               break;
+            }
          }
+         last_send_attempt = attempt;
          G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), G_OPEN_LOT_SLAVE, err);
          G_OPEN_MASTER_OK = (G_OPEN_MASTER_TICKET > 0);
          if(!G_OPEN_MASTER_OK)
@@ -3186,6 +3228,22 @@ void StartOpenTransaction()
          }
          if(attempt < max_attempts && I_MASTER_OPEN_RETRY_INTERVAL_MS > 0)
             Sleep(I_MASTER_OPEN_RETRY_INTERVAL_MS);
+      }
+      if(G_OPEN_MASTER_OK && last_send_attempt >= 2)
+      {
+         ulong late_tickets[];
+         ulong late_earliest = 0;
+         const int late_n = CollectMatchingMasterOpenTicketsMt5(exec_side, G_OPEN_LOT_SLAVE, opened_not_before,
+                                                               known_tickets, known_n, late_tickets, late_earliest, true);
+         if(late_n > 1)
+         {
+            const string warn = StringFormat("[SFX-SYNC] DUPLICATE_MASTER_SUSPECT tx_id=%s attempt=%d tickets=%s",
+                                             G_OPEN_TX_ID, last_send_attempt, FormatMatchTicketsMt5(late_tickets, late_n));
+            SyncLog(warn);
+            ExpertPrintLn(warn);
+            HudBannerSet(warn, 20);
+            Alert(warn);
+         }
       }
       FillAuditTakeMasterLeg();
       FillAuditNoteTickets(G_OPEN_MASTER_TICKET, -1);
