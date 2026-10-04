@@ -4120,8 +4120,7 @@ void OnTimer()
    if(I_ROLE == ROLE_SOURCE_MASTER) MasterLoop();
    else SlaveLoop();
    RefreshChartComment();
-   NotifyFlushPending();
-   NotifyDrainTelegram();
+   NotifyOnTimer();
 }
 
 void OnTick()

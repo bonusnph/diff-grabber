@@ -2173,6 +2173,7 @@ void ClearDegradedRefreshButton()
    ObjectSetString(0, "SFX_CLEAR_DEGRADED", OBJPROP_TOOLTIP, tip);
 }
 
+#define SFX_SYNC_LITE 1
 #include <SumoFx/FXH-SYNC-HEADER-MQL5.mqh>
 
 void ResetOpenTxState()
@@ -4062,8 +4063,7 @@ void OnTimer()
    if(I_ROLE == ROLE_SOURCE_MASTER) MasterLoop();
    else SlaveLoop();
    RefreshChartComment();
-   NotifyFlushPending();
-   NotifyDrainTelegram();
+   NotifyOnTimer();
 }
 
 void OnTick()
