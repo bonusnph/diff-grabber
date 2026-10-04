@@ -2035,8 +2035,20 @@ int FillAuditSlipPts(const bool isBuy, const double request, const double fill)
    const double pt = DiffPoint();
    if(pt <= 0.0 || request <= 0.0 || fill <= 0.0)
       return 0;
+   // Positive means a worse fill for that order: buy filled higher, sell filled lower.
    const double raw = isBuy ? (fill - request) : (request - fill);
    return (int)MathRound(raw / pt);
+}
+
+string FillAuditSlipClass(const bool hasPrice, const int slipPts)
+{
+   if(!hasPrice)
+      return "";
+   if(slipPts > 0)
+      return "WORSE";
+   if(slipPts < 0)
+      return "BETTER";
+   return "FLAT";
 }
 
 double FillAuditRealizedPts(const bool isOpen, const bool masterBuy, const double masterFill, const double slaveFill)
@@ -2072,7 +2084,7 @@ void FillAuditQueueRow(const bool pricesOk, const double realized, const double 
    const string masterExec = G_FA_MASTER_EXEC_SET ? StringFormat("%I64u", G_FA_MASTER_EXEC_MS) : "";
    const string slaveExec = G_FA_SLAVE_EXEC_SET ? StringFormat("%I64u", G_FA_SLAVE_EXEC_MS) : "";
    const string row = StringFormat(
-      "%s,%s,%s,%s,%s,%.4f,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f,%d,%.8f,%.8f,%d,%.4f,%.4f,%d,%d,%s,%s,%I64u,%s,%s\n",
+      "%s,%s,%s,%s,%s,%.4f,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f,%d,%s,%.8f,%.8f,%d,%s,%.4f,%.4f,%d,%d,%s,%s,%I64u,%s,%s\n",
       ts, G_SYMBOL,
       G_FA_IS_OPEN ? "OPEN" : "CLOSE",
       G_FA_TX,
@@ -2080,7 +2092,9 @@ void FillAuditQueueRow(const bool pricesOk, const double realized, const double 
       G_FA_SIGNAL,
       G_FA_M_BID, G_FA_M_ASK, G_FA_S_BID, G_FA_S_ASK,
       G_FA_MASTER_REQ, G_FA_MASTER_FILL, G_FA_MASTER_SLIP,
+      FillAuditSlipClass(G_FA_MASTER_OK, G_FA_MASTER_SLIP),
       G_FA_SLAVE_REQ, G_FA_SLAVE_FILL, G_FA_SLAVE_SLIP,
+      FillAuditSlipClass(G_FA_SLAVE_OK, G_FA_SLAVE_SLIP),
       pricesOk ? realized : 0.0,
       pricesOk ? gap : 0.0,
       flagged,
@@ -2224,8 +2238,8 @@ void FillAuditEnsureCsvHeader()
          FileWriteString(hw,
             "event_timestamp,symbol,action,tx_id,master_side,signal_pts,"
             "master_bid,master_ask,slave_bid,slave_ask,"
-            "master_request,master_fill,master_slip_pts,"
-            "slave_request,slave_fill,slave_slip_pts,"
+            "master_request,master_fill,master_slip_pts,master_slip_class,"
+            "slave_request,slave_fill,slave_slip_pts,slave_slip_class,"
             "realized_pts,gap_pts,flagged,prices_ok,"
             "master_exec_ms,slave_exec_ms,pair_span_ms,open_mode,close_mode\n");
          FileClose(hw);

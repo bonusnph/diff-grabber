@@ -177,9 +177,9 @@ int               I_DPM_CLOSE_TH1  = 15;    // DPM close threshold level 1 (pts)
 int               I_DPM_CLOSE_TH2  = 25;    // DPM close threshold level 2 (pts)
 int               I_DPM_CLOSE_TH3  = 40;    // DPM close threshold level 3 (pts)
 
-input bool        I_FILL_AUDIT_ENABLED = true;  // Fill audit: log request vs fill, HUD slippage flag
-input int         I_FILL_AUDIT_GAP_PTS = 10;    // Fill audit: flag when signal minus realized gap reaches this (pts)
-input int         I_FILL_AUDIT_HOLD_SEC = 30;   // Fill audit: seconds to keep latest slippage detail on HUD
+bool              I_FILL_AUDIT_ENABLED = true;  // Fill audit: log request vs fill, HUD slippage flag
+int               I_FILL_AUDIT_GAP_PTS = 10;    // Fill audit: flag when signal minus realized gap reaches this (pts)
+int               I_FILL_AUDIT_HOLD_SEC = 30;   // Fill audit: seconds to keep latest slippage detail on HUD
 
 bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
 int               I_DIFF_ZONE_STABILITY_TICKS = 7;         // Ticks in positive zone required
