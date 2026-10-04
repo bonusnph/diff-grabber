@@ -490,6 +490,184 @@ string DiffHudWarningSuffixPl()
    return DiffHudWarningSuffixTags(false, false);
 }
 
+bool     G_NEG_ARMED_OPEN = false;
+double   G_NEG_SNAP_OPEN = 0.0;
+bool     G_NEG_ARMED_CLOSE = false;
+double   G_NEG_SNAP_CLOSE = 0.0;
+int      G_NEG_STREAK_OPEN = 0;
+int      G_NEG_STREAK_CLOSE = 0;
+bool     G_NEG_TRIGGER_OPEN = false;
+bool     G_NEG_TRIGGER_CLOSE = false;
+datetime G_NEG_HIST_TIME[5];
+int      G_NEG_HIST_OPEN[5];
+double   G_NEG_HIST_PTS[5];
+int      G_NEG_HIST_COUNT = 0;
+
+int NegDiffNeedCount()
+{
+   return MathMax(1, I_NEG_DIFF_FORCE_COUNT);
+}
+
+bool NegDiffForceLatched()
+{
+   return (I_NEG_DIFF_FORCE_ENABLED && (G_NEG_TRIGGER_OPEN || G_NEG_TRIGGER_CLOSE));
+}
+
+void NegDiffPushHist(const bool isOpen, const double pts)
+{
+   for(int i = 4; i >= 1; i--)
+   {
+      G_NEG_HIST_TIME[i] = G_NEG_HIST_TIME[i - 1];
+      G_NEG_HIST_OPEN[i] = G_NEG_HIST_OPEN[i - 1];
+      G_NEG_HIST_PTS[i] = G_NEG_HIST_PTS[i - 1];
+   }
+   G_NEG_HIST_TIME[0] = TimeCurrent();
+   G_NEG_HIST_OPEN[0] = isOpen ? 1 : 0;
+   G_NEG_HIST_PTS[0] = pts;
+   if(G_NEG_HIST_COUNT < 5)
+      G_NEG_HIST_COUNT++;
+}
+
+void NegDiffClearMemory()
+{
+   G_NEG_ARMED_OPEN = false;
+   G_NEG_SNAP_OPEN = 0.0;
+   G_NEG_ARMED_CLOSE = false;
+   G_NEG_SNAP_CLOSE = 0.0;
+   G_NEG_STREAK_OPEN = 0;
+   G_NEG_STREAK_CLOSE = 0;
+   G_NEG_TRIGGER_OPEN = false;
+   G_NEG_TRIGGER_CLOSE = false;
+   G_NEG_HIST_COUNT = 0;
+   for(int i = 0; i < 5; i++)
+   {
+      G_NEG_HIST_TIME[i] = 0;
+      G_NEG_HIST_OPEN[i] = 0;
+      G_NEG_HIST_PTS[i] = 0.0;
+   }
+}
+
+void NegDiffArmOpen(const bool masterBuy)
+{
+   if(!I_NEG_DIFF_FORCE_ENABLED || I_ROLE != ROLE_SOURCE_MASTER)
+   {
+      G_NEG_ARMED_OPEN = false;
+      return;
+   }
+   G_NEG_SNAP_OPEN = DiffOpenPtsFor(masterBuy);
+   G_NEG_ARMED_OPEN = true;
+}
+
+void NegDiffArmClose(const bool masterBuy)
+{
+   if(!I_NEG_DIFF_FORCE_ENABLED || I_ROLE != ROLE_SOURCE_MASTER)
+   {
+      G_NEG_ARMED_CLOSE = false;
+      return;
+   }
+   G_NEG_SNAP_CLOSE = DiffClosePtsFor(masterBuy);
+   G_NEG_ARMED_CLOSE = true;
+}
+
+void NegDiffDisarmOpen()
+{
+   G_NEG_ARMED_OPEN = false;
+   G_NEG_SNAP_OPEN = 0.0;
+}
+
+void NegDiffDisarmClose()
+{
+   G_NEG_ARMED_CLOSE = false;
+   G_NEG_SNAP_CLOSE = 0.0;
+}
+
+void NegDiffLatchCloseOnly(const bool queueFlatten)
+{
+   G_CLOSE_ONLY_MANUAL_ON = true;
+   if(queueFlatten && G_PAIR_ACTIVE)
+   {
+      G_CLOSE_SIGNAL_REASON = "NEG_DIFF_FORCE";
+      G_CLOSE_SIGNAL_REQUESTED = true;
+   }
+}
+
+void NegDiffApply(const bool isOpen)
+{
+   if(I_ROLE != ROLE_SOURCE_MASTER)
+      return;
+   if(isOpen)
+   {
+      if(!G_NEG_ARMED_OPEN)
+         return;
+   }
+   else if(!G_NEG_ARMED_CLOSE)
+      return;
+
+   const double pts = isOpen ? G_NEG_SNAP_OPEN : G_NEG_SNAP_CLOSE;
+   if(isOpen)
+      NegDiffDisarmOpen();
+   else
+      NegDiffDisarmClose();
+   if(!I_NEG_DIFF_FORCE_ENABLED)
+      return;
+
+   const bool hit = (pts <= (double)I_NEG_DIFF_FORCE_PTS);
+   int streak = isOpen ? G_NEG_STREAK_OPEN : G_NEG_STREAK_CLOSE;
+   if(hit)
+   {
+      streak++;
+      NegDiffPushHist(isOpen, pts);
+   }
+   else
+      streak = 0;
+   if(isOpen)
+      G_NEG_STREAK_OPEN = streak;
+   else
+      G_NEG_STREAK_CLOSE = streak;
+
+   if(hit && streak >= NegDiffNeedCount())
+   {
+      if(isOpen)
+         G_NEG_TRIGGER_OPEN = true;
+      else
+         G_NEG_TRIGGER_CLOSE = true;
+      NegDiffLatchCloseOnly(isOpen);
+      SyncLog(StringFormat("[SFX-SYNC] neg-diff force trigger side=%s streak=%d pts=%.1f",
+                           isOpen ? "OPEN" : "CLOSE", streak, pts));
+   }
+}
+
+void NegDiffOnManualCloseOnlyOff()
+{
+   NegDiffClearMemory();
+   SyncLog("[SFX-SYNC] neg-diff force counters cleared (close-only turned off)");
+}
+
+string NegDiffHudBlock()
+{
+   if(!I_NEG_DIFF_FORCE_ENABLED || I_ROLE != ROLE_SOURCE_MASTER)
+      return "";
+   const int need = NegDiffNeedCount();
+   const int leftOpen = MathMax(0, need - G_NEG_STREAK_OPEN);
+   const int leftClose = MathMax(0, need - G_NEG_STREAK_CLOSE);
+   string out = "\n";
+   out += "NEG DIFF FORCE: on\n";
+   out += StringFormat("OPEN streak %d/%d left %d\n", G_NEG_STREAK_OPEN, need, leftOpen);
+   out += StringFormat("CLOSE streak %d/%d left %d\n", G_NEG_STREAK_CLOSE, need, leftClose);
+   if(G_NEG_TRIGGER_OPEN)
+      out += "TRIGGER OPEN\n";
+   if(G_NEG_TRIGGER_CLOSE)
+      out += "TRIGGER CLOSE\n";
+   for(int i = 0; i < G_NEG_HIST_COUNT; i++)
+   {
+      out += StringFormat("NEG %s %.1f %s\n",
+                          G_NEG_HIST_OPEN[i] != 0 ? "OPEN" : "CLOSE",
+                          G_NEG_HIST_PTS[i],
+                          TimeToString(G_NEG_HIST_TIME[i], TIME_DATE | TIME_MINUTES | TIME_SECONDS));
+   }
+   return out;
+}
+
 string DiffHudMasterCommentTail()
 {
    string out = "";
@@ -547,6 +725,7 @@ string DiffHudMasterCommentTail()
    }
    out += DiffHudQuoteMonitorBlock();
    out += DpmHudBlock();
+   out += NegDiffHudBlock();
    return out;
 }
 
@@ -2100,6 +2279,8 @@ string FillAuditSignedInt(const int v)
    return IntegerToString(v);
 }
 
+string G_AUDIT_SLAVE_ACCOUNT = "";
+
 string FillAuditCsvFileName()
 {
    return StringFormat("FILL_AUDIT_%I64d_%s.csv", AccountInfoInteger(ACCOUNT_LOGIN), G_SYMBOL);
@@ -2114,9 +2295,10 @@ void FillAuditQueueRow(const bool pricesOk, const double realized, const double 
    const ulong spanMs = (G_FA_BEGUN_MS > 0 && nw >= G_FA_BEGUN_MS) ? (nw - G_FA_BEGUN_MS) : 0;
    const string masterExec = G_FA_MASTER_EXEC_SET ? StringFormat("%I64u", G_FA_MASTER_EXEC_MS) : "";
    const string slaveExec = G_FA_SLAVE_EXEC_SET ? StringFormat("%I64u", G_FA_SLAVE_EXEC_MS) : "";
+   const string masterAccount = StringFormat("%I64d", AccountInfoInteger(ACCOUNT_LOGIN));
    const string row = StringFormat(
-      "%s,%s,%s,%s,%s,%.4f,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f,%d,%s,%.8f,%.8f,%d,%s,%.4f,%.4f,%d,%d,%s,%s,%I64u,%s,%s\n",
-      ts, G_SYMBOL,
+      "%s,%s,%s,%s,%s,%s,%s,%.4f,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f,%d,%s,%.8f,%.8f,%d,%s,%.4f,%.4f,%d,%d,%s,%s,%I64u,%s,%s\n",
+      ts, G_SYMBOL, masterAccount, G_AUDIT_SLAVE_ACCOUNT,
       G_FA_IS_OPEN ? "OPEN" : "CLOSE",
       G_FA_TX,
       G_FA_MASTER_BUY ? "BUY" : "SELL",
@@ -2267,7 +2449,7 @@ void FillAuditEnsureCsvHeader()
       if(hw != INVALID_HANDLE)
       {
          FileWriteString(hw,
-            "event_timestamp,symbol,action,tx_id,master_side,signal_pts,"
+            "event_timestamp,symbol,master_account,slave_account,action,tx_id,master_side,signal_pts,"
             "master_bid,master_ask,slave_bid,slave_ask,"
             "master_request,master_fill,master_slip_pts,master_slip_class,"
             "slave_request,slave_fill,slave_slip_pts,slave_slip_class,"

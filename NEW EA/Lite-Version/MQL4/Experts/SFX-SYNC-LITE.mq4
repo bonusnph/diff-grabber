@@ -8,7 +8,7 @@ double G_LITE_MAX_LOT = 0.30;
 // Last server date the EA may run (inclusive). Stops at 00:00 the next server day.
 datetime G_LITE_EXPIRE_DATE = D'2027.01.01';
 
-#define SFX_SYNC_EA_VERSION "1.23"
+#define SFX_SYNC_EA_VERSION "1.24"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -180,6 +180,10 @@ int               I_DPM_CLOSE_TH3  = 40;    // DPM close threshold level 3 (pts)
 bool              I_FILL_AUDIT_ENABLED = true;  // Fill audit: log request vs fill, HUD slippage flag
 int               I_FILL_AUDIT_GAP_PTS = 10;    // Fill audit: flag when signal minus realized gap reaches this (pts)
 int               I_FILL_AUDIT_HOLD_SEC = 30;   // Fill audit: seconds to keep latest slippage detail on HUD
+
+input bool        I_NEG_DIFF_FORCE_ENABLED = false; // Force close-only after consecutive negative real diffs
+input int         I_NEG_DIFF_FORCE_PTS = -1;        // Count a success when real diff is <= this (points)
+input int         I_NEG_DIFF_FORCE_COUNT = 5;       // Consecutive hits per side before force close-only
 
 bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
 int               I_DIFF_ZONE_STABILITY_TICKS = 7;         // Ticks in positive zone required
@@ -2623,6 +2627,8 @@ bool TryClearDegraded(const string reason)
 
 bool TryRescueHedge()
 {
+   if(NegDiffForceLatched())
+      return false;
    if(I_CLOSE_MODE != CLOSE_MASTER_FIRST_WITH_RESCUE) return false;
    const int max_att = MathMax(0, I_RESCUE_MAX_ATTEMPTS);
    if(G_RESCUE_ATTEMPTS_USED >= max_att)
@@ -2672,6 +2678,7 @@ void FinalizeOpenCommit()
    DiffArmCooldownsAfterOpenPairCommit();
    if(DiffIsMasterAuto())
       G_DIFF_AUTO_EVER_OPENED = true;
+   NegDiffApply(true);
    ResetOpenTxState();
 }
 
@@ -2679,6 +2686,7 @@ void RollbackOpenNow(const string why)
 {
    if(!G_OPEN_TX_ACTIVE) return;
    FillAuditFinish(false);
+   NegDiffDisarmOpen();
    SendMsg(G_PEER, StringFormat("ROLLBACK;%s", G_OPEN_TX_ID));
    bool master_leg_closed = false;
    if(G_OPEN_MASTER_OK && G_OPEN_MASTER_TICKET > 0)
@@ -2700,6 +2708,7 @@ void CompleteCloseSuccess()
    if(G_PAIR_MASTER_TICKET > 0 && MasterPairLegTicketLive(G_PAIR_MASTER_TICKET))
    {
       FillAuditFinish(false);
+      NegDiffDisarmClose();
       SyncLog("[SFX-SYNC] CLOSE complete deferred: master leg still open (force pair-broken retry)");
       G_PAIR_SLAVE_TICKET = -1;
       G_SLAVE_PAIR_OPEN_REPORT = false;
@@ -2708,6 +2717,7 @@ void CompleteCloseSuccess()
       return;
    }
    FillAuditFinish(true);
+   NegDiffApply(false);
    string cr = G_CLOSE_REASON;
    string cr_disp = cr;
    if(cr == "DIFF_CLOSE")
@@ -2735,6 +2745,7 @@ void CompleteCloseSuccess()
 void HandleCloseFailure(const string why)
 {
    FillAuditFinish(false);
+   NegDiffDisarmClose();
    SyncLog(StringFormat("[SFX-SYNC] CLOSE failed reason=%s", why));
    if(why == "SLAVE_CLOSE_FAIL" || why == "SLAVE_CLOSE_TIMEOUT")
       StartForceFlatSlave("CLOSE_PATH_RECONCILE");
@@ -2809,6 +2820,7 @@ void StartOpenTransaction()
    G_OPEN_LAST_ERROR_SLAVE = 0;
    G_OPEN_SIDE = SideToString(exec_side);
    FillAuditBegin(true, G_OPEN_TX_ID, exec_side == SIDE_BUY, open_tag);
+   NegDiffArmOpen(exec_side == SIDE_BUY);
    G_OPEN_LOT_SLAVE = DynActiveLot();
 
    int err = 0;
@@ -2914,6 +2926,7 @@ void StartCloseTransaction(const string reason)
    G_CLOSE_TX_ID = NewTxId();
    G_CLOSE_REASON = reason;
    FillAuditBegin(false, G_CLOSE_TX_ID, FillAuditMasterPositionIsBuy(G_PAIR_MASTER_TICKET), reason);
+   NegDiffArmClose(FillAuditMasterPositionIsBuy(G_PAIR_MASTER_TICKET));
    G_CLOSE_TX_ACTIVE = true;
    G_CLOSE_OVERALL_DEADLINE_MS = NowMs() + (ulong)MathMax(1000, I_OPEN_ROLLBACK_TIMEOUT_MS);
    G_CLOSE_SLAVE_WAIT_DEADLINE_MS = NowMs() + (ulong)MathMax(200, I_SLAVE_CLOSE_TIMEOUT_MS);
@@ -2989,6 +3002,7 @@ void HandleMasterIncomingPacket(const string msg)
       G_LAST_SLAVE_PAIR_STATUS_MS = 0;
       SendMsg(G_PEER, StringFormat("HELLO_ACK;YES;%s", SFX_SYNC_EA_VERSION));
       ExpertPrintLn(StringFormat("Handshake OK slave_account=%s ver=%s", p[2], peer_version));
+      G_AUDIT_SLAVE_ACCOUNT = p[2];
       SyncLog(StringFormat("[SFX-SYNC] Slave handshake success account=%s ver=%s", p[2], peer_version));
       return;
    }
@@ -3940,7 +3954,10 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       }
       else
       {
+         const bool wasOn = G_CLOSE_ONLY_MANUAL_ON;
          G_CLOSE_ONLY_MANUAL_ON = !G_CLOSE_ONLY_MANUAL_ON;
+         if(wasOn && !G_CLOSE_ONLY_MANUAL_ON)
+            NegDiffOnManualCloseOnlyOff();
          SyncLog(StringFormat("[SFX-SYNC] close_only manual -> %s", G_CLOSE_ONLY_MANUAL_ON ? "ON" : "OFF"));
       }
       ChartRedraw();
