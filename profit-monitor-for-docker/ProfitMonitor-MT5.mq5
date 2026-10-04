@@ -665,13 +665,16 @@ bool NotifyLegacyGuardTry()
 
 void NotifyLeaseYieldToLegacy(const ulong now)
 {
-   const ulong n2 = NowMs();
-   if(G_NS_LEGACY_PRINT_MS == 0 || (n2 - G_NS_LEGACY_PRINT_MS) >= (ulong)SFX_NOTIFY_LOCK_PRINT_MS)
+   if(!NotifyLeaseConfirmOwn())
    {
-      NotifySenderLog("legacy notifier 1.28 holds SFX-SYNC-notifier.lock - not sending");
-      G_NS_LEGACY_PRINT_MS = n2;
+      G_NS_BACKOFF_UNTIL_MS = now + (ulong)(1000 + (MathRand() % 4001));
+      NotifyLeaseBecomeFollower();
+      return;
    }
    NotifyLeaseWrite(G_NS_OWNER, G_NS_HB, G_NS_GEN, "FREE", G_NS_FP);
+   const string hud = "YIELD_TO_LEGACY";
+   NotifySenderLog(hud);
+   NotifySenderHud(hud);
    G_NS_BACKOFF_UNTIL_MS = now + (ulong)(1000 + (MathRand() % 4001));
    NotifyLeaseBecomeFollower();
 }
@@ -973,9 +976,9 @@ void NotifyStateLoadAsHolder()
       NotifySenderLog("queue smaller than saved offset - reset offset to 0");
       return;
    }
-   const bool id_match = (G_NS_FIRST_ID == now_raw ||
-                          (StringLen(now_parsed) > 0 && G_NS_FIRST_ID == now_parsed));
-   if(StringLen(G_NS_FIRST_ID) > 0 && StringLen(now_raw) > 0 && !id_match)
+   const bool match_raw = (G_NS_FIRST_ID == now_raw);
+   const bool match_parsed = (StringLen(now_parsed) > 0 && G_NS_FIRST_ID == now_parsed);
+   if(StringLen(G_NS_FIRST_ID) > 0 && StringLen(now_raw) > 0 && !match_raw && !match_parsed)
    {
       G_NS_OFF = 0;
       G_NS_FIRST_ID = now_raw;
@@ -984,6 +987,11 @@ void NotifyStateLoadAsHolder()
       G_NS_T = 0;
       NotifyStateWrite();
       NotifySenderLog("queue first-line id changed - reset offset to 0");
+   }
+   else if(match_parsed && !match_raw && StringLen(now_raw) > 0)
+   {
+      G_NS_FIRST_ID = now_raw;
+      NotifyStateWrite();
    }
 }
 
@@ -1464,7 +1472,7 @@ int NotifyTelegramPost(const string text)
    string resultHeaders;
    StringToCharArray(body, postData, 0, StringLen(body));
    if(!NotifySenderTgBudgetOk())
-      return 0;
+      return 3;
    ResetLastError();
    const int http = WebRequest("POST", url, headers, G_NS_TG_TIMEOUT_MS, postData, resultData, resultHeaders);
    const int err = GetLastError();
@@ -1697,8 +1705,7 @@ void NotifySenderProcessLine(const bool allow_push, const bool allow_tg)
       const bool hard_wait = (quota_block || (push_backoff && G_NS_PUSH_BACKOFF_HARD));
       if(hard_wait)
       {
-         if(G_NS_PUSH_OUTAGE_MS != 0)
-            NotifyOutageNote(true);
+         NotifyOutageNote(true);
          return;
       }
       if(push_backoff)
@@ -1712,7 +1719,10 @@ void NotifySenderProcessLine(const bool allow_push, const bool allow_tg)
          return;
       G_NS_P = 1;
       if(!NotifyStateWrite())
+      {
+         G_NS_P = 0;
          return;
+      }
       const int rc = NotifySendPushOne(text);
       if(rc == 1)
       {
@@ -1789,8 +1799,17 @@ void NotifySenderProcessLine(const bool allow_push, const bool allow_tg)
          return;
       G_NS_T = 1;
       if(!NotifyStateWrite())
+      {
+         G_NS_T = 0;
          return;
+      }
       const int rc = NotifyTelegramPost(text);
+      if(rc == 3)
+      {
+         G_NS_T = 0;
+         NotifyStateWrite();
+         return;
+      }
       if(rc == 1)
       {
          G_NS_T = 2;
@@ -2007,14 +2026,14 @@ void NotifyLeaseMaybeRenew()
    const ulong now = NowMs();
    if(G_NS_LAST_HB_MS != 0 && (now - G_NS_LAST_HB_MS) < (ulong)LEASE_HB_SEC * 1000)
       return;
-   if(!NotifyLegacyGuardTry())
-   {
-      NotifyLeaseYieldToLegacy(now);
-      return;
-   }
    if(!NotifyLeaseConfirmOwn())
    {
       NotifyLeaseLost();
+      return;
+   }
+   if(!NotifyLegacyGuardTry())
+   {
+      NotifyLeaseYieldToLegacy(now);
       return;
    }
    G_NS_HB++;
