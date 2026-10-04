@@ -1362,7 +1362,11 @@ void NotifySenderProcessLine(const bool allow_push, const bool allow_tg)
    G_NS_LID = qid;
 
    if(G_NS_P == 1)
+   {
       G_NS_P = 2;
+      if(!NotifyStateWrite())
+         return;
+   }
    if(G_NS_T == 1)
    {
       G_NS_T = 2;
@@ -1370,6 +1374,8 @@ void NotifySenderProcessLine(const bool allow_push, const bool allow_tg)
       NotifySenderLog(hud);
       NotifySenderHud(hud);
       G_NS_INFLIGHT_HUD = true;
+      if(!NotifyStateWrite())
+         return;
       G_NS_OFF += line_bytes;
       G_NS_P = 0;
       G_NS_T = 0;
@@ -1384,23 +1390,15 @@ void NotifySenderProcessLine(const bool allow_push, const bool allow_tg)
    const bool wantT = (ch == "T" || ch == "B");
    const bool canP = G_NS_PUSH_AVAIL;
    const bool canT = (G_NS_TG_AVAIL && !G_NS_TG_PERM);
-
-   if(wantP && G_NS_P != 2 && !canP && !(wantT && canT))
+   const bool anyDoneOrDoable = ((wantP && (G_NS_P == 2 || canP)) ||
+                                 (wantT && (G_NS_T == 2 || canT)));
+   if((wantP || wantT) && !anyDoneOrDoable)
    {
       NotifyLeaseWriteFatal();
       NotifySenderLog("FATAL: no usable channel for this queue line");
       return;
    }
-   if(wantT && G_NS_T != 2 && !canT && !(wantP && canP && G_NS_P != 2) && !(wantP && G_NS_P == 2 && canP))
-   {
-      if(!(wantP && canP))
-      {
-         NotifyLeaseWriteFatal();
-         NotifySenderLog("FATAL: no usable channel for this queue line");
-         return;
-      }
-   }
-   if(wantP && G_NS_P != 2 && !canP && wantT && canT)
+   if(wantP && G_NS_P != 2 && !canP)
    {
       G_NS_P = 2;
       const ulong nowp = NowMs();
@@ -1420,23 +1418,11 @@ void NotifySenderProcessLine(const bool allow_push, const bool allow_tg)
       if(!NotifyStateWrite())
          return;
    }
-   if(wantT && G_NS_T != 2 && !canT && ((wantP && G_NS_P == 2) || (wantP && canP)))
+   if(wantT && G_NS_T != 2 && !canT)
    {
       G_NS_T = 2;
       if(!NotifyStateWrite())
          return;
-   }
-   if(wantP && G_NS_P != 2 && !canP && !wantT)
-   {
-      NotifyLeaseWriteFatal();
-      NotifySenderLog("FATAL: MT Push unavailable and Telegram not requested");
-      return;
-   }
-   if(wantT && G_NS_T != 2 && !canT && !wantP)
-   {
-      NotifyLeaseWriteFatal();
-      NotifySenderLog("FATAL: Telegram unavailable and MT Push not requested");
-      return;
    }
 
    if(wantP && G_NS_P == 0 && canP)
