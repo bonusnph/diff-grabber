@@ -1918,8 +1918,395 @@ void SetDiffHudTitleMode(const bool autosync_armed)
    ObjectSetString(0, "SFX_DX_PL_TITLE", OBJPROP_TEXT, "P/L");
 }
 
+// Capture globals live in the expert, above OpenOrder. This module only reads them.
+bool   G_FA_ACTIVE = false;
+bool   G_FA_FINALIZED = false;
+bool   G_FA_IS_OPEN = false;
+string G_FA_TX = "";
+bool   G_FA_MASTER_BUY = false;
+double G_FA_SIGNAL = 0.0;
+double G_FA_M_BID = 0.0;
+double G_FA_M_ASK = 0.0;
+double G_FA_S_BID = 0.0;
+double G_FA_S_ASK = 0.0;
+bool   G_FA_MASTER_OK = false;
+double G_FA_MASTER_REQ = 0.0;
+double G_FA_MASTER_FILL = 0.0;
+int    G_FA_MASTER_SLIP = 0;
+bool   G_FA_SLAVE_OK = false;
+double G_FA_SLAVE_REQ = 0.0;
+double G_FA_SLAVE_FILL = 0.0;
+int    G_FA_SLAVE_SLIP = 0;
+bool   G_FA_MASTER_EXEC_SET = false;
+ulong  G_FA_MASTER_EXEC_MS = 0;
+bool   G_FA_SLAVE_EXEC_SET = false;
+ulong  G_FA_SLAVE_EXEC_MS = 0;
+ulong  G_FA_BEGUN_MS = 0;
+int    G_FA_COUNT = 0;
+int    G_FA_STREAK = 0;
+ulong  G_FA_DETAIL_UNTIL = 0;
+string G_FA_DETAIL_TEXT = "";
+bool   G_FA_CSV_PENDING = false;
+string G_FA_CSV_BUFFER = "";
+bool   G_FA_CSV_HEADER = false;
+
+void FillAuditClearCapture()
+{
+   G_FILL_CAP_VALID = false;
+   G_FILL_CAP_IS_BUY = false;
+   G_FILL_CAP_REQUEST = 0.0;
+   G_FILL_CAP_FILL = 0.0;
+   G_FILL_CAP_EXEC_SET = false;
+   G_FILL_CAP_EXEC_MS = 0;
+}
+
+void FillAuditSetExecMs(const ulong execMs)
+{
+   G_FILL_CAP_EXEC_SET = true;
+   G_FILL_CAP_EXEC_MS = execMs;
+}
+
+void FillAuditStoreCapture(const bool isBuy, const double request, const double fill, const bool ok)
+{
+   G_FILL_CAP_IS_BUY = isBuy;
+   G_FILL_CAP_REQUEST = request;
+   G_FILL_CAP_FILL = (ok ? fill : 0.0);
+   G_FILL_CAP_VALID = (ok && request > 0.0 && fill > 0.0);
+}
+
+void FillAuditRememberReplay()
+{
+   G_FILL_REPLAY_REQ = G_FILL_CAP_REQUEST;
+   G_FILL_REPLAY_FILL = G_FILL_CAP_FILL;
+   G_FILL_REPLAY_EXEC_SET = G_FILL_CAP_EXEC_SET;
+   G_FILL_REPLAY_EXEC_MS = G_FILL_CAP_EXEC_MS;
+}
+
+string FillAuditPackOpenResult(const string txid, const int ok, const int ticket, const int err, const bool replay)
+{
+   const double req = replay ? G_FILL_REPLAY_REQ : G_FILL_CAP_REQUEST;
+   const double fill = replay ? G_FILL_REPLAY_FILL : G_FILL_CAP_FILL;
+   const ulong execMs = replay ? G_FILL_REPLAY_EXEC_MS : G_FILL_CAP_EXEC_MS;
+   return StringFormat("OPEN_RESULT;%s;%d;%d;%d;%.8f;%.8f;%I64u", txid, ok, ticket, err, req, fill, execMs);
+}
+
+string FillAuditPackCloseResult(const string txid, const int ok, const int ticket, const int err, const double bal)
+{
+   return StringFormat("CLOSE_RESULT;%s;%d;%d;%d;%.2f;%.8f;%.8f;%I64u",
+                       txid, ok, ticket, err, bal, G_FILL_CAP_REQUEST, G_FILL_CAP_FILL, G_FILL_CAP_EXEC_MS);
+}
+
+double FillAuditOrderOpenPrice(const int ticket)
+{
+   if(ticket <= 0)
+      return 0.0;
+   if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+      return OrderOpenPrice();
+   if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_HISTORY))
+      return OrderOpenPrice();
+   return 0.0;
+}
+
+double FillAuditOrderClosePrice(const int ticket)
+{
+   if(ticket <= 0)
+      return 0.0;
+   if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_HISTORY))
+      return OrderClosePrice();
+   return 0.0;
+}
+
+void FillAuditNoteRecoveredPosition(const int ticket)
+{
+   const double fill = FillAuditOrderOpenPrice(ticket);
+   if(fill > 0.0 && G_FILL_CAP_REQUEST > 0.0)
+      FillAuditStoreCapture(G_FILL_CAP_IS_BUY, G_FILL_CAP_REQUEST, fill, true);
+}
+
+bool FillAuditMasterPositionIsBuy(const int ticket)
+{
+   if(ticket > 0 && OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+      return (OrderType() == OP_BUY);
+   return DiffMasterBuyEffective();
+}
+
+int FillAuditSlipPts(const bool isBuy, const double request, const double fill)
+{
+   const double pt = DiffPoint();
+   if(pt <= 0.0 || request <= 0.0 || fill <= 0.0)
+      return 0;
+   const double raw = isBuy ? (fill - request) : (request - fill);
+   return (int)MathRound(raw / pt);
+}
+
+double FillAuditRealizedPts(const bool isOpen, const bool masterBuy, const double masterFill, const double slaveFill)
+{
+   const double pt = DiffPoint();
+   if(pt <= 0.0)
+      return 0.0;
+   const double diff = isOpen
+                       ? (masterBuy ? (slaveFill - masterFill) : (masterFill - slaveFill))
+                       : (masterBuy ? (masterFill - slaveFill) : (slaveFill - masterFill));
+   return diff / pt;
+}
+
+string FillAuditSignedInt(const int v)
+{
+   if(v > 0)
+      return StringFormat("+%d", v);
+   return IntegerToString(v);
+}
+
+string FillAuditCsvFileName()
+{
+   return StringFormat("FILL_AUDIT_%I64d_%s.csv", AccountInfoInteger(ACCOUNT_LOGIN), G_SYMBOL);
+}
+
+void FillAuditQueueRow(const bool pricesOk, const double realized, const double gap, const int flagged, const bool bothLegsOk)
+{
+   const ulong nw = NowMs();
+   const string ts = StringFormat("%s.%03d",
+                                  TimeToString(TimeCurrent(), TIME_DATE | TIME_MINUTES | TIME_SECONDS),
+                                  (int)(nw % 1000));
+   const ulong spanMs = (G_FA_BEGUN_MS > 0 && nw >= G_FA_BEGUN_MS) ? (nw - G_FA_BEGUN_MS) : 0;
+   const string masterExec = G_FA_MASTER_EXEC_SET ? StringFormat("%I64u", G_FA_MASTER_EXEC_MS) : "";
+   const string slaveExec = G_FA_SLAVE_EXEC_SET ? StringFormat("%I64u", G_FA_SLAVE_EXEC_MS) : "";
+   const string row = StringFormat(
+      "%s,%s,%s,%s,%s,%.4f,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f,%d,%.8f,%.8f,%d,%.4f,%.4f,%d,%d,%s,%s,%I64u,%s,%s\n",
+      ts, G_SYMBOL,
+      G_FA_IS_OPEN ? "OPEN" : "CLOSE",
+      G_FA_TX,
+      G_FA_MASTER_BUY ? "BUY" : "SELL",
+      G_FA_SIGNAL,
+      G_FA_M_BID, G_FA_M_ASK, G_FA_S_BID, G_FA_S_ASK,
+      G_FA_MASTER_REQ, G_FA_MASTER_FILL, G_FA_MASTER_SLIP,
+      G_FA_SLAVE_REQ, G_FA_SLAVE_FILL, G_FA_SLAVE_SLIP,
+      pricesOk ? realized : 0.0,
+      pricesOk ? gap : 0.0,
+      flagged,
+      (bothLegsOk && pricesOk) ? 1 : 0,
+      masterExec, slaveExec, spanMs,
+      OpenModeToString(I_OPEN_MODE), CloseModeToString(I_CLOSE_MODE));
+   G_FA_CSV_BUFFER += row;
+   G_FA_CSV_PENDING = true;
+}
+
+void FillAuditFinish(const bool bothLegsOk)
+{
+   if(!I_FILL_AUDIT_ENABLED || I_ROLE != ROLE_SOURCE_MASTER)
+      return;
+   if(!G_FA_ACTIVE || G_FA_FINALIZED)
+      return;
+   G_FA_FINALIZED = true;
+
+   const bool pricesOk = bothLegsOk && G_FA_MASTER_OK && G_FA_SLAVE_OK;
+   double realized = 0.0;
+   double gap = 0.0;
+   int flagged = 0;
+   if(pricesOk)
+   {
+      realized = FillAuditRealizedPts(G_FA_IS_OPEN, G_FA_MASTER_BUY, G_FA_MASTER_FILL, G_FA_SLAVE_FILL);
+      gap = G_FA_SIGNAL - realized;
+      if(gap >= (double)MathMax(0, I_FILL_AUDIT_GAP_PTS))
+      {
+         flagged = 1;
+         G_FA_COUNT++;
+         G_FA_STREAK++;
+         const int hold = MathMax(0, I_FILL_AUDIT_HOLD_SEC);
+         G_FA_DETAIL_TEXT = StringFormat(
+            "SLIPPAGE %s gap %.1f (sig %.1f -> fill %.1f) M%s S%s | n=%d streak=%d",
+            G_FA_IS_OPEN ? "OPEN" : "CLOSE",
+            gap, G_FA_SIGNAL, realized,
+            FillAuditSignedInt(G_FA_MASTER_SLIP),
+            FillAuditSignedInt(G_FA_SLAVE_SLIP),
+            G_FA_COUNT, G_FA_STREAK);
+         G_FA_DETAIL_UNTIL = NowMs() + (ulong)hold * 1000UL;
+      }
+      else
+         G_FA_STREAK = 0;
+   }
+   FillAuditQueueRow(pricesOk, realized, gap, flagged, bothLegsOk);
+   G_FA_ACTIVE = false;
+}
+
+void FillAuditBegin(const bool isOpen, const string txId, const bool masterBuy, const string reasonTag)
+{
+   if(!I_FILL_AUDIT_ENABLED || I_ROLE != ROLE_SOURCE_MASTER)
+      return;
+   if(G_FA_ACTIVE && !G_FA_FINALIZED)
+      FillAuditFinish(false);
+
+   G_FA_ACTIVE = true;
+   G_FA_FINALIZED = false;
+   G_FA_IS_OPEN = isOpen;
+   G_FA_TX = txId;
+   G_FA_BEGUN_MS = NowMs();
+   G_FA_MASTER_BUY = masterBuy;
+   G_FA_M_BID = G_DIFF_SELF_BID;
+   G_FA_M_ASK = G_DIFF_SELF_ASK;
+   G_FA_S_BID = G_DIFF_SLAVE_BID;
+   G_FA_S_ASK = G_DIFF_SLAVE_ASK;
+   if(isOpen && reasonTag == "DIFF_OPEN")
+      G_FA_SIGNAL = G_DIFF_SIGNAL_SNAP_OPEN_PTS;
+   else if(!isOpen && reasonTag == "DIFF_CLOSE")
+      G_FA_SIGNAL = G_DIFF_SIGNAL_SNAP_CLOSE_PTS;
+   else
+      G_FA_SIGNAL = isOpen ? DiffOpenPtsFor(masterBuy) : DiffClosePtsFor(masterBuy);
+   G_FA_MASTER_OK = false;
+   G_FA_SLAVE_OK = false;
+   G_FA_MASTER_REQ = 0.0;
+   G_FA_MASTER_FILL = 0.0;
+   G_FA_MASTER_SLIP = 0;
+   G_FA_SLAVE_REQ = 0.0;
+   G_FA_SLAVE_FILL = 0.0;
+   G_FA_SLAVE_SLIP = 0;
+   G_FA_MASTER_EXEC_SET = false;
+   G_FA_MASTER_EXEC_MS = 0;
+   G_FA_SLAVE_EXEC_SET = false;
+   G_FA_SLAVE_EXEC_MS = 0;
+}
+
+void FillAuditTakeMasterLeg()
+{
+   if(!I_FILL_AUDIT_ENABLED || !G_FA_ACTIVE || G_FA_FINALIZED)
+      return;
+   if(G_FILL_CAP_EXEC_SET)
+   {
+      G_FA_MASTER_EXEC_SET = true;
+      G_FA_MASTER_EXEC_MS = G_FILL_CAP_EXEC_MS;
+   }
+   if(!G_FILL_CAP_VALID)
+   {
+      G_FA_MASTER_OK = false;
+      return;
+   }
+   G_FA_MASTER_OK = true;
+   G_FA_MASTER_REQ = G_FILL_CAP_REQUEST;
+   G_FA_MASTER_FILL = G_FILL_CAP_FILL;
+   G_FA_MASTER_SLIP = FillAuditSlipPts(G_FILL_CAP_IS_BUY, G_FILL_CAP_REQUEST, G_FILL_CAP_FILL);
+}
+
+void FillAuditNoteSlavePrices(const double request, const double fill, const ulong execMs, const bool hasExec)
+{
+   if(!I_FILL_AUDIT_ENABLED || !G_FA_ACTIVE || G_FA_FINALIZED)
+      return;
+   if(hasExec && (execMs > 0 || (request > 0.0 && fill > 0.0)))
+   {
+      G_FA_SLAVE_EXEC_SET = true;
+      G_FA_SLAVE_EXEC_MS = execMs;
+   }
+   if(request <= 0.0 || fill <= 0.0)
+   {
+      G_FA_SLAVE_OK = false;
+      return;
+   }
+   const bool slaveBuy = G_FA_IS_OPEN ? !G_FA_MASTER_BUY : G_FA_MASTER_BUY;
+   G_FA_SLAVE_OK = true;
+   G_FA_SLAVE_REQ = request;
+   G_FA_SLAVE_FILL = fill;
+   G_FA_SLAVE_SLIP = FillAuditSlipPts(slaveBuy, request, fill);
+}
+
+void FillAuditEnsureCsvHeader()
+{
+   if(G_FA_CSV_HEADER)
+      return;
+   const string fname = FillAuditCsvFileName();
+   int hCheck = FileOpen(fname, FILE_READ | FILE_SHARE_READ | FILE_ANSI);
+   const bool isEmpty = (hCheck == INVALID_HANDLE || FileSize(hCheck) == 0);
+   if(hCheck != INVALID_HANDLE)
+      FileClose(hCheck);
+   if(isEmpty)
+   {
+      int hw = FileOpen(fname, FILE_WRITE | FILE_SHARE_READ | FILE_ANSI);
+      if(hw != INVALID_HANDLE)
+      {
+         FileWriteString(hw,
+            "event_timestamp,symbol,action,tx_id,master_side,signal_pts,"
+            "master_bid,master_ask,slave_bid,slave_ask,"
+            "master_request,master_fill,master_slip_pts,"
+            "slave_request,slave_fill,slave_slip_pts,"
+            "realized_pts,gap_pts,flagged,prices_ok,"
+            "master_exec_ms,slave_exec_ms,pair_span_ms,open_mode,close_mode\n");
+         FileClose(hw);
+      }
+   }
+   G_FA_CSV_HEADER = true;
+}
+
+void FillAuditFlushCsvNow()
+{
+   if(!G_FA_CSV_PENDING || StringLen(G_FA_CSV_BUFFER) == 0)
+   {
+      G_FA_CSV_PENDING = false;
+      return;
+   }
+   FillAuditEnsureCsvHeader();
+   const string fname = FillAuditCsvFileName();
+   int h = FileOpen(fname, FILE_WRITE | FILE_READ | FILE_SHARE_READ | FILE_ANSI);
+   if(h == INVALID_HANDLE)
+   {
+      G_FA_CSV_PENDING = false;
+      G_FA_CSV_BUFFER = "";
+      return;
+   }
+   FileSeek(h, 0, SEEK_END);
+   FileWriteString(h, G_FA_CSV_BUFFER);
+   FileClose(h);
+   G_FA_CSV_BUFFER = "";
+   G_FA_CSV_PENDING = false;
+}
+
+void FillAuditFlushCsv()
+{
+   if(!I_FILL_AUDIT_ENABLED || I_ROLE != ROLE_SOURCE_MASTER)
+      return;
+   if(G_OPEN_TX_ACTIVE || G_CLOSE_TX_ACTIVE)
+      return;
+   FillAuditFlushCsvNow();
+}
+
+void FillAuditRefreshHud()
+{
+   if(I_ROLE != ROLE_SOURCE_MASTER)
+      return;
+   const string name = "SFX_SLIPPAGE_FLAG";
+   if(!I_FILL_AUDIT_ENABLED)
+   {
+      ObjectDelete(0, name);
+      return;
+   }
+   string text = "";
+   const bool detailOn = (StringLen(G_FA_DETAIL_TEXT) > 0 && I_FILL_AUDIT_HOLD_SEC > 0 && NowMs() <= G_FA_DETAIL_UNTIL);
+   if(detailOn)
+      text = G_FA_DETAIL_TEXT;
+   else if(G_FA_COUNT > 0)
+      text = StringFormat("SLIPPAGE n=%d streak=%d", G_FA_COUNT, G_FA_STREAK);
+   if(StringLen(text) == 0)
+   {
+      ObjectDelete(0, name);
+      return;
+   }
+   if(ObjectFind(0, name) < 0)
+   {
+      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, 8);
+      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, 18);
+      ObjectSetString(0, name, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 10);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, clrRed);
+      ObjectSetInteger(0, name, OBJPROP_BACK, false);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   }
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+}
+
 void DestroyDiffUi()
 {
+   FillAuditFlushCsvNow();
+   ObjectDelete(0, "SFX_SLIPPAGE_FLAG");
    ObjectDelete(0, "SFX_DX_OPEN_TITLE");
    ObjectDelete(0, "SFX_DX_OPEN_VALUE");
    ObjectDelete(0, "SFX_DX_CLOSE_TITLE");
@@ -1953,6 +2340,7 @@ void RefreshDiffHud()
    color pl_c = pl_sum > 0.0 ? clrDarkGreen : (pl_sum < 0.0 ? clrFireBrick : clrSilver);
    ObjectSetString(0, "SFX_DX_PL_VALUE", OBJPROP_TEXT, StringFormat("%.2f%s", pl_sum, warnPl));
    ObjectSetInteger(0, "SFX_DX_PL_VALUE", OBJPROP_COLOR, pl_c);
+   FillAuditRefreshHud();
 }
 
 void DiffInitRoleDefaults()

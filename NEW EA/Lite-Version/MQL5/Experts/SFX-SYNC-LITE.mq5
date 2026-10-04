@@ -6,9 +6,9 @@
 // Lite hard cap for I_LOT. Edit this value to change the maximum lot.
 double G_LITE_MAX_LOT = 0.30;
 // Last server date the EA may run (inclusive). Stops at 00:00 the next server day.
-datetime G_LITE_EXPIRE_DATE = D'2027.02.01';
+datetime G_LITE_EXPIRE_DATE = D'2027.01.01';
 
-#define SFX_SYNC_EA_VERSION "1.22"
+#define SFX_SYNC_EA_VERSION "1.23"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -175,6 +175,10 @@ int               I_DPM_OPEN_TH3   = 40;    // DPM open threshold level 3 (pts)
 int               I_DPM_CLOSE_TH1  = 15;    // DPM close threshold level 1 (pts)
 int               I_DPM_CLOSE_TH2  = 25;    // DPM close threshold level 2 (pts)
 int               I_DPM_CLOSE_TH3  = 40;    // DPM close threshold level 3 (pts)
+
+input bool        I_FILL_AUDIT_ENABLED = true;  // Fill audit: log request vs fill, HUD slippage flag
+input int         I_FILL_AUDIT_GAP_PTS = 10;    // Fill audit: flag when signal minus realized gap reaches this (pts)
+input int         I_FILL_AUDIT_HOLD_SEC = 30;   // Fill audit: seconds to keep latest slippage detail on HUD
 
 bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
 int               I_DIFF_ZONE_STABILITY_TICKS = 7;         // Ticks in positive zone required
@@ -1315,9 +1319,26 @@ string SymbolFillingHudLine(const string sym)
    return StringFormat("Fill: use=%s  broker=%s\n", OrderFillingName(SymbolOrderFilling(sym)), broker);
 }
 
+bool   G_FILL_CAP_VALID   = false;
+bool   G_FILL_CAP_IS_BUY  = false;
+double G_FILL_CAP_REQUEST = 0.0;
+double G_FILL_CAP_FILL    = 0.0;
+double G_FILL_REPLAY_REQ  = 0.0;
+double G_FILL_REPLAY_FILL = 0.0;
+bool   G_FILL_CAP_EXEC_SET = false;
+ulong  G_FILL_CAP_EXEC_MS  = 0;
+bool   G_FILL_REPLAY_EXEC_SET = false;
+ulong  G_FILL_REPLAY_EXEC_MS  = 0;
+
+void FillAuditClearCapture();
+void FillAuditSetExecMs(const ulong execMs);
+void FillAuditStoreCapture(const bool isBuy, const double request, const double fill, const bool ok);
+void FillAuditNoteMt5Fill(const bool isBuy, const double request, const ulong deal, const double resultPrice, const ulong positionTicket);
+
 int OpenOrder(const ENUM_ORDER_TYPE type, const double lots, int &err_out)
 {
    err_out = 0;
+   FillAuditClearCapture();
    const ulong opened_after_ms = NowMs();
    const string sym = G_SYMBOL;
    MqlTick tk;
@@ -1327,6 +1348,7 @@ int OpenOrder(const ENUM_ORDER_TYPE type, const double lots, int &err_out)
       return -1;
    }
    const int sym_digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   const bool isBuy = (type == ORDER_TYPE_BUY);
    MqlTradeRequest req = {};
    MqlTradeResult res = {};
    req.action = TRADE_ACTION_DEAL;
@@ -1337,9 +1359,15 @@ int OpenOrder(const ENUM_ORDER_TYPE type, const double lots, int &err_out)
    req.type = type;
    req.type_filling = SymbolOrderFilling(sym);
    req.type_time = ORDER_TIME_GTC;
-   req.price = (type == ORDER_TYPE_BUY) ? NormalizeDouble(tk.ask, sym_digits) : NormalizeDouble(tk.bid, sym_digits);
+   req.price = isBuy ? NormalizeDouble(tk.ask, sym_digits) : NormalizeDouble(tk.bid, sym_digits);
+   const double request = req.price;
+   FillAuditStoreCapture(isBuy, request, 0.0, false);
 
-   if(!OrderSend(req, res))
+   const ulong execStart = NowMs();
+   const bool sent = OrderSend(req, res);
+   const ulong execEnd = NowMs();
+   FillAuditSetExecMs(execEnd >= execStart ? execEnd - execStart : 0);
+   if(!sent)
    {
       err_out = (int)GetLastError();
       return -1;
@@ -1347,7 +1375,7 @@ int OpenOrder(const ENUM_ORDER_TYPE type, const double lots, int &err_out)
 
    if(res.retcode == TRADE_RETCODE_PLACED)
    {
-      const ENUM_SIDE side = (type == ORDER_TYPE_BUY) ? SIDE_BUY : SIDE_SELL;
+      const ENUM_SIDE side = isBuy ? SIDE_BUY : SIDE_SELL;
       const ulong wait_ms = (ulong)MathMax(200, I_SLAVE_OPEN_TIMEOUT_MS);
       const ulong until_ms = NowMs() + wait_ms;
       int recovered_ticket = -1;
@@ -1355,7 +1383,10 @@ int OpenOrder(const ENUM_ORDER_TYPE type, const double lots, int &err_out)
       while(NowMs() <= until_ms)
       {
          if(RecoverMasterOpenTicketMt5(side, opened_after_ms, recovered_ticket))
+         {
+            FillAuditNoteMt5Fill(isBuy, request, res.deal, res.price, (ulong)recovered_ticket);
             return recovered_ticket;
+         }
          Sleep(40);
       }
    }
@@ -1369,7 +1400,7 @@ int OpenOrder(const ENUM_ORDER_TYPE type, const double lots, int &err_out)
    // Broker may finalize the position asynchronously after DONE; loop until visible
    // so we never report fail while the order is actually filled (MT5 close uses position ticket).
    {
-      const ENUM_SIDE side = (type == ORDER_TYPE_BUY) ? SIDE_BUY : SIDE_SELL;
+      const ENUM_SIDE side = isBuy ? SIDE_BUY : SIDE_SELL;
       const ulong wait_ms = (ulong)MathMax(200, I_SLAVE_OPEN_TIMEOUT_MS);
       const ulong until_ms = NowMs() + wait_ms;
       int recovered_ticket = -1;
@@ -1379,12 +1410,21 @@ int OpenOrder(const ENUM_ORDER_TYPE type, const double lots, int &err_out)
          {
             const long pos_id = (long)HistoryDealGetInteger(res.deal, DEAL_POSITION_ID);
             if(pos_id > 0 && PositionSelectByTicket((ulong)pos_id))
+            {
+               FillAuditNoteMt5Fill(isBuy, request, res.deal, res.price, (ulong)pos_id);
                return (int)pos_id;
+            }
          }
          if(res.order > 0 && PositionSelectByTicket((ulong)res.order))
+         {
+            FillAuditNoteMt5Fill(isBuy, request, res.deal, res.price, (ulong)res.order);
             return (int)res.order;
+         }
          if(RecoverMasterOpenTicketMt5(side, opened_after_ms, recovered_ticket))
+         {
+            FillAuditNoteMt5Fill(isBuy, request, res.deal, res.price, (ulong)recovered_ticket);
             return recovered_ticket;
+         }
          if(NowMs() >= until_ms)
             break;
          Sleep(40);
@@ -1468,6 +1508,7 @@ bool RecoverMasterOpenTicketMt5(const ENUM_SIDE side, const ulong opened_after_m
 
 bool CloseTicketIfOpenWithPolicy(const int ticket, const bool retry_transient)
 {
+   FillAuditClearCapture();
    if(ticket <= 0)
       return false;
    // Native position check avoids closing stale/invalid tickets after manual close.
@@ -1485,8 +1526,20 @@ bool CloseTicketIfOpenWithPolicy(const int ticket, const bool retry_transient)
    {
       if(!PositionSelectByTicket((ulong)ticket))
          return true;
-      if(G_TRADE_CLOSER.PositionClose((ulong)ticket))
+      const bool posBuy = ((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+      MqlTick closeTick;
+      double closeRequest = 0.0;
+      if(SymbolInfoTick(G_SYMBOL, closeTick))
+         closeRequest = posBuy ? closeTick.bid : closeTick.ask;
+      const ulong execStart = NowMs();
+      const bool closed = G_TRADE_CLOSER.PositionClose((ulong)ticket);
+      const ulong execEnd = NowMs();
+      FillAuditSetExecMs(execEnd >= execStart ? execEnd - execStart : 0);
+      if(closed)
+      {
+         FillAuditNoteMt5Fill(!posBuy, closeRequest, G_TRADE_CLOSER.ResultDeal(), G_TRADE_CLOSER.ResultPrice(), 0);
          return true;
+      }
       const uint rc = (uint)G_TRADE_CLOSER.ResultRetcode();
       if(!IsMt5CloseTransientRetcode(rc))
          return false;
@@ -2685,6 +2738,7 @@ void FinalizeOpenCommit()
 void RollbackOpenNow(const string why)
 {
    if(!G_OPEN_TX_ACTIVE) return;
+   FillAuditFinish(false);
    SendMsg(G_PEER, StringFormat("ROLLBACK;%s", G_OPEN_TX_ID));
    bool master_leg_closed = false;
    if(G_OPEN_MASTER_OK && G_OPEN_MASTER_TICKET > 0)
@@ -2705,6 +2759,7 @@ void CompleteCloseSuccess()
 {
    if(G_PAIR_MASTER_TICKET > 0 && MasterPairLegTicketLive(G_PAIR_MASTER_TICKET))
    {
+      FillAuditFinish(false);
       SyncLog("[SFX-SYNC] CLOSE complete deferred: master leg still open (force pair-broken retry)");
       G_PAIR_SLAVE_TICKET = -1;
       G_SLAVE_PAIR_OPEN_REPORT = false;
@@ -2712,6 +2767,7 @@ void CompleteCloseSuccess()
       ResetCloseTxState();
       return;
    }
+   FillAuditFinish(true);
    const string cr = G_CLOSE_REASON;
    const string cr_disp = (cr == "DIFF_CLOSE") ? DiffCloseParenLabel() : cr;
    SyncLog(StringFormat("[SFX-SYNC] CLOSE success pair_key=%s reason=%s", G_PAIR_KEY, cr_disp));
@@ -2736,6 +2792,7 @@ void CompleteCloseSuccess()
 
 void HandleCloseFailure(const string why)
 {
+   FillAuditFinish(false);
    SyncLog(StringFormat("[SFX-SYNC] CLOSE failed reason=%s", why));
    if(why == "SLAVE_CLOSE_FAIL" || why == "SLAVE_CLOSE_TIMEOUT")
       StartForceFlatSlave("CLOSE_PATH_RECONCILE");
@@ -2809,6 +2866,7 @@ void StartOpenTransaction()
    G_OPEN_LAST_ERROR_MASTER = 0;
    G_OPEN_LAST_ERROR_SLAVE = 0;
    G_OPEN_SIDE = SideToString(exec_side);
+   FillAuditBegin(true, G_OPEN_TX_ID, exec_side == SIDE_BUY, open_tag);
    G_OPEN_LOT_SLAVE = DynActiveLot();
 
    int err = 0;
@@ -2832,6 +2890,7 @@ void StartOpenTransaction()
                G_OPEN_MASTER_TICKET = recovered_ticket;
                G_OPEN_MASTER_OK = true;
                err = 0;
+               FillAuditNoteRecoveredPosition((ulong)recovered_ticket);
                SyncLog(StringFormat("[SFX-SYNC] OPEN_BALANCED master recovered tx_id=%s attempt=%d ticket=%d",
                                     G_OPEN_TX_ID, attempt, G_OPEN_MASTER_TICKET));
                ExpertPrintLn(StringFormat("[SFX-SYNC] OPEN_BALANCED master recovered tx_id=%s attempt=%d ticket=%d",
@@ -2857,6 +2916,7 @@ void StartOpenTransaction()
          if(attempt < max_attempts && I_MASTER_OPEN_RETRY_INTERVAL_MS > 0)
             Sleep(I_MASTER_OPEN_RETRY_INTERVAL_MS);
       }
+      FillAuditTakeMasterLeg();
       if(!G_OPEN_MASTER_OK) { RollbackOpenNow("MASTER_OPEN_FAIL"); return; }
    }
    else
@@ -2865,6 +2925,7 @@ void StartOpenTransaction()
       G_OPEN_MASTER_OK = (G_OPEN_MASTER_TICKET > 0);
       G_OPEN_LAST_ERROR_MASTER = err;
       SyncLog(StringFormat("[SFX-SYNC] OPEN_MASTER_FIRST master result tx_id=%s ok=%s ticket=%d err=%d%s", G_OPEN_TX_ID, G_OPEN_MASTER_OK ? "true" : "false", G_OPEN_MASTER_TICKET, err, master_open_diff_snap));
+      FillAuditTakeMasterLeg();
       if(!G_OPEN_MASTER_OK) { RollbackOpenNow("MASTER_OPEN_FAIL"); return; }
       PrintLogMasterOpenIntent(open_tag);
       G_PAIR_OPEN_INTENT_MS = NowMs();
@@ -2910,6 +2971,7 @@ void StartCloseTransaction(const string reason)
 
    G_CLOSE_TX_ID = NewTxId();
    G_CLOSE_REASON = reason;
+   FillAuditBegin(false, G_CLOSE_TX_ID, FillAuditMasterPositionIsBuy(G_PAIR_MASTER_TICKET), reason);
    G_CLOSE_TX_ACTIVE = true;
    G_CLOSE_OVERALL_DEADLINE_MS = NowMs() + (ulong)MathMax(1000, I_OPEN_ROLLBACK_TIMEOUT_MS);
    G_CLOSE_SLAVE_WAIT_DEADLINE_MS = NowMs() + (ulong)MathMax(200, I_SLAVE_CLOSE_TIMEOUT_MS);
@@ -2934,6 +2996,7 @@ void StartCloseTransaction(const string reason)
       master_closed = CloseTicketIfOpenWithPolicy(G_PAIR_MASTER_TICKET, (I_CLOSE_MODE == CLOSE_BALANCED));
 
    G_CLOSE_MASTER_OK = master_closed;
+   FillAuditTakeMasterLeg();
    if(!G_CLOSE_MASTER_OK)
    {
       G_CLOSE_LAST_ERROR_MASTER = GetLastError();
@@ -3068,11 +3131,16 @@ void HandleMasterIncomingPacket(const string msg)
       G_OPEN_SLAVE_OK = ((int)StringToInteger(p[2]) == 1);
       G_OPEN_SLAVE_TICKET = (int)StringToInteger(p[3]);
       G_OPEN_LAST_ERROR_SLAVE = (int)StringToInteger(p[4]);
+      if(ArraySize(p) >= 7)
+         FillAuditNoteSlavePrices(StringToDouble(p[5]), StringToDouble(p[6]),
+                                  (ArraySize(p) >= 8) ? (ulong)StringToInteger(p[7]) : 0,
+                                  ArraySize(p) >= 8);
 
       SyncLog(StringFormat("[SFX-SYNC] Slave open result tx_id=%s ok=%s ticket=%d err=%d", G_OPEN_TX_ID, G_OPEN_SLAVE_OK ? "true" : "false", G_OPEN_SLAVE_TICKET, G_OPEN_LAST_ERROR_SLAVE));
 
       if(G_OPEN_MASTER_OK && G_OPEN_SLAVE_OK)
       {
+         FillAuditFinish(true);
          FinalizeOpenCommit();
       }
       else if(G_OPEN_MASTER_OK && !G_OPEN_SLAVE_OK && G_OPEN_RETRY_LEFT > 0)
@@ -3102,6 +3170,10 @@ void HandleMasterIncomingPacket(const string msg)
       G_CLOSE_SLAVE_OK = ((int)StringToInteger(p[2]) == 1);
       G_CLOSE_LAST_ERROR_SLAVE = (int)StringToInteger(p[4]);
       G_CLOSE_SLAVE_BALANCE = (ArraySize(p) >= 6) ? StringToDouble(p[5]) : 0.0;
+      if(ArraySize(p) >= 8)
+         FillAuditNoteSlavePrices(StringToDouble(p[6]), StringToDouble(p[7]),
+                                  (ArraySize(p) >= 9) ? (ulong)StringToInteger(p[8]) : 0,
+                                  ArraySize(p) >= 9);
       if(G_CLOSE_MASTER_OK && G_CLOSE_SLAVE_OK)
          CompleteCloseSuccess();
       else if(G_CLOSE_LAST_ERROR_SLAVE == -9101
@@ -3241,7 +3313,7 @@ void HandleSlaveIncomingPacket(const string msg)
          if(still_ok)
          {
             G_SLAVE_PENDING_OPEN_DEADLINE_MS = NowMs() + (ulong)MathMax(300, I_SLAVE_PENDING_COMMIT_TIMEOUT_MS);
-            SendMsg(G_PEER, StringFormat("OPEN_RESULT;%s;%d;%d;%d", txid, 1, G_SLAVE_PENDING_OPEN_TICKET, 0));
+            SendMsg(G_PEER, FillAuditPackOpenResult(txid, 1, G_SLAVE_PENDING_OPEN_TICKET, 0, true));
             return;
          }
       }
@@ -3274,8 +3346,7 @@ void HandleSlaveIncomingPacket(const string msg)
          }
          SyncLog(StringFormat("[SFX-SYNC] OPEN_INTENT duplicate replay tx_id=%s ok=%d ticket=%d err=%d",
                               txid, G_SLAVE_LAST_OPEN_OK, G_SLAVE_LAST_OPEN_TICKET, G_SLAVE_LAST_OPEN_ERR));
-         SendMsg(G_PEER, StringFormat("OPEN_RESULT;%s;%d;%d;%d",
-                                      txid, G_SLAVE_LAST_OPEN_OK, G_SLAVE_LAST_OPEN_TICKET, G_SLAVE_LAST_OPEN_ERR));
+         SendMsg(G_PEER, FillAuditPackOpenResult(txid, G_SLAVE_LAST_OPEN_OK, G_SLAVE_LAST_OPEN_TICKET, G_SLAVE_LAST_OPEN_ERR, true));
          return;
       }
 
@@ -3290,8 +3361,9 @@ void HandleSlaveIncomingPacket(const string msg)
       G_SLAVE_LAST_OPEN_OK = ok ? 1 : 0;
       G_SLAVE_LAST_OPEN_TICKET = tk;
       G_SLAVE_LAST_OPEN_ERR = err;
+      FillAuditRememberReplay();
 
-      SendMsg(G_PEER, StringFormat("OPEN_RESULT;%s;%d;%d;%d", txid, ok ? 1 : 0, tk, err));
+      SendMsg(G_PEER, FillAuditPackOpenResult(txid, ok ? 1 : 0, tk, err, false));
       return;
    }
 
@@ -3344,6 +3416,7 @@ void HandleSlaveIncomingPacket(const string msg)
 
    if(p[0] == "CLOSE_INTENT" && ArraySize(p) >= 4)
    {
+      FillAuditClearCapture();
       string txid = p[1];
       string close_reason_in = (ArraySize(p) >= 3) ? p[2] : "";
       string pair_key = p[3];
@@ -3393,7 +3466,7 @@ void HandleSlaveIncomingPacket(const string msg)
          }
       }
       const double bal = AccountInfoDouble(ACCOUNT_BALANCE);
-      SendMsg(G_PEER, StringFormat("CLOSE_RESULT;%s;%d;%d;%d;%.2f", txid, ok ? 1 : 0, G_SLAVE_PAIR_TICKET, err, bal));
+      SendMsg(G_PEER, FillAuditPackCloseResult(txid, ok ? 1 : 0, G_SLAVE_PAIR_TICKET, err, bal));
       return;
    }
 }
@@ -3447,6 +3520,7 @@ void MasterLoop()
       DiffMasterTick();
       if(I_DPM_ENABLED && I_DPM_CSV_ENABLED && G_DPM_CSV_PENDING)
          DpmFlushCsv();
+      FillAuditFlushCsv();
       MasterRecoverOrphanLegsIfNeeded();
       MonitorForceFlatState();
 
