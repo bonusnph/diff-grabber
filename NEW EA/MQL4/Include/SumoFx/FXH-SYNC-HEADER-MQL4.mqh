@@ -492,13 +492,13 @@ double   G_FA_LAST_REALIZED_PTS = 0.0;
 #define SFX_NEG_GV_MAX 63
 #define SFX_NOTIFY_MSG_MAX 255
 #define SFX_NOTIFY_QUEUE_FILE "SFX-SYNC-notify-queue.txt"
+#define SFX_NOTIFY_QUEUE_FMT "Q2"
 #define SFX_NOTIFY_PEND_FILE_MAX 4
 
 int NegDiffNeedCount();
 void NegDiffMaybeTouchDaily();
 
 int      G_NEG_GV_TOUCH_DAY = -1;
-bool     G_NOTIFY_PUSH_OK = false;
 string   G_HUD_BANNER = "";
 ulong    G_HUD_BANNER_UNTIL_MS = 0;
 string   G_NOTIFY_HUD_STICKY = "";
@@ -538,9 +538,15 @@ bool NotifyTelegramWanted()
    return (I_NOTIFY_CHANNEL == NOTIFY_TELEGRAM || I_NOTIFY_CHANNEL == NOTIFY_BOTH);
 }
 
-bool NotifyPushActive()
+string NotifyChannelCode()
 {
-   return (NotifyPushWanted() && G_NOTIFY_PUSH_OK);
+   if(I_NOTIFY_CHANNEL == NOTIFY_MT_PUSH)
+      return "P";
+   if(I_NOTIFY_CHANNEL == NOTIFY_TELEGRAM)
+      return "T";
+   if(I_NOTIFY_CHANNEL == NOTIFY_BOTH)
+      return "B";
+   return "OFF";
 }
 
 bool NotifyIsMasterSender()
@@ -590,23 +596,6 @@ string NotifySanitizeLine(const string s)
    return t;
 }
 
-#ifndef SFX_SYNC_LITE
-void NotifySendPush(const string text)
-{
-   if(!NotifyIsMasterSender())
-      return;
-   if(MQLInfoInteger(MQL_TESTER) != 0)
-      return;
-   ResetLastError();
-   if(!SendNotification(text))
-   {
-      const int err = GetLastError();
-      const string ln = StringFormat("[SFX-SYNC] SendNotification failed err=%d", err);
-      Print(ln);
-      SyncLog(ln);
-   }
-}
-
 bool NotifyQueueFileAppend(const string line)
 {
    ResetLastError();
@@ -645,13 +634,20 @@ void NotifyQueueEnqueue(const string text)
       return;
    if(MQLInfoInteger(MQL_TESTER) != 0)
       return;
+   if(I_NOTIFY_CHANNEL == NOTIFY_OFF)
+      return;
    G_NOTIFY_SEQ++;
    const string id = StringFormat("%I64u-%d-%I64d-%d",
                                  NowMs(),
                                  (int)I_PORT,
                                  (long)ChartID(),
                                  G_NOTIFY_SEQ);
-   const string line = id + "\t" + NotifySanitizeLine(text) + "\n";
+   const string payload = NotifyClip255(NotifySanitizeLine(text));
+   const string line = StringFormat("%s;%s;ch=%s\t%s\n",
+                                   SFX_NOTIFY_QUEUE_FMT,
+                                   id,
+                                   NotifyChannelCode(),
+                                   payload);
    if(!NotifyQueueFileAppend(line))
       NotifyQueuePendingAdd(line);
 }
@@ -681,11 +677,7 @@ void NotifySendChannels(const string text)
       return;
    if(I_NOTIFY_CHANNEL == NOTIFY_OFF)
       return;
-   const string msg = NotifyClip255(text);
-   if(NotifyPushActive())
-      NotifySendPush(msg);
-   if(NotifyTelegramWanted())
-      NotifyQueueEnqueue(msg);
+   NotifyQueueEnqueue(text);
 }
 
 string NotifyNegDiffForceText(const bool isOpen, const int streak, const double pts)
@@ -709,7 +701,6 @@ void NotifyNegDiffForceAlert(const bool isOpen, const int streak, const double p
 {
    NotifySendChannels(NotifyNegDiffForceText(isOpen, streak, pts));
 }
-#endif
 
 // Call sites remain; push/Telegram are not sent from these events.
 void NotifyEvent(const string ev, const string extra)
@@ -725,9 +716,7 @@ void NotifyEventAndFlushTg(const string ev, const string extra)
 
 void NotifyOnTimer()
 {
-#ifndef SFX_SYNC_LITE
    NotifyQueueRetryPending();
-#endif
    NegDiffMaybeTouchDaily();
 }
 
@@ -759,7 +748,6 @@ void NotifyCloseRejectedDuringForceFlat()
 
 void NotifyOnInit()
 {
-   G_NOTIFY_PUSH_OK = false;
    G_NOTIFY_HUD_STICKY = "";
    G_NOTIFY_FILE_PENDING_N = 0;
    for(int pi = 0; pi < SFX_NOTIFY_PEND_FILE_MAX; pi++)
@@ -768,7 +756,6 @@ void NotifyOnInit()
    G_NOTIFY_PAIR_BROKEN_EPISODE = false;
    if(I_NOTIFY_CHANNEL == NOTIFY_OFF)
       return;
-#ifndef SFX_SYNC_LITE
    if(!NotifyIsMasterSender())
    {
       const string ign = "[SFX-SYNC] I_NOTIFY_CHANNEL is set but notifications are ignored on the slave (master only)";
@@ -777,29 +764,14 @@ void NotifyOnInit()
       return;
    }
 
-   if(NotifyPushWanted())
-   {
-      if(TerminalInfoInteger(TERMINAL_NOTIFICATIONS_ENABLED) == 0)
-      {
-         const string warn = "[SFX-SYNC] MT push selected but Notifications are OFF. Enable Tools > Options > Notifications and enter the MetaQuotes ID from the mobile app.";
-         Print(warn);
-         SyncLog(warn);
-         Alert(warn);
-         HudBannerSet("MT push: Notifications / MetaQuotes ID not configured", 20);
-         NotifyHudStickyAppend("MT push: Notifications / MetaQuotes ID not configured");
-      }
-      else
-         G_NOTIFY_PUSH_OK = true;
-   }
-
-   if(NotifyTelegramWanted())
-   {
-      const string warn = "[SFX-SYNC] Telegram selected: attach SFX-SYNC-NOTIFIER on another chart. Token/chat id live in the notifier (Common Files token file). Allow WebRequest https://api.telegram.org on that terminal.";
-      Print(warn);
-      SyncLog(warn);
-      HudBannerSet("Telegram: attach SFX-SYNC-NOTIFIER on another chart", 20);
-      NotifyHudStickyAppend("Telegram: attach SFX-SYNC-NOTIFIER");
-   }
+   const string ch = NotifyChannelCode();
+   const string warn = StringFormat(
+      "[SFX-SYNC] Notify queued (ch=%s). Sender = SFX-SYNC-NOTIFIER >=1.29 or ProfitMonitor >=1.05 (I_NOTIFY_SENDER=true) on this PC/Common Files. MT Push needs MetaQuotes ID on the SENDER terminal; Telegram needs WebRequest https://api.telegram.org there.",
+      ch);
+   Print(warn);
+   SyncLog(warn);
+   HudBannerSet("Notify: attach SFX-SYNC-NOTIFIER or ProfitMonitor (I_NOTIFY_SENDER)", 20);
+   NotifyHudStickyAppend("Notify: attach SFX-SYNC-NOTIFIER or ProfitMonitor (I_NOTIFY_SENDER)");
 
    if(I_NOTIFY_TEST_ON_INIT)
    {
@@ -811,7 +783,6 @@ void NotifyOnInit()
          NotifyAccountLogin(),
          NotifyRoleName())));
    }
-#endif
 }
 
 int NegDiffNeedCount()
@@ -955,10 +926,8 @@ void NegDiffApply(const bool isOpen)
       SyncLog(StringFormat("[SFX-SYNC] neg-diff force trigger side=%s streak=%d realized_pts=%.1f",
                            isOpen ? "OPEN" : "CLOSE", streak, pts));
       // One alert per unlatched->latched transition. A restored latch does not re-send.
-#ifndef SFX_SYNC_LITE
       if(!already)
          NotifyNegDiffForceAlert(isOpen, streak, pts);
-#endif
    }
    NegDiffPersistState();
 }

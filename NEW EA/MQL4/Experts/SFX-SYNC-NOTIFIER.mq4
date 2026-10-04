@@ -1,50 +1,20 @@
 //+------------------------------------------------------------------+
 //|                                            SFX-SYNC-NOTIFIER.mq4 |
-//| Standalone Telegram sender for SFX-SYNC. Attach on any other     |
-//| chart so WebRequest cannot stall the trading EA.                 |
-//| One notifier per PC via SFX-SYNC-notifier.lock (all terminals).  |
+//| Standalone sender for SFX-SYNC queue (MT Push + Telegram).       |
+//| One sender per Common Files via lease (NOTIFIER or ProfitMonitor)|
 //+------------------------------------------------------------------+
-#define SFX_SYNC_NOTIFIER_VERSION "1.28"
+#define SFX_SYNC_NOTIFIER_VERSION "1.29"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
 #property version   SFX_SYNC_NOTIFIER_VERSION
 #property strict
-#property description "SFX-SYNC Telegram notifier. Token/chat id live here, never in SFX-SYNC."
+#property description "SFX-SYNC notify sender. Token/chat id live here, never in SFX-SYNC."
 
-#define SFX_NOTIFY_QUEUE_FILE "SFX-SYNC-notify-queue.txt"
-#define SFX_NOTIFY_QUEUE_OLD  "SFX-SYNC-notify-queue.txt.old"
-#define SFX_NOTIFY_STATE_FILE "SFX-SYNC-notify-offset.txt"
-#define SFX_NOTIFY_STATE_TMP  "SFX-SYNC-notify-offset.tmp"
-#define SFX_NOTIFY_LOCK_FILE  "SFX-SYNC-notifier.lock"
-#define SFX_NOTIFY_TG_TIMEOUT_MS 5000
-#define SFX_NOTIFY_TG_RETRY_MAX_SEC 300
-#define SFX_NOTIFY_TG_BACKOFF_DEFAULT_SEC 30
-#define SFX_NOTIFY_FAIL_PRINT_MS 60000
-#define SFX_NOTIFY_LOCK_PRINT_MS 60000
-#define SFX_NOTIFY_ROTATE_BYTES 65536
-#define SFX_NOTIFY_READ_CHUNK 4096
-
-input string I_TG_BOT_TOKEN = "";              // Optional token; prefer I_TG_TOKEN_FILE (never logged)
-input string I_TG_CHAT_ID = "";                // Telegram chat id (user or -group)
+input string I_TG_BOT_TOKEN = "";              // Optional token; prefer I_TG_TOKEN_FILE (plaintext in chart/.set; never logged)
+input string I_TG_CHAT_ID = "-5310463849";     // Telegram chat id (user or -group)
 input string I_TG_TOKEN_FILE = "SFX-SYNC-telegram-token.txt"; // Common Files token if I_TG_BOT_TOKEN empty
 input int    I_POLL_SEC = 2;                   // Queue poll interval (seconds)
-
-string G_RESOLVED_TOKEN = "";
-bool   G_TG_OK = false;
-bool   G_PERM_DISABLED = false;
-bool   G_PERM_LOGGED = false;
-bool   G_SKIP400_LOGGED = false;
-ulong  G_BACKOFF_UNTIL_MS = 0;
-int    G_ERR_BACKOFF_SEC = 5;
-bool   G_FAIL_LOGGED = false;
-bool   G_429_LOGGED = false;
-ulong  G_LAST_FAIL_PRINT_MS = 0;
-ulong  G_429_LAST_PRINT_MS = 0;
-long   G_QUEUE_OFFSET = 0;
-string G_QUEUE_FIRST_ID = "";
-int    G_LOCK_HANDLE = INVALID_HANDLE;
-ulong  G_LOCK_LAST_PRINT_MS = 0;
 
 ulong NowMs()
 {
@@ -58,6 +28,142 @@ string NotifyTrim(const string s)
    t = StringTrimRight(t);
    return t;
 }
+
+// ==== BEGIN SFX-NOTIFY-SENDER L2/S2/Q2 ====
+#ifndef FILE_REWRITE
+#define FILE_REWRITE 256
+#endif
+
+#define SFX_NOTIFY_QUEUE_FILE "SFX-SYNC-notify-queue.txt"
+#define SFX_NOTIFY_QUEUE_OLD  "SFX-SYNC-notify-queue.txt.old"
+#define SFX_NOTIFY_STATE_FILE "SFX-SYNC-notify-offset.txt"
+#define SFX_NOTIFY_STATE_TMP  "SFX-SYNC-notify-offset.tmp"
+#define SFX_NOTIFY_LOCK_FILE  "SFX-SYNC-notifier.lock"
+#define SFX_NOTIFY_LEASE_FILE "SFX-SYNC-notify-lease.txt"
+#define SFX_NOTIFY_READ_CHUNK 4096
+#define SFX_NOTIFY_ROTATE_BYTES 65536
+#define SFX_NOTIFY_TG_RETRY_MAX_SEC 300
+#define SFX_NOTIFY_TG_BACKOFF_DEFAULT_SEC 30
+#define SFX_NOTIFY_FAIL_PRINT_MS 60000
+#define SFX_NOTIFY_LOCK_PRINT_MS 60000
+#define LEASE_HB_SEC 5
+#define LEASE_STALE_SEC 20
+#define FATAL_COOLDOWN_SEC 1800
+#define NS_ROLE_FOLLOWER 0
+#define NS_ROLE_CLAIMING 1
+#define NS_ROLE_HOLDER 2
+#define NS_ROLE_DEAD 3
+
+bool   G_NS_ACTIVE = false;
+string G_NS_KIND = "";
+string G_NS_LOG = "";
+string G_NS_OWNER = "";
+string G_NS_NONCE = "";
+string G_NS_TOKEN = "";
+string G_NS_FP = "";
+string G_NS_LEASE_TMP = "";
+int    G_NS_TG_TIMEOUT_MS = 5000;
+int    G_NS_ROLE = NS_ROLE_FOLLOWER;
+int    G_NS_LOCK = INVALID_HANDLE;
+int    G_NS_HB = 0;
+int    G_NS_GEN = 0;
+bool   G_NS_CLAIM_FROM_STALE = false;
+bool   G_NS_PUSH_AVAIL = false;
+bool   G_NS_TG_AVAIL = false;
+bool   G_NS_TG_PERM = false;
+bool   G_NS_TG_PERM_LOGGED = false;
+bool   G_NS_TG_SKIP400_LOGGED = false;
+bool   G_NS_PUSH_ALERT_DONE = false;
+bool   G_NS_QNEXT_LOGGED = false;
+bool   G_NS_FAIL_LOGGED = false;
+bool   G_NS_429_LOGGED = false;
+bool   G_NS_INFLIGHT_HUD = false;
+int    G_NS_ERR_BACKOFF_SEC = 5;
+ulong  G_NS_TG_BACKOFF_UNTIL = 0;
+ulong  G_NS_PUSH_BACKOFF_UNTIL = 0;
+ulong  G_NS_PUSH_LAST_MS = 0;
+ulong  G_NS_PUSH_TS[8];
+int    G_NS_PUSH_N = 0;
+int    G_NS_PUSH_ERR_BACKOFF_SEC = 5;
+ulong  G_NS_LAST_FAIL_PRINT_MS = 0;
+ulong  G_NS_429_LAST_PRINT_MS = 0;
+ulong  G_NS_PUSH_PRINT_MS = 0;
+ulong  G_NS_PUSH_CHECK_MS = 0;
+ulong  G_NS_LEGACY_PRINT_MS = 0;
+ulong  G_NS_LAST_LEASE_READ_MS = 0;
+ulong  G_NS_CONFIRM_UNTIL_MS = 0;
+ulong  G_NS_BACKOFF_UNTIL_MS = 0;
+ulong  G_NS_LAST_HB_MS = 0;
+string G_NS_OBS_KEY = "";
+ulong  G_NS_OBS_MS = 0;
+string G_NS_FATAL_KEY = "";
+ulong  G_NS_FATAL_SEEN_MS = 0;
+long   G_NS_OFF = 0;
+string G_NS_FIRST_ID = "";
+string G_NS_LID = "";
+int    G_NS_P = 0;
+int    G_NS_T = 0;
+
+string NotifyCharToStr(const int c);
+string NotifyUtf16LeToString(uchar &bytes[], const int start, const int n);
+string NotifyBytesToText(uchar &bytes[], const int n);
+string NotifyFirstNonEmptyLine(const string raw);
+bool   NotifyTokenCharsetOk(const string t);
+string NotifyTokenFileExpectedPath();
+string NotifyReadTokenFile();
+string NotifyHex2(const int c);
+string NotifyUrlEncode(const string s);
+int    NotifyExtractRetryAfterSec(const string src);
+string NotifyAsciiLower(const string s);
+bool   NotifyIFind(const string hay, const string needle);
+string NotifyExtractMigrateChatId(const string src);
+bool   NotifyHttp400IsChatFatal(const string body);
+int    FileReadChunk(const int h, uchar &buf[], const int maxn);
+uint   NotifyFnv1a32(const string s);
+string NotifyHex8u(const uint v);
+string NotifyKvGet(const string field, const string key);
+int    NotifyParseIntSafe(const string s);
+void   NotifySenderLog(const string msg);
+void   NotifySenderHud(const string msg);
+void   NotifySenderRefreshFp();
+bool   NotifyLeaseReadRaw(string &raw);
+bool   NotifyLeaseParse(const string raw, string &owner, int &hb, int &gen, string &st, string &fp);
+bool   NotifyLeaseWrite(const string owner, const int hb, const int gen, const string st, const string fp);
+bool   NotifyLeaseReadNow(string &owner, int &hb, int &gen, string &st, string &fp);
+bool   NotifyLeaseConfirmOwn();
+void   NotifyLegacyGuardRelease();
+bool   NotifyLegacyGuardTry();
+void   NotifyLeaseBecomeFollower();
+void   NotifyLeaseLost();
+void   NotifyLeaseWriteFatal();
+void   NotifyLeaseWriteFree();
+void   NotifyStateClearMem();
+bool   NotifyStateWrite();
+bool   NotifyStateReadDisk(long &off, string &qid, string &lid, int &p, int &t, bool &have_s2);
+void   NotifyStateLoadAsHolder();
+int    QueueOpenRead();
+int    LineIdFromBuf(uchar &buf[], const int n, string &id);
+string QueueFirstLineId();
+int    CountCompleteLines(const int h, const long upto);
+bool   QueueAppendBytes(uchar &buf[], const int n);
+void   RecoverRotateTail(const long qsize_at_check);
+void   MaybeRotateQueue();
+bool   BytesToLine(uchar &buf[], const int n, string &out_line, int &line_bytes);
+bool   NotifyReadLineAtOffset(const long off, string &line, int &line_bytes, long &qsize);
+void   NotifyParseQueueLine(const string field1, string &id, string &ch);
+bool   NotifyPushQuotaOk();
+void   NotifyPushQuotaNote();
+void   NotifyPushRecheck();
+int    NotifySendPushOne(const string text);
+int    NotifyTelegramPost(const string text);
+void   NotifySenderProcessLine(const bool allow_push, const bool allow_tg);
+void   NotifyLeaseFollowerTick();
+void   NotifyLeaseConfirmClaim();
+void   NotifyLeaseMaybeRenew();
+void   NotifyLeaseMachine();
+void   NotifySenderInit(const string kind, const int timeout_ms);
+void   NotifySenderDeinit();
+void   NotifySenderTick(const bool allow_push, const bool allow_tg);
 
 string NotifyCharToStr(const int c)
 {
@@ -304,6 +410,372 @@ int FileReadChunk(const int h, uchar &buf[], const int maxn)
    return got;
 }
 
+uint NotifyFnv1a32(const string s)
+{
+   uint h = 2166136261;
+   const int n = StringLen(s);
+   for(int i = 0; i < n; i++)
+   {
+      h = h ^ (uint)StringGetCharacter(s, i);
+      h = h * 16777619;
+   }
+   return h;
+}
+
+string NotifyHex8u(const uint v)
+{
+   return StringFormat("%08X", v);
+}
+
+string NotifyKvGet(const string field, const string key)
+{
+   const string needle = ";" + key + "=";
+   int p = StringFind(";" + field, needle);
+   if(p < 0)
+      return "";
+   p = p + StringLen(needle) - 1;
+   const int n = StringLen(field);
+   string out = "";
+   for(int i = p; i < n; i++)
+   {
+      const int c = StringGetCharacter(field, i);
+      if(c == ';')
+         break;
+      out += NotifyCharToStr(c);
+   }
+   return out;
+}
+
+int NotifyParseIntSafe(const string s)
+{
+   if(StringLen(s) <= 0)
+      return 0;
+   return (int)StringToInteger(s);
+}
+
+void NotifySenderLog(const string msg)
+{
+   Print(G_NS_LOG + " " + msg);
+}
+
+void NotifySenderHud(const string msg)
+{
+   Comment(msg);
+}
+
+void NotifySenderRefreshFp()
+{
+   const string chat = NotifyTrim(I_TG_CHAT_ID);
+   const string pok = G_NS_PUSH_AVAIL ? "1" : "0";
+   G_NS_FP = NotifyHex8u(NotifyFnv1a32(G_NS_TOKEN + "|" + chat + "|" + pok));
+}
+
+bool NotifyLeaseReadRaw(string &raw)
+{
+   raw = "";
+   ResetLastError();
+   const int h = FileOpen(SFX_NOTIFY_LEASE_FILE,
+                          FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE)
+      return false;
+   raw = FileReadString(h);
+   FileClose(h);
+   raw = NotifyTrim(raw);
+   return (StringLen(raw) > 0);
+}
+
+bool NotifyLeaseParse(const string raw, string &owner, int &hb, int &gen, string &st, string &fp)
+{
+   owner = "";
+   hb = 0;
+   gen = 0;
+   st = "";
+   fp = "";
+   const string t = NotifyTrim(raw);
+   if(StringLen(t) < 3)
+      return false;
+   if(StringSubstr(t, 0, 3) != "L2;")
+      return false;
+   owner = NotifyKvGet(t, "owner");
+   hb = NotifyParseIntSafe(NotifyKvGet(t, "hb"));
+   gen = NotifyParseIntSafe(NotifyKvGet(t, "gen"));
+   st = NotifyKvGet(t, "st");
+   fp = NotifyKvGet(t, "fp");
+   if(StringLen(st) <= 0)
+      return false;
+   return true;
+}
+
+bool NotifyLeaseWrite(const string owner, const int hb, const int gen, const string st, const string fp)
+{
+   ResetLastError();
+   const int h = FileOpen(G_NS_LEASE_TMP, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(h == INVALID_HANDLE)
+      return false;
+   FileWriteString(h, StringFormat("L2;owner=%s;hb=%d;gen=%d;st=%s;fp=%s\n",
+                                   owner, hb, gen, st, fp));
+   FileClose(h);
+   if(!FileMove(G_NS_LEASE_TMP, FILE_COMMON, SFX_NOTIFY_LEASE_FILE, FILE_COMMON|FILE_REWRITE))
+      return false;
+   return true;
+}
+
+bool NotifyLeaseReadNow(string &owner, int &hb, int &gen, string &st, string &fp)
+{
+   string raw = "";
+   if(!NotifyLeaseReadRaw(raw))
+      return false;
+   return NotifyLeaseParse(raw, owner, hb, gen, st, fp);
+}
+
+bool NotifyLeaseConfirmOwn()
+{
+   string owner = "";
+   int hb = 0;
+   int gen = 0;
+   string st = "";
+   string fp = "";
+   if(!NotifyLeaseReadNow(owner, hb, gen, st, fp))
+      return false;
+   if(owner != G_NS_OWNER)
+      return false;
+   if(st != "RUN" && st != "CLAIM")
+      return false;
+   G_NS_HB = hb;
+   G_NS_GEN = gen;
+   return true;
+}
+
+void NotifyLegacyGuardRelease()
+{
+   if(G_NS_LOCK == INVALID_HANDLE)
+      return;
+   FileClose(G_NS_LOCK);
+   G_NS_LOCK = INVALID_HANDLE;
+}
+
+bool NotifyLegacyGuardTry()
+{
+   if(G_NS_LOCK != INVALID_HANDLE)
+      return true;
+   ResetLastError();
+   G_NS_LOCK = FileOpen(SFX_NOTIFY_LOCK_FILE, FILE_WRITE|FILE_BIN|FILE_COMMON);
+   return (G_NS_LOCK != INVALID_HANDLE);
+}
+
+void NotifyLeaseBecomeFollower()
+{
+   NotifyLegacyGuardRelease();
+   NotifyStateClearMem();
+   G_NS_ROLE = NS_ROLE_FOLLOWER;
+   G_NS_CLAIM_FROM_STALE = false;
+   G_NS_CONFIRM_UNTIL_MS = 0;
+}
+
+void NotifyLeaseLost()
+{
+   NotifySenderLog("LEASE_LOST");
+   NotifyLeaseBecomeFollower();
+}
+
+void NotifyLeaseWriteFatal()
+{
+   NotifyLeaseWrite(G_NS_OWNER, G_NS_HB, G_NS_GEN, "FATAL", G_NS_FP);
+   NotifyLegacyGuardRelease();
+   NotifyStateClearMem();
+   G_NS_ROLE = NS_ROLE_DEAD;
+}
+
+void NotifyLeaseWriteFree()
+{
+   if(!NotifyLeaseConfirmOwn())
+      return;
+   NotifyLeaseWrite(G_NS_OWNER, G_NS_HB, G_NS_GEN, "FREE", G_NS_FP);
+}
+
+void NotifyStateClearMem()
+{
+   G_NS_OFF = 0;
+   G_NS_FIRST_ID = "";
+   G_NS_LID = "";
+   G_NS_P = 0;
+   G_NS_T = 0;
+}
+
+bool NotifyStateWrite()
+{
+   if(!NotifyLeaseConfirmOwn())
+   {
+      NotifyLeaseLost();
+      return false;
+   }
+   ResetLastError();
+   const int h = FileOpen(SFX_NOTIFY_STATE_TMP, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(h == INVALID_HANDLE)
+      return false;
+   FileWriteString(h, StringFormat("%I64d\t%s\n", G_NS_OFF, G_NS_FIRST_ID));
+   FileWriteString(h, StringFormat("S2;lid=%s;p=%d;t=%d;own=%s\n",
+                                   G_NS_LID, G_NS_P, G_NS_T, G_NS_OWNER));
+   FileClose(h);
+   if(!FileMove(SFX_NOTIFY_STATE_TMP, FILE_COMMON, SFX_NOTIFY_STATE_FILE, FILE_COMMON|FILE_REWRITE))
+   {
+      NotifySenderLog("offset/state save failed");
+      return false;
+   }
+   return true;
+}
+
+bool NotifyStateReadDisk(long &off, string &qid, string &lid, int &p, int &t, bool &have_s2)
+{
+   off = 0;
+   qid = "";
+   lid = "";
+   p = 0;
+   t = 0;
+   have_s2 = false;
+   ResetLastError();
+   const int h = FileOpen(SFX_NOTIFY_STATE_FILE, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(h == INVALID_HANDLE)
+      return false;
+   const string l1 = NotifyTrim(FileReadString(h));
+   string l2 = "";
+   if(!FileIsEnding(h))
+      l2 = NotifyTrim(FileReadString(h));
+   FileClose(h);
+   if(StringLen(l1) <= 0)
+      return false;
+   int tab = StringFind(l1, "\t");
+   string num = l1;
+   if(tab >= 0)
+   {
+      num = StringSubstr(l1, 0, tab);
+      qid = NotifyTrim(StringSubstr(l1, tab + 1));
+   }
+   if(StringLen(num) <= 0)
+      return false;
+   for(int i = 0; i < StringLen(num); i++)
+   {
+      const int c = StringGetCharacter(num, i);
+      if(c < '0' || c > '9')
+         return false;
+   }
+   off = StringToInteger(num);
+   if(off < 0)
+      return false;
+   if(StringLen(l2) >= 3 && StringSubstr(l2, 0, 3) == "S2;")
+   {
+      have_s2 = true;
+      lid = NotifyKvGet(l2, "lid");
+      p = NotifyParseIntSafe(NotifyKvGet(l2, "p"));
+      t = NotifyParseIntSafe(NotifyKvGet(l2, "t"));
+   }
+   return true;
+}
+
+void NotifyStateLoadAsHolder()
+{
+   const bool have_state = FileIsExist(SFX_NOTIFY_STATE_FILE, FILE_COMMON);
+   const bool have_tmp = FileIsExist(SFX_NOTIFY_STATE_TMP, FILE_COMMON);
+   if(!have_state && !have_tmp)
+   {
+      const int qh = QueueOpenRead();
+      long qsize = 0;
+      if(qh != INVALID_HANDLE)
+         qsize = (long)FileSize(qh);
+      int skipped = 0;
+      if(qh != INVALID_HANDLE)
+         skipped = CountCompleteLines(qh, qsize);
+      G_NS_OFF = qsize;
+      G_NS_FIRST_ID = "";
+      G_NS_LID = "";
+      G_NS_P = 0;
+      G_NS_T = 0;
+      if(qh != INVALID_HANDLE)
+      {
+         FileSeek(qh, 0, SEEK_SET);
+         uchar buf[];
+         const int got = FileReadChunk(qh, buf, SFX_NOTIFY_READ_CHUNK);
+         if(got > 0)
+            LineIdFromBuf(buf, got, G_NS_FIRST_ID);
+         FileClose(qh);
+      }
+      NotifyStateWrite();
+      NotifySenderLog(StringFormat("first attach (no state): skipped %d existing queue line(s), offset=%I64d",
+                                   skipped, G_NS_OFF));
+      return;
+   }
+
+   long off = 0;
+   string qid = "";
+   string lid = "";
+   int p = 0;
+   int t = 0;
+   bool have_s2 = false;
+   bool parsed = NotifyStateReadDisk(off, qid, lid, p, t, have_s2);
+   if(!parsed && have_tmp)
+   {
+      ResetLastError();
+      const int th = FileOpen(SFX_NOTIFY_STATE_TMP, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
+      if(th != INVALID_HANDLE)
+      {
+         const string l1 = NotifyTrim(FileReadString(th));
+         FileClose(th);
+         int tab = StringFind(l1, "\t");
+         string num = l1;
+         if(tab >= 0)
+         {
+            num = StringSubstr(l1, 0, tab);
+            qid = NotifyTrim(StringSubstr(l1, tab + 1));
+         }
+         bool ok = true;
+         for(int i = 0; i < StringLen(num); i++)
+         {
+            const int c = StringGetCharacter(num, i);
+            if(c < '0' || c > '9')
+               ok = false;
+         }
+         if(ok && StringLen(num) > 0)
+         {
+            off = StringToInteger(num);
+            parsed = true;
+            have_s2 = false;
+         }
+      }
+   }
+   if(!parsed)
+   {
+      const int qh = QueueOpenRead();
+      long qsize = 0;
+      if(qh != INVALID_HANDLE)
+         qsize = (long)FileSize(qh);
+      G_NS_OFF = qsize;
+      G_NS_FIRST_ID = "";
+      G_NS_LID = "";
+      G_NS_P = 0;
+      G_NS_T = 0;
+      if(qh != INVALID_HANDLE)
+         FileClose(qh);
+      NotifyStateWrite();
+      NotifySenderLog("unreadable state: skipped backlog");
+      return;
+   }
+
+   G_NS_OFF = off;
+   G_NS_FIRST_ID = qid;
+   if(have_s2)
+   {
+      G_NS_LID = lid;
+      G_NS_P = p;
+      G_NS_T = t;
+   }
+   else
+   {
+      G_NS_LID = "";
+      G_NS_P = 2;
+      G_NS_T = 0;
+   }
+}
+
 int QueueOpenRead()
 {
    ResetLastError();
@@ -332,10 +804,11 @@ int LineIdFromBuf(uchar &buf[], const int n, string &id)
       line += NotifyCharToStr((int)buf[j]);
    line = NotifyTrim(line);
    const int tab = StringFind(line, "\t");
-   if(tab <= 0)
-      id = line;
-   else
-      id = StringSubstr(line, 0, tab);
+   string field1 = line;
+   if(tab >= 0)
+      field1 = StringSubstr(line, 0, tab);
+   string ch = "";
+   NotifyParseQueueLine(field1, id, ch);
    return (nl + 1);
 }
 
@@ -375,172 +848,6 @@ int CountCompleteLines(const int h, const long upto)
       pos += got;
    }
    return n;
-}
-
-bool OffsetParse(const string raw, long &off, string &qid)
-{
-   const string t = NotifyTrim(raw);
-   if(StringLen(t) <= 0)
-      return false;
-   int tab = StringFind(t, "\t");
-   string num = t;
-   string id = "";
-   if(tab >= 0)
-   {
-      num = StringSubstr(t, 0, tab);
-      id = NotifyTrim(StringSubstr(t, tab + 1));
-   }
-   if(StringLen(num) <= 0)
-      return false;
-   for(int i = 0; i < StringLen(num); i++)
-   {
-      const int c = StringGetCharacter(num, i);
-      if(c < '0' || c > '9')
-         return false;
-   }
-   off = StringToInteger(num);
-   if(off < 0)
-      return false;
-   qid = id;
-   return true;
-}
-
-bool OffsetReadNamed(const string name, long &off, string &qid)
-{
-   ResetLastError();
-   const int h = FileOpen(name, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
-   if(h == INVALID_HANDLE)
-      return false;
-   const string raw = FileReadString(h);
-   FileClose(h);
-   return OffsetParse(raw, off, qid);
-}
-
-bool OffsetSave()
-{
-   if(G_LOCK_HANDLE == INVALID_HANDLE)
-      return false;
-   ResetLastError();
-   const int h = FileOpen(SFX_NOTIFY_STATE_TMP, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
-   if(h == INVALID_HANDLE)
-      return false;
-   FileWriteString(h, StringFormat("%I64d\t%s\n", G_QUEUE_OFFSET, G_QUEUE_FIRST_ID));
-   FileClose(h);
-   FileDelete(SFX_NOTIFY_STATE_FILE, FILE_COMMON);
-   if(!FileMove(SFX_NOTIFY_STATE_TMP, FILE_COMMON, SFX_NOTIFY_STATE_FILE, FILE_COMMON))
-      return false;
-   return true;
-}
-
-void OffsetSaveChecked()
-{
-   if(!OffsetSave())
-      Print("[SFX-SYNC-NOTIFIER] offset/state save failed");
-}
-
-void OffsetFirstAttach(const int qh, const long qsize, const string why)
-{
-   int skipped = 0;
-   if(qh != INVALID_HANDLE)
-      skipped = CountCompleteLines(qh, qsize);
-   G_QUEUE_OFFSET = qsize;
-   G_QUEUE_FIRST_ID = "";
-   if(qh != INVALID_HANDLE)
-   {
-      FileSeek(qh, 0, SEEK_SET);
-      uchar buf[];
-      const int got = FileReadChunk(qh, buf, SFX_NOTIFY_READ_CHUNK);
-      if(got > 0)
-         LineIdFromBuf(buf, got, G_QUEUE_FIRST_ID);
-   }
-   OffsetSaveChecked();
-   Print(StringFormat("[SFX-SYNC-NOTIFIER] first attach (%s): skipped %d existing queue line(s), offset=%I64d",
-                      why, skipped, G_QUEUE_OFFSET));
-}
-
-void OffsetInitOnAttach()
-{
-   if(G_LOCK_HANDLE == INVALID_HANDLE)
-      return;
-   const int qh = QueueOpenRead();
-   long qsize = 0;
-   if(qh != INVALID_HANDLE)
-      qsize = (long)FileSize(qh);
-
-   const bool have_state = FileIsExist(SFX_NOTIFY_STATE_FILE, FILE_COMMON);
-   const bool have_tmp = FileIsExist(SFX_NOTIFY_STATE_TMP, FILE_COMMON);
-   long off = 0;
-   string qid = "";
-   bool parsed = false;
-   if(have_state)
-      parsed = OffsetReadNamed(SFX_NOTIFY_STATE_FILE, off, qid);
-   if(!parsed && have_tmp)
-      parsed = OffsetReadNamed(SFX_NOTIFY_STATE_TMP, off, qid);
-
-   if(!parsed)
-   {
-      OffsetFirstAttach(qh, qsize, (!have_state && !have_tmp) ? "no state" : "unreadable state");
-      if(qh != INVALID_HANDLE)
-         FileClose(qh);
-      return;
-   }
-
-   G_QUEUE_OFFSET = off;
-   G_QUEUE_FIRST_ID = qid;
-   string now_id = "";
-   if(qh != INVALID_HANDLE)
-   {
-      FileSeek(qh, 0, SEEK_SET);
-      uchar buf[];
-      const int got = FileReadChunk(qh, buf, SFX_NOTIFY_READ_CHUNK);
-      if(got > 0)
-         LineIdFromBuf(buf, got, now_id);
-      FileClose(qh);
-   }
-
-   if(qsize < G_QUEUE_OFFSET)
-   {
-      G_QUEUE_OFFSET = 0;
-      G_QUEUE_FIRST_ID = now_id;
-      OffsetSaveChecked();
-      Print("[SFX-SYNC-NOTIFIER] queue smaller than saved offset - reset offset to 0");
-      return;
-   }
-   if(StringLen(qid) > 0 && StringLen(now_id) > 0 && qid != now_id)
-   {
-      G_QUEUE_OFFSET = 0;
-      G_QUEUE_FIRST_ID = now_id;
-      OffsetSaveChecked();
-      Print("[SFX-SYNC-NOTIFIER] queue first-line id changed - reset offset to 0");
-   }
-}
-
-void NotifierLockRelease()
-{
-   if(G_LOCK_HANDLE == INVALID_HANDLE)
-      return;
-   FileClose(G_LOCK_HANDLE);
-   G_LOCK_HANDLE = INVALID_HANDLE;
-}
-
-bool NotifierLockTry()
-{
-   if(G_LOCK_HANDLE != INVALID_HANDLE)
-      return true;
-   ResetLastError();
-   G_LOCK_HANDLE = FileOpen(SFX_NOTIFY_LOCK_FILE, FILE_WRITE|FILE_BIN|FILE_COMMON);
-   if(G_LOCK_HANDLE != INVALID_HANDLE)
-   {
-      OffsetInitOnAttach();
-      return true;
-   }
-   const ulong now = NowMs();
-   if(G_LOCK_LAST_PRINT_MS == 0 || (now - G_LOCK_LAST_PRINT_MS) >= (ulong)SFX_NOTIFY_LOCK_PRINT_MS)
-   {
-      Print("[SFX-SYNC-NOTIFIER] another notifier holds SFX-SYNC-notifier.lock - this instance will not send (one notifier per PC, all terminals)");
-      G_LOCK_LAST_PRINT_MS = now;
-   }
-   return false;
 }
 
 bool QueueAppendBytes(uchar &buf[], const int n)
@@ -611,7 +918,7 @@ void RecoverRotateTail(const long qsize_at_check)
          for(int c = 0; c <= last_nl; c++)
             complete[c] = merged[c];
          if(!QueueAppendBytes(complete, last_nl + 1))
-            Print("[SFX-SYNC-NOTIFIER] rotate tail append failed");
+            NotifySenderLog("rotate tail append failed");
          leftover_n = total - (last_nl + 1);
          ArrayResize(leftover, leftover_n);
          for(int r = 0; r < leftover_n; r++)
@@ -627,17 +934,22 @@ void RecoverRotateTail(const long qsize_at_check)
    }
    FileClose(oh);
    if(leftover_n > 0)
-      Print(StringFormat("[SFX-SYNC-NOTIFIER] rotate tail dropped %d leftover byte(s) without trailing newline", leftover_n));
+      NotifySenderLog(StringFormat("rotate tail dropped %d leftover byte(s) without trailing newline", leftover_n));
 }
 
 void MaybeRotateQueue()
 {
+   if(!NotifyLeaseConfirmOwn())
+   {
+      NotifyLeaseLost();
+      return;
+   }
    const int rh = QueueOpenRead();
    if(rh == INVALID_HANDLE)
       return;
    const long qsize = (long)FileSize(rh);
    FileClose(rh);
-   if(G_QUEUE_OFFSET < qsize)
+   if(G_NS_OFF < qsize)
       return;
    if(qsize < SFX_NOTIFY_ROTATE_BYTES)
       return;
@@ -646,117 +958,13 @@ void MaybeRotateQueue()
    if(!FileMove(SFX_NOTIFY_QUEUE_FILE, FILE_COMMON, SFX_NOTIFY_QUEUE_OLD, FILE_COMMON))
       return;
    RecoverRotateTail(qsize);
-   G_QUEUE_OFFSET = 0;
-   G_QUEUE_FIRST_ID = QueueFirstLineId();
-   OffsetSaveChecked();
-   Print("[SFX-SYNC-NOTIFIER] rotated queue file to SFX-SYNC-notify-queue.txt.old");
-}
-
-int NotifyTelegramPost(const string text)
-{
-   if(MQLInfoInteger(MQL_TESTER) != 0)
-      return 0;
-   const string token = G_RESOLVED_TOKEN;
-   const string chat = NotifyTrim(I_TG_CHAT_ID);
-   if(StringLen(token) == 0 || StringLen(chat) == 0)
-      return 0;
-   const string url = "https://api.telegram.org/bot" + token + "/sendMessage";
-   const string body = "chat_id=" + NotifyUrlEncode(chat) + "&text=" + NotifyUrlEncode(text);
-   const string headers = "Content-Type: application/x-www-form-urlencoded\r\n";
-   char postData[];
-   char resultData[];
-   string resultHeaders;
-   StringToCharArray(body, postData, 0, StringLen(body));
-   ResetLastError();
-   const int http = WebRequest("POST", url, headers, SFX_NOTIFY_TG_TIMEOUT_MS, postData, resultData, resultHeaders);
-   const int err = GetLastError();
-   if(http == 400)
-   {
-      const string resp = CharArrayToString(resultData);
-      if(NotifyHttp400IsChatFatal(resp))
-      {
-         if(!G_PERM_LOGGED)
-         {
-            const string mig = NotifyExtractMigrateChatId(resp);
-            string warn = "[SFX-SYNC-NOTIFIER] Telegram HTTP 400 chat/config error - sending disabled until reinit (token not logged)";
-            if(StringLen(mig) > 0)
-               warn += ". New chat id from migrate_to_chat_id: " + mig;
-            Print(warn);
-            Alert(warn);
-            G_PERM_LOGGED = true;
-         }
-         G_PERM_DISABLED = true;
-         G_TG_OK = false;
-         // Keep SFX-SYNC-notifier.lock until OnDeinit so a second instance does not send in parallel.
-         return -2;
-      }
-      const string skip = "[SFX-SYNC-NOTIFIER] Telegram HTTP 400 - skipping this line (malformed payload, token not logged)";
-      Print(skip);
-      if(!G_SKIP400_LOGGED)
-      {
-         Alert(skip);
-         G_SKIP400_LOGGED = true;
-      }
-      return 2;
-   }
-   if(http == 401 || http == 403 || http == 404)
-   {
-      if(!G_PERM_LOGGED)
-      {
-         const string warn = StringFormat(
-            "[SFX-SYNC-NOTIFIER] Telegram permanent HTTP %d - sending disabled until reinit (token not logged). Revoke and replace the bot token if this is 401.",
-            http);
-         Print(warn);
-         Alert(warn);
-         G_PERM_LOGGED = true;
-      }
-      G_PERM_DISABLED = true;
-      G_TG_OK = false;
-      // Keep SFX-SYNC-notifier.lock until OnDeinit so a second instance does not send in parallel.
-      return -2;
-   }
-   if(http == 429)
-   {
-      int sec = NotifyExtractRetryAfterSec(resultHeaders);
-      if(sec <= 0)
-         sec = NotifyExtractRetryAfterSec(CharArrayToString(resultData));
-      if(sec <= 0)
-         sec = SFX_NOTIFY_TG_BACKOFF_DEFAULT_SEC;
-      if(sec > SFX_NOTIFY_TG_RETRY_MAX_SEC)
-         sec = SFX_NOTIFY_TG_RETRY_MAX_SEC;
-      G_BACKOFF_UNTIL_MS = NowMs() + (ulong)sec * 1000;
-      const ulong now429 = NowMs();
-      if(!G_429_LOGGED || (G_429_LAST_PRINT_MS > 0 && (now429 - G_429_LAST_PRINT_MS) >= (ulong)SFX_NOTIFY_FAIL_PRINT_MS))
-      {
-         Print(StringFormat("[SFX-SYNC-NOTIFIER] Telegram HTTP 429 backoff %d s (kept, not dropped)", sec));
-         G_429_LOGGED = true;
-         G_429_LAST_PRINT_MS = now429;
-      }
-      return -1;
-   }
-   if(http == -1 || http == 4014 || http == 4060 || http != 200)
-   {
-      const ulong now = NowMs();
-      if(!G_FAIL_LOGGED || (G_LAST_FAIL_PRINT_MS > 0 && (now - G_LAST_FAIL_PRINT_MS) >= (ulong)SFX_NOTIFY_FAIL_PRINT_MS))
-      {
-         Print(StringFormat("[SFX-SYNC-NOTIFIER] Telegram send failed http=%d err=%d (allow https://api.telegram.org)", http, err));
-         G_FAIL_LOGGED = true;
-         G_LAST_FAIL_PRINT_MS = now;
-      }
-      G_BACKOFF_UNTIL_MS = NowMs() + (ulong)G_ERR_BACKOFF_SEC * 1000;
-      if(G_ERR_BACKOFF_SEC < SFX_NOTIFY_TG_RETRY_MAX_SEC)
-      {
-         G_ERR_BACKOFF_SEC *= 2;
-         if(G_ERR_BACKOFF_SEC > SFX_NOTIFY_TG_RETRY_MAX_SEC)
-            G_ERR_BACKOFF_SEC = SFX_NOTIFY_TG_RETRY_MAX_SEC;
-      }
-      return 0;
-   }
-   G_FAIL_LOGGED = false;
-   G_429_LOGGED = false;
-   G_ERR_BACKOFF_SEC = 5;
-   G_BACKOFF_UNTIL_MS = 0;
-   return 1;
+   G_NS_OFF = 0;
+   G_NS_FIRST_ID = QueueFirstLineId();
+   G_NS_LID = "";
+   G_NS_P = 0;
+   G_NS_T = 0;
+   NotifyStateWrite();
+   NotifySenderLog("rotated queue file to SFX-SYNC-notify-queue.txt.old");
 }
 
 bool BytesToLine(uchar &buf[], const int n, string &out_line, int &line_bytes)
@@ -782,45 +990,31 @@ bool BytesToLine(uchar &buf[], const int n, string &out_line, int &line_bytes)
    return true;
 }
 
-void ProcessQueueOnce()
+bool NotifyReadLineAtOffset(const long off, string &line, int &line_bytes, long &qsize)
 {
-   if(G_PERM_DISABLED || !G_TG_OK)
-      return;
-   if(!NotifierLockTry())
-      return;
-   if(G_BACKOFF_UNTIL_MS > 0 && NowMs() < G_BACKOFF_UNTIL_MS)
-      return;
-
+   line = "";
+   line_bytes = 0;
+   qsize = 0;
    const int h = QueueOpenRead();
    if(h == INVALID_HANDLE)
-      return;
-   const long qsize = (long)FileSize(h);
-   if(qsize < G_QUEUE_OFFSET)
+      return false;
+   qsize = (long)FileSize(h);
+   if(qsize < off)
    {
-      G_QUEUE_OFFSET = 0;
-      FileSeek(h, 0, SEEK_SET);
-      uchar idbuf[];
-      const int got = FileReadChunk(h, idbuf, SFX_NOTIFY_READ_CHUNK);
-      G_QUEUE_FIRST_ID = "";
-      if(got > 0)
-         LineIdFromBuf(idbuf, got, G_QUEUE_FIRST_ID);
-      OffsetSaveChecked();
-      Print("[SFX-SYNC-NOTIFIER] queue smaller than saved offset - reset offset to 0");
+      FileClose(h);
+      return false;
    }
-   const long remain_all = qsize - G_QUEUE_OFFSET;
+   const long remain_all = qsize - off;
    if(remain_all <= 0)
    {
       FileClose(h);
-      MaybeRotateQueue();
-      return;
+      return false;
    }
-   FileSeek(h, G_QUEUE_OFFSET, SEEK_SET);
+   FileSeek(h, off, SEEK_SET);
    uchar buf[];
    int have = 0;
    long still = remain_all;
    bool have_line = false;
-   string line = "";
-   int line_bytes = 0;
    while(still > 0 && !have_line)
    {
       int want = SFX_NOTIFY_READ_CHUNK;
@@ -844,99 +1038,792 @@ void ProcessQueueOnce()
       have_line = BytesToLine(buf, have, line, line_bytes);
    }
    FileClose(h);
-   if(!have_line)
-      return;
+   return have_line;
+}
 
-   const string trimmed = NotifyTrim(line);
-   bool advance = false;
-   if(StringLen(trimmed) <= 0)
-      advance = true;
-   else
+void NotifyParseQueueLine(const string field1, string &id, string &ch)
+{
+   id = "";
+   ch = "T";
+   const string f = NotifyTrim(field1);
+   if(StringLen(f) <= 0)
+      return;
+   const int c0 = StringGetCharacter(f, 0);
+   if(c0 == 'Q' && StringLen(f) >= 3)
    {
-      const int tab = StringFind(trimmed, "\t");
-      if(tab <= 0)
-         advance = true;
-      else
+      int i = 1;
+      int ver = 0;
+      bool digits = false;
+      while(i < StringLen(f))
       {
-         const string text = StringSubstr(trimmed, tab + 1);
-         const int rc = NotifyTelegramPost(text);
-         if(rc > 0)
-            advance = true;
-         else if(rc == -2)
-            return;
+         const int c = StringGetCharacter(f, i);
+         if(c < '0' || c > '9')
+            break;
+         ver = ver * 10 + (c - '0');
+         digits = true;
+         i++;
+      }
+      if(digits && i < StringLen(f) && StringGetCharacter(f, i) == ';')
+      {
+         if(ver > 2 && !G_NS_QNEXT_LOGGED)
+         {
+            NotifySenderLog(StringFormat("queue line Q%d; treating unknown newer format (ch if present)", ver));
+            G_NS_QNEXT_LOGGED = true;
+         }
+         string rest = StringSubstr(f, i + 1);
+         const int sc = StringFind(rest, ";");
+         if(sc < 0)
+            id = rest;
+         else
+         {
+            id = StringSubstr(rest, 0, sc);
+            const string kv = StringSubstr(rest, sc + 1);
+            const string chv = NotifyKvGet("x;" + kv, "ch");
+            if(chv == "P" || chv == "T" || chv == "B")
+               ch = chv;
+         }
+         return;
       }
    }
-   if(advance)
+   id = f;
+   ch = "T";
+}
+
+bool NotifyPushQuotaOk()
+{
+   const ulong now = NowMs();
+   if(G_NS_PUSH_LAST_MS != 0 && now >= G_NS_PUSH_LAST_MS && (now - G_NS_PUSH_LAST_MS) < 1000)
+      return false;
+   int n = 0;
+   for(int i = 0; i < G_NS_PUSH_N; i++)
    {
-      if(StringLen(G_QUEUE_FIRST_ID) <= 0 && G_QUEUE_OFFSET > 0)
-         G_QUEUE_FIRST_ID = QueueFirstLineId();
-      G_QUEUE_OFFSET += line_bytes;
-      OffsetSaveChecked();
-      if(G_QUEUE_OFFSET >= qsize)
+      if(now >= G_NS_PUSH_TS[i] && (now - G_NS_PUSH_TS[i]) < 60000)
+         n++;
+   }
+   if(n >= 8)
+      return false;
+   return true;
+}
+
+void NotifyPushQuotaNote()
+{
+   const ulong now = NowMs();
+   G_NS_PUSH_LAST_MS = now;
+   if(G_NS_PUSH_N < 8)
+   {
+      G_NS_PUSH_TS[G_NS_PUSH_N] = now;
+      G_NS_PUSH_N++;
+      return;
+   }
+   for(int i = 1; i < 8; i++)
+      G_NS_PUSH_TS[i - 1] = G_NS_PUSH_TS[i];
+   G_NS_PUSH_TS[7] = now;
+}
+
+void NotifyPushRecheck()
+{
+   const ulong now = NowMs();
+   if(G_NS_PUSH_CHECK_MS != 0 && (now - G_NS_PUSH_CHECK_MS) < 60000)
+      return;
+   G_NS_PUSH_CHECK_MS = now;
+   const bool en = (MQLInfoInteger(MQL_TESTER) == 0 &&
+                    TerminalInfoInteger(TERMINAL_NOTIFICATIONS_ENABLED) != 0);
+   if(en != G_NS_PUSH_AVAIL)
+   {
+      G_NS_PUSH_AVAIL = en;
+      NotifySenderRefreshFp();
+   }
+}
+
+int NotifySendPushOne(const string text)
+{
+   if(MQLInfoInteger(MQL_TESTER) != 0)
+      return 0;
+   if(!G_NS_PUSH_AVAIL)
+      return -1;
+   if(G_NS_PUSH_BACKOFF_UNTIL > 0 && NowMs() < G_NS_PUSH_BACKOFF_UNTIL)
+      return 0;
+   if(!NotifyPushQuotaOk())
+      return 0;
+   ResetLastError();
+   if(!SendNotification(text))
+   {
+      const int err = GetLastError();
+      if(err == 4518 || err == 4253)
+      {
+         G_NS_PUSH_BACKOFF_UNTIL = NowMs() + 60000;
+         NotifySenderLog("MT Push TOO_FREQUENT backoff 60 s");
+         return 0;
+      }
+      if(err == 4517 || err == 4252)
+      {
+         G_NS_PUSH_AVAIL = false;
+         NotifySenderRefreshFp();
+         return -1;
+      }
+      if(err == 4516 || err == 4251)
+      {
+         NotifySenderLog(StringFormat("MT Push WRONG_PARAMETER err=%d - skipping channel", err));
+         return 2;
+      }
+      G_NS_PUSH_BACKOFF_UNTIL = NowMs() + (ulong)G_NS_PUSH_ERR_BACKOFF_SEC * 1000;
+      if(G_NS_PUSH_ERR_BACKOFF_SEC < SFX_NOTIFY_TG_RETRY_MAX_SEC)
+      {
+         G_NS_PUSH_ERR_BACKOFF_SEC *= 2;
+         if(G_NS_PUSH_ERR_BACKOFF_SEC > SFX_NOTIFY_TG_RETRY_MAX_SEC)
+            G_NS_PUSH_ERR_BACKOFF_SEC = SFX_NOTIFY_TG_RETRY_MAX_SEC;
+      }
+      NotifySenderLog(StringFormat("MT Push SEND_FAILED err=%d", err));
+      return 0;
+   }
+   G_NS_PUSH_ERR_BACKOFF_SEC = 5;
+   G_NS_PUSH_BACKOFF_UNTIL = 0;
+   NotifyPushQuotaNote();
+   return 1;
+}
+
+int NotifyTelegramPost(const string text)
+{
+   if(MQLInfoInteger(MQL_TESTER) != 0)
+      return 0;
+   const string token = G_NS_TOKEN;
+   const string chat = NotifyTrim(I_TG_CHAT_ID);
+   if(StringLen(token) == 0 || StringLen(chat) == 0 || G_NS_TG_PERM || !G_NS_TG_AVAIL)
+      return -2;
+   if(G_NS_TG_BACKOFF_UNTIL > 0 && NowMs() < G_NS_TG_BACKOFF_UNTIL)
+      return -1;
+   const string url = "https://api.telegram.org/bot" + token + "/sendMessage";
+   const string body = "chat_id=" + NotifyUrlEncode(chat) + "&text=" + NotifyUrlEncode(text);
+   const string headers = "Content-Type: application/x-www-form-urlencoded\r\n";
+   char postData[];
+   char resultData[];
+   string resultHeaders;
+   StringToCharArray(body, postData, 0, StringLen(body));
+   ResetLastError();
+   const int http = WebRequest("POST", url, headers, G_NS_TG_TIMEOUT_MS, postData, resultData, resultHeaders);
+   const int err = GetLastError();
+   if(http == 400)
+   {
+      const string resp = CharArrayToString(resultData);
+      if(NotifyHttp400IsChatFatal(resp))
+      {
+         if(!G_NS_TG_PERM_LOGGED)
+         {
+            const string mig = NotifyExtractMigrateChatId(resp);
+            string warn = G_NS_LOG + " Telegram HTTP 400 chat/config error - Telegram disabled until reinit";
+            if(StringLen(mig) > 0)
+               warn += ". New chat id from migrate_to_chat_id: " + mig;
+            Print(warn);
+            Alert(warn);
+            G_NS_TG_PERM_LOGGED = true;
+         }
+         G_NS_TG_PERM = true;
+         G_NS_TG_AVAIL = false;
+         return -2;
+      }
+      const string skip = G_NS_LOG + " Telegram HTTP 400 - skipping this line";
+      Print(skip);
+      if(!G_NS_TG_SKIP400_LOGGED)
+      {
+         Alert(skip);
+         G_NS_TG_SKIP400_LOGGED = true;
+      }
+      return 2;
+   }
+   if(http == 401 || http == 403 || http == 404)
+   {
+      if(!G_NS_TG_PERM_LOGGED)
+      {
+         const string warn = StringFormat(
+            "%s Telegram permanent HTTP %d - Telegram disabled until reinit. Revoke and replace the bot token if this is 401.",
+            G_NS_LOG, http);
+         Print(warn);
+         Alert(warn);
+         G_NS_TG_PERM_LOGGED = true;
+      }
+      G_NS_TG_PERM = true;
+      G_NS_TG_AVAIL = false;
+      return -2;
+   }
+   if(http == 429)
+   {
+      int sec = NotifyExtractRetryAfterSec(resultHeaders);
+      if(sec <= 0)
+         sec = NotifyExtractRetryAfterSec(CharArrayToString(resultData));
+      if(sec <= 0)
+         sec = SFX_NOTIFY_TG_BACKOFF_DEFAULT_SEC;
+      if(sec > SFX_NOTIFY_TG_RETRY_MAX_SEC)
+         sec = SFX_NOTIFY_TG_RETRY_MAX_SEC;
+      G_NS_TG_BACKOFF_UNTIL = NowMs() + (ulong)sec * 1000;
+      const ulong now429 = NowMs();
+      if(!G_NS_429_LOGGED || (G_NS_429_LAST_PRINT_MS > 0 && (now429 - G_NS_429_LAST_PRINT_MS) >= (ulong)SFX_NOTIFY_FAIL_PRINT_MS))
+      {
+         NotifySenderLog(StringFormat("Telegram HTTP 429 backoff %d s (kept, not dropped)", sec));
+         G_NS_429_LOGGED = true;
+         G_NS_429_LAST_PRINT_MS = now429;
+      }
+      return -1;
+   }
+   if(http == -1 || http == 4014 || http == 4060 || http != 200)
+   {
+      const ulong now = NowMs();
+      if(!G_NS_FAIL_LOGGED || (G_NS_LAST_FAIL_PRINT_MS > 0 && (now - G_NS_LAST_FAIL_PRINT_MS) >= (ulong)SFX_NOTIFY_FAIL_PRINT_MS))
+      {
+         NotifySenderLog(StringFormat("Telegram send failed http=%d err=%d (allow https://api.telegram.org)", http, err));
+         G_NS_FAIL_LOGGED = true;
+         G_NS_LAST_FAIL_PRINT_MS = now;
+      }
+      G_NS_TG_BACKOFF_UNTIL = NowMs() + (ulong)G_NS_ERR_BACKOFF_SEC * 1000;
+      if(G_NS_ERR_BACKOFF_SEC < SFX_NOTIFY_TG_RETRY_MAX_SEC)
+      {
+         G_NS_ERR_BACKOFF_SEC *= 2;
+         if(G_NS_ERR_BACKOFF_SEC > SFX_NOTIFY_TG_RETRY_MAX_SEC)
+            G_NS_ERR_BACKOFF_SEC = SFX_NOTIFY_TG_RETRY_MAX_SEC;
+      }
+      return -1;
+   }
+   G_NS_FAIL_LOGGED = false;
+   G_NS_429_LOGGED = false;
+   G_NS_ERR_BACKOFF_SEC = 5;
+   G_NS_TG_BACKOFF_UNTIL = 0;
+   return 1;
+}
+
+void NotifySenderProcessLine(const bool allow_push, const bool allow_tg)
+{
+   if(G_NS_ROLE != NS_ROLE_HOLDER)
+      return;
+   if(!NotifyLeaseConfirmOwn())
+   {
+      NotifyLeaseLost();
+      return;
+   }
+
+   string line = "";
+   int line_bytes = 0;
+   long qsize = 0;
+   if(!NotifyReadLineAtOffset(G_NS_OFF, line, line_bytes, qsize))
+   {
+      if(qsize < G_NS_OFF)
+      {
+         G_NS_OFF = 0;
+         G_NS_FIRST_ID = QueueFirstLineId();
+         G_NS_LID = "";
+         G_NS_P = 0;
+         G_NS_T = 0;
+         NotifyStateWrite();
+         NotifySenderLog("queue smaller than saved offset - reset offset to 0");
+         return;
+      }
+      MaybeRotateQueue();
+      return;
+   }
+
+   const string trimmed = NotifyTrim(line);
+   if(StringLen(trimmed) <= 0)
+   {
+      G_NS_OFF += line_bytes;
+      G_NS_LID = "";
+      G_NS_P = 0;
+      G_NS_T = 0;
+      if(StringLen(G_NS_FIRST_ID) <= 0 && G_NS_OFF > 0)
+         G_NS_FIRST_ID = QueueFirstLineId();
+      NotifyStateWrite();
+      return;
+   }
+   const int tab = StringFind(trimmed, "\t");
+   if(tab <= 0)
+   {
+      G_NS_OFF += line_bytes;
+      G_NS_LID = "";
+      G_NS_P = 0;
+      G_NS_T = 0;
+      if(StringLen(G_NS_FIRST_ID) <= 0 && G_NS_OFF > 0)
+         G_NS_FIRST_ID = QueueFirstLineId();
+      NotifyStateWrite();
+      return;
+   }
+
+   const string field1 = StringSubstr(trimmed, 0, tab);
+   const string text = StringSubstr(trimmed, tab + 1);
+   string qid = "";
+   string ch = "T";
+   NotifyParseQueueLine(field1, qid, ch);
+
+   if(StringLen(G_NS_LID) > 0 && G_NS_LID != qid)
+   {
+      G_NS_P = 0;
+      G_NS_T = 0;
+   }
+   G_NS_LID = qid;
+
+   if(G_NS_P == 1)
+   {
+      G_NS_P = 2;
+      if(!NotifyStateWrite())
+         return;
+   }
+   if(G_NS_T == 1)
+   {
+      G_NS_T = 2;
+      const string hud = StringFormat("NOTIFY_INFLIGHT_UNCONFIRMED id=%s ch=T", G_NS_LID);
+      NotifySenderLog(hud);
+      NotifySenderHud(hud);
+      G_NS_INFLIGHT_HUD = true;
+      if(!NotifyStateWrite())
+         return;
+      G_NS_OFF += line_bytes;
+      G_NS_P = 0;
+      G_NS_T = 0;
+      G_NS_LID = "";
+      if(StringLen(G_NS_FIRST_ID) <= 0 && G_NS_OFF > 0)
+         G_NS_FIRST_ID = QueueFirstLineId();
+      NotifyStateWrite();
+      return;
+   }
+
+   const bool wantP = (ch == "P" || ch == "B");
+   const bool wantT = (ch == "T" || ch == "B");
+   const bool canP = G_NS_PUSH_AVAIL;
+   const bool canT = (G_NS_TG_AVAIL && !G_NS_TG_PERM);
+   const bool anyDoneOrDoable = ((wantP && (G_NS_P == 2 || canP)) ||
+                                 (wantT && (G_NS_T == 2 || canT)));
+   if((wantP || wantT) && !anyDoneOrDoable)
+   {
+      NotifyLeaseWriteFatal();
+      NotifySenderLog("FATAL: no usable channel for this queue line");
+      return;
+   }
+   if(wantP && G_NS_P != 2 && !canP)
+   {
+      G_NS_P = 2;
+      const ulong nowp = NowMs();
+      const string warn = "MT Push requested by queue but this sender terminal has no MetaQuotes ID / Notifications OFF (Tools > Options > Notifications)";
+      if(!G_NS_PUSH_ALERT_DONE)
+      {
+         NotifySenderLog(warn);
+         Alert(G_NS_LOG + " " + warn);
+         G_NS_PUSH_ALERT_DONE = true;
+         G_NS_PUSH_PRINT_MS = nowp;
+      }
+      else if(G_NS_PUSH_PRINT_MS == 0 || (nowp - G_NS_PUSH_PRINT_MS) >= 60000)
+      {
+         NotifySenderLog(warn);
+         G_NS_PUSH_PRINT_MS = nowp;
+      }
+      if(!NotifyStateWrite())
+         return;
+   }
+   if(wantT && G_NS_T != 2 && !canT)
+   {
+      G_NS_T = 2;
+      if(!NotifyStateWrite())
+         return;
+   }
+
+   if(wantP && G_NS_P == 0 && canP)
+   {
+      if(!allow_push)
+         return;
+      G_NS_P = 1;
+      if(!NotifyStateWrite())
+         return;
+      const int rc = NotifySendPushOne(text);
+      if(rc == 1)
+      {
+         G_NS_P = 2;
+         if(!NotifyStateWrite())
+            return;
+      }
+      else if(rc == 2)
+      {
+         G_NS_P = 2;
+         if(!NotifyStateWrite())
+            return;
+      }
+      else if(rc == -1)
+      {
+         G_NS_P = 0;
+         if(!NotifyStateWrite())
+            return;
+         if(!wantT || !canT)
+         {
+            NotifyLeaseWriteFatal();
+            NotifySenderLog("FATAL: MT Push unavailable");
+            return;
+         }
+         G_NS_P = 2;
+         if(!NotifyStateWrite())
+            return;
+      }
+      else
+      {
+         G_NS_P = 0;
+         NotifyStateWrite();
+         return;
+      }
+   }
+
+   if(wantT && G_NS_T == 0 && canT)
+   {
+      if(!allow_tg)
+         return;
+      G_NS_T = 1;
+      if(!NotifyStateWrite())
+         return;
+      const int rc = NotifyTelegramPost(text);
+      if(rc == 1)
+      {
+         G_NS_T = 2;
+         if(!NotifyStateWrite())
+            return;
+      }
+      else if(rc == 2)
+      {
+         G_NS_T = 2;
+         if(!NotifyStateWrite())
+            return;
+      }
+      else if(rc == -2)
+      {
+         G_NS_T = 0;
+         if(!NotifyStateWrite())
+            return;
+         if(!(wantP && (G_NS_P == 2 || canP)))
+         {
+            NotifyLeaseWriteFatal();
+            NotifySenderLog("FATAL: Telegram permanently disabled");
+            return;
+         }
+         G_NS_T = 2;
+         if(!NotifyStateWrite())
+            return;
+      }
+      else
+      {
+         G_NS_T = 0;
+         NotifyStateWrite();
+         return;
+      }
+   }
+
+   const bool pdone = (!wantP || G_NS_P == 2);
+   const bool tdone = (!wantT || G_NS_T == 2);
+   if(pdone && tdone)
+   {
+      G_NS_OFF += line_bytes;
+      G_NS_P = 0;
+      G_NS_T = 0;
+      G_NS_LID = "";
+      if(StringLen(G_NS_FIRST_ID) <= 0 && G_NS_OFF > 0)
+         G_NS_FIRST_ID = QueueFirstLineId();
+      NotifyStateWrite();
+      if(G_NS_OFF >= qsize)
          MaybeRotateQueue();
    }
 }
 
-int OnInit()
+void NotifyLeaseFollowerTick()
 {
-   G_RESOLVED_TOKEN = "";
-   G_TG_OK = false;
-   G_PERM_DISABLED = false;
-   G_PERM_LOGGED = false;
-   G_SKIP400_LOGGED = false;
-   G_BACKOFF_UNTIL_MS = 0;
-   G_ERR_BACKOFF_SEC = 5;
-   G_FAIL_LOGGED = false;
-   G_429_LOGGED = false;
-   G_LAST_FAIL_PRINT_MS = 0;
-   G_429_LAST_PRINT_MS = 0;
-   G_LOCK_HANDLE = INVALID_HANDLE;
-   G_LOCK_LAST_PRINT_MS = 0;
-   G_QUEUE_OFFSET = 0;
-   G_QUEUE_FIRST_ID = "";
+   const ulong now = NowMs();
+   if(G_NS_BACKOFF_UNTIL_MS > 0 && now < G_NS_BACKOFF_UNTIL_MS)
+      return;
+   if(G_NS_LAST_LEASE_READ_MS != 0 && (now - G_NS_LAST_LEASE_READ_MS) < (ulong)LEASE_HB_SEC * 1000)
+      return;
+   G_NS_LAST_LEASE_READ_MS = now;
+
+   string owner = "";
+   int hb = 0;
+   int gen = 0;
+   string st = "";
+   string fp = "";
+   const bool have = NotifyLeaseReadNow(owner, hb, gen, st, fp);
+   if(!have || st == "FREE" || StringLen(owner) <= 0)
+   {
+      G_NS_OBS_KEY = "";
+      G_NS_CLAIM_FROM_STALE = false;
+      G_NS_GEN = have ? (gen + 1) : 1;
+      G_NS_HB = 1;
+      if(!NotifyLeaseWrite(G_NS_OWNER, G_NS_HB, G_NS_GEN, "CLAIM", G_NS_FP))
+         return;
+      G_NS_ROLE = NS_ROLE_CLAIMING;
+      G_NS_CONFIRM_UNTIL_MS = now + (ulong)(1000 + (MathRand() % 2001));
+      return;
+   }
+
+   if(st == "FATAL")
+   {
+      const string fkey = StringFormat("%d|%s", gen, fp);
+      if(G_NS_FATAL_KEY != fkey)
+      {
+         G_NS_FATAL_KEY = fkey;
+         G_NS_FATAL_SEEN_MS = now;
+      }
+      if(fp == G_NS_FP)
+      {
+         if((now - G_NS_FATAL_SEEN_MS) < (ulong)FATAL_COOLDOWN_SEC * 1000)
+            return;
+      }
+      G_NS_CLAIM_FROM_STALE = false;
+      G_NS_GEN = gen + 1;
+      G_NS_HB = 1;
+      if(!NotifyLeaseWrite(G_NS_OWNER, G_NS_HB, G_NS_GEN, "CLAIM", G_NS_FP))
+         return;
+      G_NS_ROLE = NS_ROLE_CLAIMING;
+      G_NS_CONFIRM_UNTIL_MS = now + (ulong)(1000 + (MathRand() % 2001));
+      return;
+   }
+
+   const string key = StringFormat("%s|%d|%d|%s", owner, hb, gen, st);
+   if(key != G_NS_OBS_KEY)
+   {
+      G_NS_OBS_KEY = key;
+      G_NS_OBS_MS = now;
+      return;
+   }
+   if(G_NS_OBS_MS == 0 || (now - G_NS_OBS_MS) < (ulong)LEASE_STALE_SEC * 1000)
+      return;
+
+   G_NS_CLAIM_FROM_STALE = true;
+   G_NS_GEN = gen + 1;
+   G_NS_HB = 1;
+   if(!NotifyLeaseWrite(G_NS_OWNER, G_NS_HB, G_NS_GEN, "CLAIM", G_NS_FP))
+      return;
+   G_NS_ROLE = NS_ROLE_CLAIMING;
+   G_NS_CONFIRM_UNTIL_MS = now + (ulong)(1000 + (MathRand() % 2001));
+}
+
+void NotifyLeaseConfirmClaim()
+{
+   const ulong now = NowMs();
+   if(now < G_NS_CONFIRM_UNTIL_MS)
+      return;
+   string owner = "";
+   int hb = 0;
+   int gen = 0;
+   string st = "";
+   string fp = "";
+   if(!NotifyLeaseReadNow(owner, hb, gen, st, fp) || owner != G_NS_OWNER || st != "CLAIM" || gen != G_NS_GEN)
+   {
+      G_NS_BACKOFF_UNTIL_MS = now + (ulong)(1000 + (MathRand() % 4001));
+      NotifyLeaseBecomeFollower();
+      return;
+   }
+   if(!NotifyLegacyGuardTry())
+   {
+      if(!G_NS_CLAIM_FROM_STALE)
+      {
+         const ulong n2 = NowMs();
+         if(G_NS_LEGACY_PRINT_MS == 0 || (n2 - G_NS_LEGACY_PRINT_MS) >= (ulong)SFX_NOTIFY_LOCK_PRINT_MS)
+         {
+            NotifySenderLog("legacy notifier 1.28 holds SFX-SYNC-notifier.lock - not sending");
+            G_NS_LEGACY_PRINT_MS = n2;
+         }
+         NotifyLeaseWrite(G_NS_OWNER, G_NS_HB, G_NS_GEN, "FREE", G_NS_FP);
+         G_NS_BACKOFF_UNTIL_MS = now + (ulong)(1000 + (MathRand() % 4001));
+         NotifyLeaseBecomeFollower();
+         return;
+      }
+   }
+   G_NS_HB++;
+   if(!NotifyLeaseWrite(G_NS_OWNER, G_NS_HB, G_NS_GEN, "RUN", G_NS_FP))
+   {
+      NotifyLeaseBecomeFollower();
+      return;
+   }
+   if(!NotifyLeaseReadNow(owner, hb, gen, st, fp) || owner != G_NS_OWNER || st != "RUN")
+   {
+      G_NS_BACKOFF_UNTIL_MS = now + (ulong)(1000 + (MathRand() % 4001));
+      NotifyLeaseBecomeFollower();
+      return;
+   }
+   G_NS_ROLE = NS_ROLE_HOLDER;
+   G_NS_LAST_HB_MS = now;
+   NotifyStateLoadAsHolder();
+   NotifySenderLog("lease holder RUN");
+}
+
+void NotifyLeaseMaybeRenew()
+{
+   const ulong now = NowMs();
+   if(G_NS_LAST_HB_MS != 0 && (now - G_NS_LAST_HB_MS) < (ulong)LEASE_HB_SEC * 1000)
+      return;
+   if(!NotifyLeaseConfirmOwn())
+   {
+      NotifyLeaseLost();
+      return;
+   }
+   G_NS_HB++;
+   if(!NotifyLeaseWrite(G_NS_OWNER, G_NS_HB, G_NS_GEN, "RUN", G_NS_FP))
+   {
+      NotifyLeaseLost();
+      return;
+   }
+   string owner = "";
+   int hb = 0;
+   int gen = 0;
+   string st = "";
+   string fp = "";
+   if(!NotifyLeaseReadNow(owner, hb, gen, st, fp) || owner != G_NS_OWNER || st != "RUN")
+   {
+      NotifyLeaseLost();
+      return;
+   }
+   G_NS_LAST_HB_MS = now;
+}
+
+void NotifyLeaseMachine()
+{
+   if(G_NS_ROLE == NS_ROLE_DEAD)
+      return;
+   if(G_NS_ROLE == NS_ROLE_CLAIMING)
+   {
+      NotifyLeaseConfirmClaim();
+      return;
+   }
+   if(G_NS_ROLE == NS_ROLE_HOLDER)
+   {
+      NotifyLeaseMaybeRenew();
+      return;
+   }
+   NotifyLeaseFollowerTick();
+}
+
+void NotifySenderInit(const string kind, const int timeout_ms)
+{
+   G_NS_ACTIVE = true;
+   G_NS_KIND = kind;
+   if(StringFind(kind, "PM") == 0)
+      G_NS_LOG = "[ProfitMonitor]";
+   else
+      G_NS_LOG = "[SFX-SYNC-NOTIFIER]";
+   G_NS_TG_TIMEOUT_MS = timeout_ms;
+   if(G_NS_TG_TIMEOUT_MS < 1000)
+      G_NS_TG_TIMEOUT_MS = 1000;
+   if(G_NS_TG_TIMEOUT_MS > 5000)
+      G_NS_TG_TIMEOUT_MS = 5000;
+   G_NS_ROLE = NS_ROLE_FOLLOWER;
+   G_NS_LOCK = INVALID_HANDLE;
+   G_NS_TG_PERM = false;
+   G_NS_TG_PERM_LOGGED = false;
+   G_NS_TG_SKIP400_LOGGED = false;
+   G_NS_PUSH_ALERT_DONE = false;
+   G_NS_QNEXT_LOGGED = false;
+   G_NS_FAIL_LOGGED = false;
+   G_NS_429_LOGGED = false;
+   G_NS_INFLIGHT_HUD = false;
+   G_NS_ERR_BACKOFF_SEC = 5;
+   G_NS_PUSH_ERR_BACKOFF_SEC = 5;
+   G_NS_TG_BACKOFF_UNTIL = 0;
+   G_NS_PUSH_BACKOFF_UNTIL = 0;
+   G_NS_PUSH_LAST_MS = 0;
+   G_NS_PUSH_N = 0;
+   G_NS_LAST_FAIL_PRINT_MS = 0;
+   G_NS_429_LAST_PRINT_MS = 0;
+   G_NS_PUSH_PRINT_MS = 0;
+   G_NS_PUSH_CHECK_MS = 0;
+   G_NS_LEGACY_PRINT_MS = 0;
+   G_NS_LAST_LEASE_READ_MS = 0;
+   G_NS_CONFIRM_UNTIL_MS = 0;
+   G_NS_BACKOFF_UNTIL_MS = 0;
+   G_NS_LAST_HB_MS = 0;
+   G_NS_OBS_KEY = "";
+   G_NS_OBS_MS = 0;
+   G_NS_FATAL_KEY = "";
+   G_NS_FATAL_SEEN_MS = 0;
+   G_NS_CLAIM_FROM_STALE = false;
+   NotifyStateClearMem();
+
+   const long login = (long)AccountInfoInteger(ACCOUNT_LOGIN);
+   MathSrand((int)(GetTickCount() ^ (int)ChartID() ^ (int)login));
+   const int n1 = MathRand();
+   const int n2 = MathRand();
+   G_NS_NONCE = StringFormat("%04X%04X", n1 & 0xFFFF, n2 & 0xFFFF);
+   const string path = TerminalInfoString(TERMINAL_DATA_PATH);
+   const string ph = NotifyHex8u(NotifyFnv1a32(path));
+   G_NS_OWNER = StringFormat("%s:%I64d:%s:%I64d:%s",
+                             kind, login, ph, (long)ChartID(), G_NS_NONCE);
+   G_NS_LEASE_TMP = "SFX-SYNC-notify-lease." + G_NS_NONCE + ".tmp";
+
+   G_NS_PUSH_AVAIL = (MQLInfoInteger(MQL_TESTER) == 0 &&
+                      TerminalInfoInteger(TERMINAL_NOTIFICATIONS_ENABLED) != 0);
 
    string token = NotifyTrim(I_TG_BOT_TOKEN);
    if(StringLen(token) == 0)
       token = NotifyReadTokenFile();
    const string chat = NotifyTrim(I_TG_CHAT_ID);
-
+   G_NS_TG_AVAIL = false;
+   G_NS_TOKEN = "";
    if(StringLen(token) > 0 && !NotifyTokenCharsetOk(token))
    {
-      const string warn = "[SFX-SYNC-NOTIFIER] Telegram token has characters outside [0-9A-Za-z:_-] - Telegram disabled.";
+      const string warn = G_NS_LOG + " Telegram token has characters outside [0-9A-Za-z:_-] - Telegram disabled.";
       Print(warn);
       Alert(warn);
-      EventSetTimer((int)MathMax(1, I_POLL_SEC));
-      return INIT_SUCCEEDED;
    }
-   if(StringLen(token) == 0 || StringLen(chat) == 0)
+   else if(StringLen(token) == 0 || StringLen(chat) == 0)
    {
       string why = (StringLen(token) == 0 && StringLen(chat) == 0)
          ? "bot token and chat id are empty"
          : (StringLen(token) == 0 ? "bot token is empty (input and Common Files token file)" : "chat id is empty");
-      const string warn = "[SFX-SYNC-NOTIFIER] Telegram disabled: " + why +
+      const string warn = G_NS_LOG + " Telegram disabled: " + why +
          ". Put the token in Common Files (never log it). Expected file: " + NotifyTokenFileExpectedPath() +
          ". Chat id via getUpdates. Allow WebRequest for https://api.telegram.org";
       Print(warn);
-      Alert("[SFX-SYNC-NOTIFIER] Telegram disabled: " + why + ". Expected token file: " + NotifyTokenFileExpectedPath());
-      EventSetTimer((int)MathMax(1, I_POLL_SEC));
-      return INIT_SUCCEEDED;
+      Alert(G_NS_LOG + " Telegram disabled: " + why + ". Expected token file: " + NotifyTokenFileExpectedPath());
    }
+   else
+   {
+      G_NS_TOKEN = token;
+      G_NS_TG_AVAIL = true;
+   }
+   NotifySenderRefreshFp();
+   NotifySenderLog("Common Files: " + TerminalInfoString(TERMINAL_COMMONDATA_PATH));
+   NotifySenderLog("ready; one sender per Common Files via lease L2");
+}
 
-   G_RESOLVED_TOKEN = token;
-   G_TG_OK = true;
-   NotifierLockTry();
-   Print("[SFX-SYNC-NOTIFIER] ready; polling Common Files queue (lock file SFX-SYNC-notifier.lock, one notifier per PC)");
+void NotifySenderDeinit()
+{
+   if(!G_NS_ACTIVE)
+      return;
+   if(G_NS_ROLE == NS_ROLE_HOLDER || G_NS_ROLE == NS_ROLE_CLAIMING)
+      NotifyLeaseWriteFree();
+   NotifyLegacyGuardRelease();
+   G_NS_ACTIVE = false;
+   G_NS_ROLE = NS_ROLE_FOLLOWER;
+   Comment("");
+}
+
+void NotifySenderTick(const bool allow_push, const bool allow_tg)
+{
+   if(!G_NS_ACTIVE)
+      return;
+   NotifyPushRecheck();
+   NotifyLeaseMachine();
+   if(G_NS_ROLE != NS_ROLE_HOLDER)
+      return;
+   if(!NotifyLeaseConfirmOwn())
+   {
+      NotifyLeaseLost();
+      return;
+   }
+   NotifySenderProcessLine(allow_push, allow_tg);
+}
+// ==== END SFX-NOTIFY-SENDER ====
+
+int OnInit()
+{
+   NotifySenderInit("NTF4", 5000);
    EventSetTimer((int)MathMax(1, I_POLL_SEC));
    return INIT_SUCCEEDED;
 }
 
 void OnDeinit(const int reason)
 {
-   NotifierLockRelease();
+   NotifySenderDeinit();
    EventKillTimer();
 }
 
 void OnTimer()
 {
-   ProcessQueueOnce();
+   NotifySenderTick(true, true);
 }

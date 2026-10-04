@@ -8,7 +8,7 @@ double G_LITE_MAX_LOT = 0.30;
 // Last server date the EA may run (inclusive). Stops at 00:00 the next server day.
 datetime G_LITE_EXPIRE_DATE = D'2027.01.01';
 
-#define SFX_SYNC_EA_VERSION "1.29"
+#define SFX_SYNC_EA_VERSION "1.30"
 #ifndef SFX_SYNC_PROTOCOL_VERSION
 #define SFX_SYNC_PROTOCOL_VERSION "1.27"
 #endif
@@ -195,12 +195,8 @@ input bool        I_NEG_DIFF_FORCE_ENABLED = false; // Close-only after consecut
 input int         I_NEG_DIFF_FORCE_PTS = -1;        // Hit when realized fill pts of a completed pair-tx <= this
 input int         I_NEG_DIFF_FORCE_COUNT = 5;       // Consecutive losing OPEN or CLOSE pair-tx before close-only
 input bool        I_NEG_DIFF_FORCE_CLEAR_STATE = false; // One-shot: delete this port's neg-diff keys (then set false)
-ENUM_SFX_NOTIFY   I_NOTIFY_CHANNEL = NOTIFY_OFF;
-int               I_PUSH_MIN_INTERVAL_SEC = 60;
-bool              I_NOTIFY_TEST_ON_INIT = false;
-string            I_TG_BOT_TOKEN = "";
-string            I_TG_CHAT_ID = "";
-string            I_TG_TOKEN_FILE = "SFX-SYNC-telegram-token.txt";
+const ENUM_SFX_NOTIFY I_NOTIFY_CHANNEL = NOTIFY_OFF;   // hidden: rebuild to enable
+const bool            I_NOTIFY_TEST_ON_INIT = false;
 
 bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
 int               I_DIFF_ZONE_STABILITY_TICKS = 7;         // Ticks in positive zone required

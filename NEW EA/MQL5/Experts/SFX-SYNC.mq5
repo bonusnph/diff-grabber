@@ -3,7 +3,7 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.29"
+#define SFX_SYNC_EA_VERSION "1.30"
 #ifndef SFX_SYNC_PROTOCOL_VERSION
 #define SFX_SYNC_PROTOCOL_VERSION "1.27"
 #endif
@@ -217,7 +217,7 @@ input bool        I_NEG_DIFF_FORCE_ENABLED = false; // Close-only after consecut
 input int         I_NEG_DIFF_FORCE_PTS = -1;        // Hit when realized fill pts of a completed pair-tx <= this
 input int         I_NEG_DIFF_FORCE_COUNT = 5;       // Consecutive losing OPEN or CLOSE pair-tx before close-only
 input bool        I_NEG_DIFF_FORCE_CLEAR_STATE = false; // One-shot: delete this port's neg-diff keys (then set false)
-input ENUM_SFX_NOTIFY I_NOTIFY_CHANNEL = NOTIFY_OFF; // Off / MT Push / Telegram (queue) / Both
+input ENUM_SFX_NOTIFY I_NOTIFY_CHANNEL = NOTIFY_OFF; // Off / queue ch=P / queue ch=T / queue ch=B
 input bool        I_NOTIFY_TEST_ON_INIT = false;    // Master only: one test alert on attach
 
 bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
