@@ -8,7 +8,10 @@ double G_LITE_MAX_LOT = 0.30;
 // Last server date the EA may run (inclusive). Stops at 00:00 the next server day.
 datetime G_LITE_EXPIRE_DATE = D'2027.01.01';
 
-#define SFX_SYNC_EA_VERSION "1.27"
+#define SFX_SYNC_EA_VERSION "1.29"
+#ifndef SFX_SYNC_PROTOCOL_VERSION
+#define SFX_SYNC_PROTOCOL_VERSION "1.27"
+#endif
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -1539,6 +1542,99 @@ bool RecoverMasterOpenTicketMt4(const ENUM_SIDE side,
    return true;
 }
 
+int CollectMatchingMasterOpenTicketsMt4(const ENUM_SIDE side,
+                                        const double lots,
+                                        const datetime opened_not_before,
+                                        const int &exclude_tickets[],
+                                        const int exclude_n,
+                                        int &tickets_out[],
+                                        int &earliest_out,
+                                        const bool require_lots)
+{
+   earliest_out = -1;
+   datetime earliest_time = 0;
+   int n = 0;
+   ArrayResize(tickets_out, OrdersTotal());
+   const int want_type = (side == SIDE_BUY) ? OP_BUY : OP_SELL;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderSymbol() != G_SYMBOL)
+         continue;
+      if(OrderMagicNumber() != OrderMagic())
+         continue;
+      if(OrderType() != want_type)
+         continue;
+      const int tk = OrderTicket();
+      if(TicketInExcludeMt4(tk, exclude_tickets, exclude_n))
+         continue;
+      if(require_lots && lots > 0.0 && !LotsMatch(OrderLots(), lots))
+         continue;
+      const datetime pos_time = OrderOpenTime();
+      if(opened_not_before > 0 && pos_time + 2 < opened_not_before)
+         continue;
+      tickets_out[n++] = tk;
+      if(earliest_out <= 0 || pos_time < earliest_time || (pos_time == earliest_time && tk < earliest_out))
+      {
+         earliest_time = pos_time;
+         earliest_out = tk;
+      }
+   }
+   ArrayResize(tickets_out, n);
+   return n;
+}
+
+string FormatMatchTicketsMt4(const int &tickets[], const int n)
+{
+   string list = "";
+   for(int i = 0; i < n; i++)
+   {
+      if(i > 0)
+         list += ",";
+      list += IntegerToString(tickets[i]);
+   }
+   return list;
+}
+
+string CanonicalMatchTicketSetMt4(const int &tickets[], const int n)
+{
+   int sorted[];
+   ArrayResize(sorted, n);
+   for(int i = 0; i < n; i++)
+      sorted[i] = tickets[i];
+   for(int a = 0; a < n; a++)
+   {
+      for(int b = a + 1; b < n; b++)
+      {
+         if(sorted[b] < sorted[a])
+         {
+            const int tmp = sorted[a];
+            sorted[a] = sorted[b];
+            sorted[b] = tmp;
+         }
+      }
+   }
+   return FormatMatchTicketsMt4(sorted, n);
+}
+
+string FormatMatchTicketsWithLotsMt4(const int &tickets[], const int n, const double expected_lots)
+{
+   string list = "";
+   for(int i = 0; i < n; i++)
+   {
+      if(i > 0)
+         list += ",";
+      list += IntegerToString(tickets[i]);
+      double real_lot = 0.0;
+      if(OrderSelect(tickets[i], SELECT_BY_TICKET, MODE_TRADES))
+         real_lot = OrderLots();
+      if(expected_lots > 0.0 && !LotsMatch(real_lot, expected_lots))
+         list += StringFormat("(lot=%.2f)", real_lot);
+   }
+   return list;
+}
+
 bool CloseTicketIfOpenWithPolicy(const int ticket, const bool retry_transient)
 {
    FillAuditClearCapture();
@@ -3005,11 +3101,79 @@ void StartOpenTransaction()
       G_PAIR_OPEN_INTENT_MS = NowMs();
       SendMsg(G_PEER, BuildOpenIntent());
       const int max_attempts = 1 + MathMax(0, I_MASTER_OPEN_RETRY_COUNT_BALANCED);
+      int known_tickets[];
+      const int known_n = SnapshotEaTicketsMt4(known_tickets);
+      const datetime opened_not_before = TimeCurrent();
+      int last_send_attempt = 0;
+      string dup_warned_set = "";
       for(int attempt = 1; attempt <= max_attempts; attempt++)
       {
-         int known_tickets[];
-         const int known_n = SnapshotEaTicketsMt4(known_tickets);
-         const datetime opened_not_before = TimeCurrent();
+         if(attempt >= 2)
+         {
+            int recovered_ticket = -1;
+            if(RecoverMasterOpenTicketMt4(exec_side, G_OPEN_LOT_SLAVE, opened_not_before, known_tickets, known_n, recovered_ticket))
+            {
+               int match_tickets[];
+               int earliest_ticket = -1;
+               const int match_n = CollectMatchingMasterOpenTicketsMt4(exec_side, G_OPEN_LOT_SLAVE, opened_not_before,
+                                                                      known_tickets, known_n, match_tickets, earliest_ticket, true);
+               if(match_n > 1)
+               {
+                  if(earliest_ticket > 0)
+                     recovered_ticket = earliest_ticket;
+                  const string warn = StringFormat("[SFX-SYNC] DUPLICATE_MASTER_SUSPECT tx_id=%s attempt=%d tickets=%s",
+                                                   G_OPEN_TX_ID, attempt, FormatMatchTicketsMt4(match_tickets, match_n));
+                  SyncLog(warn);
+                  ExpertPrintLn(warn);
+                  HudBannerSet(warn, 20);
+                  Alert(warn);
+                  dup_warned_set = CanonicalMatchTicketSetMt4(match_tickets, match_n);
+               }
+               G_OPEN_MASTER_TICKET = recovered_ticket;
+               G_OPEN_MASTER_OK = true;
+               err = 0;
+               FillAuditNoteRecoveredPosition(recovered_ticket);
+               const string rec_ln = StringFormat("[SFX-SYNC] RETRY_RECOVERED tx_id=%s attempt=%d ticket=%d",
+                                                  G_OPEN_TX_ID, attempt, recovered_ticket);
+               SyncLog(rec_ln);
+               ExpertPrintLn(rec_ln);
+               G_OPEN_LAST_ERROR_MASTER = err;
+               break;
+            }
+            int partial_tickets[];
+            int partial_ticket = -1;
+            const int partial_n = CollectMatchingMasterOpenTicketsMt4(exec_side, G_OPEN_LOT_SLAVE, opened_not_before,
+                                                                     known_tickets, known_n, partial_tickets, partial_ticket, false);
+            if(partial_n >= 1 && partial_ticket > 0)
+            {
+               if(partial_n > 1)
+               {
+                  const string warn = StringFormat("[SFX-SYNC] DUPLICATE_MASTER_SUSPECT tx_id=%s attempt=%d tickets=%s",
+                                                   G_OPEN_TX_ID, attempt, FormatMatchTicketsMt4(partial_tickets, partial_n));
+                  SyncLog(warn);
+                  ExpertPrintLn(warn);
+                  HudBannerSet(warn, 20);
+                  Alert(warn);
+                  dup_warned_set = CanonicalMatchTicketSetMt4(partial_tickets, partial_n);
+               }
+               double real_lot = 0.0;
+               if(OrderSelect(partial_ticket, SELECT_BY_TICKET, MODE_TRADES))
+                  real_lot = OrderLots();
+               G_OPEN_MASTER_TICKET = partial_ticket;
+               G_OPEN_MASTER_OK = true;
+               err = 0;
+               FillAuditNoteRecoveredPosition(partial_ticket);
+               const string pf_ln = StringFormat("[SFX-SYNC] PARTIAL_FILL_SUSPECT tx_id=%s attempt=%d ticket=%d lot=%.2f expected=%.2f",
+                                                 G_OPEN_TX_ID, attempt, partial_ticket, real_lot, G_OPEN_LOT_SLAVE);
+               SyncLog(pf_ln);
+               ExpertPrintLn(pf_ln);
+               HudBannerSet(pf_ln, 20);
+               Alert(pf_ln);
+               G_OPEN_LAST_ERROR_MASTER = err;
+               break;
+            }
+         }
+         last_send_attempt = attempt;
          G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), G_OPEN_LOT_SLAVE, err);
          G_OPEN_MASTER_OK = (G_OPEN_MASTER_TICKET > 0);
          if(!G_OPEN_MASTER_OK)
@@ -3045,6 +3209,27 @@ void StartOpenTransaction()
          }
          if(attempt < max_attempts && I_MASTER_OPEN_RETRY_INTERVAL_MS > 0)
             Sleep(I_MASTER_OPEN_RETRY_INTERVAL_MS);
+      }
+      if(G_OPEN_MASTER_OK && last_send_attempt >= 2)
+      {
+         int late_tickets[];
+         int late_earliest = -1;
+         const int late_n = CollectMatchingMasterOpenTicketsMt4(exec_side, G_OPEN_LOT_SLAVE, opened_not_before,
+                                                               known_tickets, known_n, late_tickets, late_earliest, false);
+         if(late_n > 1)
+         {
+            const string late_set = CanonicalMatchTicketSetMt4(late_tickets, late_n);
+            if(late_set != dup_warned_set)
+            {
+               const string warn = StringFormat("[SFX-SYNC] DUPLICATE_MASTER_SUSPECT tx_id=%s attempt=%d tickets=%s",
+                                                G_OPEN_TX_ID, last_send_attempt,
+                                                FormatMatchTicketsWithLotsMt4(late_tickets, late_n, G_OPEN_LOT_SLAVE));
+               SyncLog(warn);
+               ExpertPrintLn(warn);
+               HudBannerSet(warn, 20);
+               Alert(warn);
+            }
+         }
       }
       FillAuditTakeMasterLeg();
       FillAuditNoteTickets(G_OPEN_MASTER_TICKET, -1);
@@ -3186,21 +3371,24 @@ void HandleMasterIncomingPacket(const string msg)
          return;
       }
       string peer_version = (ArraySize(p) >= 4) ? p[3] : "";
-      if(peer_version != SFX_SYNC_EA_VERSION)
+      if(peer_version != SFX_SYNC_PROTOCOL_VERSION)
       {
          string ln = StringFormat(
-            "[SFX-SYNC] HELLO version mismatch local=%s peer=%s — rejecting and detaching",
+            "[SFX-SYNC] HELLO version mismatch ea=%s protocol=%s peer=%s - rejecting and detaching",
             SFX_SYNC_EA_VERSION,
+            SFX_SYNC_PROTOCOL_VERSION,
             StringLen(peer_version) > 0 ? peer_version : "<unknown>");
          SyncLog(ln);
          ExpertPrintLn(ln);
-         Alert(StringFormat("[SFX-SYNC] Version mismatch local=%s peer=%s — EA detaching",
+         Alert(StringFormat("[SFX-SYNC] Version mismatch ea=%s protocol=%s peer=%s - EA detaching",
                             SFX_SYNC_EA_VERSION,
+                            SFX_SYNC_PROTOCOL_VERSION,
                             StringLen(peer_version) > 0 ? peer_version : "<unknown>"));
          NotifyEventAndFlushTg("VERSION_MISMATCH",
-                               StringFormat("local=%s peer=%s", SFX_SYNC_EA_VERSION,
+                               StringFormat("ea=%s protocol=%s peer=%s", SFX_SYNC_EA_VERSION,
+                                            SFX_SYNC_PROTOCOL_VERSION,
                                             StringLen(peer_version) > 0 ? peer_version : "<unknown>"));
-         SendMsg(G_PEER, StringFormat("HELLO_ACK;VERSION_MISMATCH;%s", SFX_SYNC_EA_VERSION));
+         SendMsg(G_PEER, StringFormat("HELLO_ACK;VERSION_MISMATCH;%s", SFX_SYNC_PROTOCOL_VERSION));
          CloseClient(G_PEER);
          ExpertRemove();
          return;
@@ -3208,7 +3396,7 @@ void HandleMasterIncomingPacket(const string msg)
       G_HANDSHAKE_OK = true;
       G_LINK_PAIR_STATUS_SEEN = false;
       G_LAST_SLAVE_PAIR_STATUS_MS = 0;
-      SendMsg(G_PEER, StringFormat("HELLO_ACK;YES;%s", SFX_SYNC_EA_VERSION));
+      SendMsg(G_PEER, StringFormat("HELLO_ACK;YES;%s", SFX_SYNC_PROTOCOL_VERSION));
       ExpertPrintLn(StringFormat("Handshake OK slave_account=%s ver=%s", p[2], peer_version));
       G_AUDIT_SLAVE_ACCOUNT = p[2];
       SyncLog(StringFormat("[SFX-SYNC] Slave handshake success account=%s ver=%s", p[2], peer_version));
@@ -3429,14 +3617,15 @@ void HandleSlaveIncomingPacket(const string msg)
       {
          string peer_v = (ArraySize(p) >= 3) ? p[2] : "<unknown>";
          string ln = StringFormat(
-            "[SFX-SYNC] HELLO_ACK VERSION_MISMATCH local=%s master=%s — detaching",
-            SFX_SYNC_EA_VERSION, peer_v);
+            "[SFX-SYNC] HELLO_ACK VERSION_MISMATCH ea=%s protocol=%s master=%s - detaching",
+            SFX_SYNC_EA_VERSION, SFX_SYNC_PROTOCOL_VERSION, peer_v);
          SyncLog(ln);
          ExpertPrintLn(ln);
-         Alert(StringFormat("[SFX-SYNC] Version mismatch local=%s master=%s — EA detaching",
-                            SFX_SYNC_EA_VERSION, peer_v));
+         Alert(StringFormat("[SFX-SYNC] Version mismatch ea=%s protocol=%s master=%s - EA detaching",
+                            SFX_SYNC_EA_VERSION, SFX_SYNC_PROTOCOL_VERSION, peer_v));
          NotifyEventAndFlushTg("VERSION_MISMATCH",
-                               StringFormat("local=%s master=%s", SFX_SYNC_EA_VERSION, peer_v));
+                               StringFormat("ea=%s protocol=%s master=%s",
+                                            SFX_SYNC_EA_VERSION, SFX_SYNC_PROTOCOL_VERSION, peer_v));
          G_HANDSHAKE_OK = false;
          CloseClient(G_PEER);
          ExpertRemove();
@@ -3872,7 +4061,7 @@ void SlaveLoop()
       G_SLAVE_HELLO_SENT_MS = 0;
       if(G_PEER != NULL && G_PEER.IsSocketConnected())
       {
-         SendMsg(G_PEER, StringFormat("HELLO;%s;%d;%s", I_SECRET, AccountNumber(), SFX_SYNC_EA_VERSION));
+         SendMsg(G_PEER, StringFormat("HELLO;%s;%d;%s", I_SECRET, AccountNumber(), SFX_SYNC_PROTOCOL_VERSION));
          G_SLAVE_HELLO_SENT_MS = NowMs();
       }
    }
