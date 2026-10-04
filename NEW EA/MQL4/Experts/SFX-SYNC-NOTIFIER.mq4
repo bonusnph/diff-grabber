@@ -432,6 +432,12 @@ bool OffsetSave()
    return true;
 }
 
+void OffsetSaveChecked()
+{
+   if(!OffsetSave())
+      Print("[SFX-SYNC-NOTIFIER] offset/state save failed");
+}
+
 void OffsetFirstAttach(const int qh, const long qsize, const string why)
 {
    int skipped = 0;
@@ -447,13 +453,15 @@ void OffsetFirstAttach(const int qh, const long qsize, const string why)
       if(got > 0)
          LineIdFromBuf(buf, got, G_QUEUE_FIRST_ID);
    }
-   OffsetSave();
+   OffsetSaveChecked();
    Print(StringFormat("[SFX-SYNC-NOTIFIER] first attach (%s): skipped %d existing queue line(s), offset=%I64d",
                       why, skipped, G_QUEUE_OFFSET));
 }
 
 void OffsetInitOnAttach()
 {
+   if(G_LOCK_HANDLE == INVALID_HANDLE)
+      return;
    const int qh = QueueOpenRead();
    long qsize = 0;
    if(qh != INVALID_HANDLE)
@@ -494,7 +502,7 @@ void OffsetInitOnAttach()
    {
       G_QUEUE_OFFSET = 0;
       G_QUEUE_FIRST_ID = now_id;
-      OffsetSave();
+      OffsetSaveChecked();
       Print("[SFX-SYNC-NOTIFIER] queue smaller than saved offset - reset offset to 0");
       return;
    }
@@ -502,7 +510,7 @@ void OffsetInitOnAttach()
    {
       G_QUEUE_OFFSET = 0;
       G_QUEUE_FIRST_ID = now_id;
-      OffsetSave();
+      OffsetSaveChecked();
       Print("[SFX-SYNC-NOTIFIER] queue first-line id changed - reset offset to 0");
    }
 }
@@ -618,6 +626,8 @@ void RecoverRotateTail(const long qsize_at_check)
       }
    }
    FileClose(oh);
+   if(leftover_n > 0)
+      Print(StringFormat("[SFX-SYNC-NOTIFIER] rotate tail dropped %d leftover byte(s) without trailing newline", leftover_n));
 }
 
 void MaybeRotateQueue()
@@ -638,7 +648,7 @@ void MaybeRotateQueue()
    RecoverRotateTail(qsize);
    G_QUEUE_OFFSET = 0;
    G_QUEUE_FIRST_ID = QueueFirstLineId();
-   OffsetSave();
+   OffsetSaveChecked();
    Print("[SFX-SYNC-NOTIFIER] rotated queue file to SFX-SYNC-notify-queue.txt.old");
 }
 
@@ -794,7 +804,7 @@ void ProcessQueueOnce()
       G_QUEUE_FIRST_ID = "";
       if(got > 0)
          LineIdFromBuf(idbuf, got, G_QUEUE_FIRST_ID);
-      OffsetSave();
+      OffsetSaveChecked();
       Print("[SFX-SYNC-NOTIFIER] queue smaller than saved offset - reset offset to 0");
    }
    const long remain_all = qsize - G_QUEUE_OFFSET;
@@ -861,7 +871,7 @@ void ProcessQueueOnce()
       if(StringLen(G_QUEUE_FIRST_ID) <= 0 && G_QUEUE_OFFSET > 0)
          G_QUEUE_FIRST_ID = QueueFirstLineId();
       G_QUEUE_OFFSET += line_bytes;
-      OffsetSave();
+      OffsetSaveChecked();
       if(G_QUEUE_OFFSET >= qsize)
          MaybeRotateQueue();
    }
@@ -884,7 +894,6 @@ int OnInit()
    G_LOCK_LAST_PRINT_MS = 0;
    G_QUEUE_OFFSET = 0;
    G_QUEUE_FIRST_ID = "";
-   OffsetInitOnAttach();
 
    string token = NotifyTrim(I_TG_BOT_TOKEN);
    if(StringLen(token) == 0)
@@ -915,6 +924,7 @@ int OnInit()
 
    G_RESOLVED_TOKEN = token;
    G_TG_OK = true;
+   NotifierLockTry();
    Print("[SFX-SYNC-NOTIFIER] ready; polling Common Files queue (lock file SFX-SYNC-notifier.lock, one notifier per PC)");
    EventSetTimer((int)MathMax(1, I_POLL_SEC));
    return INIT_SUCCEEDED;
