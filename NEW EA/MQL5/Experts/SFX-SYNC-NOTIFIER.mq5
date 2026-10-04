@@ -74,6 +74,7 @@ int    G_NS_LOCK = INVALID_HANDLE;
 int    G_NS_HB = 0;
 int    G_NS_GEN = 0;
 bool   G_NS_CLAIM_FROM_STALE = false;
+bool   G_NS_YIELD_LOGGED = false;
 bool   G_NS_PUSH_AVAIL = false;
 bool   G_NS_TG_AVAIL = false;
 bool   G_NS_TG_PERM = false;
@@ -659,9 +660,13 @@ void NotifyLeaseYieldToLegacy(const ulong now)
       return;
    }
    NotifyLeaseWrite(G_NS_OWNER, G_NS_HB, G_NS_GEN, "FREE", G_NS_FP);
-   const string hud = "YIELD_TO_LEGACY";
-   NotifySenderLog(hud);
-   NotifySenderHud(hud);
+   if(!G_NS_YIELD_LOGGED)
+   {
+      const string hud = "YIELD_TO_LEGACY: legacy lock held (NOTIFIER 1.28 or stuck holder)";
+      NotifySenderLog(hud);
+      NotifySenderHud(hud);
+      G_NS_YIELD_LOGGED = true;
+   }
    G_NS_BACKOFF_UNTIL_MS = now + (ulong)(1000 + (MathRand() % 4001));
    NotifyLeaseBecomeFollower();
 }
@@ -1458,8 +1463,6 @@ int NotifyTelegramPost(const string text)
    char resultData[];
    string resultHeaders;
    StringToCharArray(body, postData, 0, StringLen(body));
-   if(!NotifySenderTgBudgetOk())
-      return 3;
    ResetLastError();
    const int http = WebRequest("POST", url, headers, G_NS_TG_TIMEOUT_MS, postData, resultData, resultHeaders);
    const int err = GetLastError();
@@ -1791,12 +1794,6 @@ void NotifySenderProcessLine(const bool allow_push, const bool allow_tg)
          return;
       }
       const int rc = NotifyTelegramPost(text);
-      if(rc == 3)
-      {
-         G_NS_T = 0;
-         NotifyStateWrite();
-         return;
-      }
       if(rc == 1)
       {
          G_NS_T = 2;
@@ -1889,6 +1886,7 @@ void NotifyLeaseFollowerTick()
          return;
       }
       G_NS_ROLE = NS_ROLE_HOLDER;
+      G_NS_YIELD_LOGGED = false;
       G_NS_LAST_HB_MS = now;
       NotifyStateLoadAsHolder();
       NotifySenderLog("lease holder RUN");
@@ -1984,11 +1982,8 @@ void NotifyLeaseConfirmClaim()
    }
    if(!NotifyLegacyGuardTry())
    {
-      if(!G_NS_CLAIM_FROM_STALE)
-      {
-         NotifyLeaseYieldToLegacy(now);
-         return;
-      }
+      NotifyLeaseYieldToLegacy(now);
+      return;
    }
    G_NS_HB++;
    if(!NotifyLeaseWrite(G_NS_OWNER, G_NS_HB, G_NS_GEN, "RUN", G_NS_FP))
@@ -2003,6 +1998,7 @@ void NotifyLeaseConfirmClaim()
       return;
    }
    G_NS_ROLE = NS_ROLE_HOLDER;
+   G_NS_YIELD_LOGGED = false;
    G_NS_LAST_HB_MS = now;
    NotifyStateLoadAsHolder();
    NotifySenderLog("lease holder RUN");
@@ -2088,6 +2084,7 @@ void NotifySenderInit(const string kind, const int timeout_ms)
    G_NS_PUSH_UNAVAIL_LOGGED = false;
    G_NS_PUSH_BACKOFF_HARD = false;
    G_NS_TG_BACKOFF_HARD = false;
+   G_NS_YIELD_LOGGED = false;
    NotifyOutageResetAll();
    G_NS_ERR_BACKOFF_SEC = 5;
    G_NS_PUSH_ERR_BACKOFF_SEC = 5;
