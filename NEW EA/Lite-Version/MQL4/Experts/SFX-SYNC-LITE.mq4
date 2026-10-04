@@ -8,7 +8,7 @@ double G_LITE_MAX_LOT = 0.30;
 // Last server date the EA may run (inclusive). Stops at 00:00 the next server day.
 datetime G_LITE_EXPIRE_DATE = D'2027.01.01';
 
-#define SFX_SYNC_EA_VERSION "1.24"
+#define SFX_SYNC_EA_VERSION "1.26"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -181,9 +181,9 @@ bool              I_FILL_AUDIT_ENABLED = true;  // Fill audit: log request vs fi
 int               I_FILL_AUDIT_GAP_PTS = 10;    // Fill audit: flag when signal minus realized gap reaches this (pts)
 int               I_FILL_AUDIT_HOLD_SEC = 30;   // Fill audit: seconds to keep latest slippage detail on HUD
 
-input bool        I_NEG_DIFF_FORCE_ENABLED = false; // Force close-only after consecutive negative real diffs
-input int         I_NEG_DIFF_FORCE_PTS = -1;        // Count a success when real diff is <= this (points)
-input int         I_NEG_DIFF_FORCE_COUNT = 5;       // Consecutive hits per side before force close-only
+input bool        I_NEG_DIFF_FORCE_ENABLED = false; // Close-only after consecutive losing pair fills (realized pts)
+input int         I_NEG_DIFF_FORCE_PTS = -1;        // Hit when realized fill pts of a completed pair-tx <= this
+input int         I_NEG_DIFF_FORCE_COUNT = 5;       // Consecutive losing OPEN or CLOSE pair-tx before close-only
 
 bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
 int               I_DIFF_ZONE_STABILITY_TICKS = 7;         // Ticks in positive zone required
@@ -1490,8 +1490,7 @@ bool CloseTicketIfOpenWithPolicy(const int ticket, const bool retry_transient)
       if(closed)
       {
          const double fill = FillAuditOrderClosePrice(ticket);
-         const double used = (fill > 0.0 ? fill : price);
-         FillAuditStoreCapture(type != OP_BUY, price, used, used > 0.0);
+         FillAuditStoreCapture(type != OP_BUY, price, fill, fill > 0.0);
          return true;
       }
       const int err = GetLastError();
@@ -2404,7 +2403,11 @@ void MasterRecoverOrphanLegsIfNeeded()
    for(int j = 0; j < ArraySize(orphan_tickets); j++)
    {
       const int tk = orphan_tickets[j];
-      if(!CloseTicketIfOpenWithPolicy(tk, false))
+      const bool wasBuy = FillAuditMasterPositionIsBuy(tk);
+      const bool closed = CloseTicketIfOpenWithPolicy(tk, false);
+      FillAuditLogEvent("ORPHAN", "ORPHAN_RECOVERY", G_PAIR_KEY, "",
+                        wasBuy, tk, -1, true, closed);
+      if(!closed)
       {
          all_closed = false;
          SyncLog(StringFormat("[SFX-SYNC] ORPHAN close failed ticket=%d", tk));
@@ -2627,8 +2630,6 @@ bool TryClearDegraded(const string reason)
 
 bool TryRescueHedge()
 {
-   if(NegDiffForceLatched())
-      return false;
    if(I_CLOSE_MODE != CLOSE_MASTER_FIRST_WITH_RESCUE) return false;
    const int max_att = MathMax(0, I_RESCUE_MAX_ATTEMPTS);
    if(G_RESCUE_ATTEMPTS_USED >= max_att)
@@ -2650,12 +2651,16 @@ bool TryRescueHedge()
       string ln_ok = StringFormat("[SFX-SYNC] Rescue hedge success ticket=%d attempt=%d", rescue_ticket, G_RESCUE_ATTEMPTS_USED);
       ExpertPrintLn(ln_ok);
       SyncLog(ln_ok);
+      FillAuditLogEvent("RESCUE", "RESCUE_HEDGE", G_PAIR_KEY, G_PAIR_KEY,
+                        DiffEffectiveMasterSide() == SIDE_BUY, rescue_ticket, G_PAIR_SLAVE_TICKET, true, true);
       G_RESCUE_ATTEMPTS_USED = 0;
       return true;
    }
    string ln_fail = StringFormat("[SFX-SYNC] Rescue hedge failed err=%d attempt=%d", err, G_RESCUE_ATTEMPTS_USED);
    ExpertPrintLn(ln_fail);
    SyncLog(ln_fail);
+   FillAuditLogEvent("RESCUE", "RESCUE_HEDGE", G_PAIR_KEY, G_PAIR_KEY,
+                     DiffEffectiveMasterSide() == SIDE_BUY, -1, G_PAIR_SLAVE_TICKET, true, false);
    return false;
 }
 
@@ -2691,6 +2696,9 @@ void RollbackOpenNow(const string why)
    bool master_leg_closed = false;
    if(G_OPEN_MASTER_OK && G_OPEN_MASTER_TICKET > 0)
       master_leg_closed = CloseTicketIfOpen(G_OPEN_MASTER_TICKET);
+   FillAuditLogEvent("OPEN_ROLLBACK", why, G_OPEN_TX_ID, G_OPEN_TX_ID,
+                     G_OPEN_SIDE == "BUY", G_OPEN_MASTER_TICKET, G_OPEN_SLAVE_TICKET,
+                     true, master_leg_closed);
    if(master_leg_closed)
       ArmPostCloseOpenGuard("OPEN_ROLLBACK");
    const string rollback_ln = StringFormat(
@@ -2871,6 +2879,7 @@ void StartOpenTransaction()
             Sleep(I_MASTER_OPEN_RETRY_INTERVAL_MS);
       }
       FillAuditTakeMasterLeg();
+      FillAuditNoteTickets(G_OPEN_MASTER_TICKET, -1);
       if(!G_OPEN_MASTER_OK) { RollbackOpenNow("MASTER_OPEN_FAIL"); return; }
    }
    else
@@ -2880,6 +2889,7 @@ void StartOpenTransaction()
       G_OPEN_LAST_ERROR_MASTER = err;
       SyncLog(StringFormat("[SFX-SYNC] OPEN_MASTER_FIRST master result tx_id=%s ok=%s ticket=%d err=%d connected=%d trade_allowed=%d%s", G_OPEN_TX_ID, G_OPEN_MASTER_OK ? "true" : "false", G_OPEN_MASTER_TICKET, err, (int)IsConnected(), (int)IsTradeAllowed(), master_open_diff_snap));
       FillAuditTakeMasterLeg();
+      FillAuditNoteTickets(G_OPEN_MASTER_TICKET, -1);
       if(!G_OPEN_MASTER_OK) { RollbackOpenNow("MASTER_OPEN_FAIL"); return; }
       PrintLogMasterOpenIntent(open_tag);
       G_PAIR_OPEN_INTENT_MS = NowMs();
@@ -2952,6 +2962,7 @@ void StartCloseTransaction(const string reason)
 
    G_CLOSE_MASTER_OK = master_closed;
    FillAuditTakeMasterLeg();
+   FillAuditNoteTickets(G_PAIR_MASTER_TICKET, G_PAIR_SLAVE_TICKET);
    if(!G_CLOSE_MASTER_OK)
    {
       G_CLOSE_LAST_ERROR_MASTER = GetLastError();
@@ -3089,6 +3100,7 @@ void HandleMasterIncomingPacket(const string msg)
          FillAuditNoteSlavePrices(StringToDouble(p[5]), StringToDouble(p[6]),
                                   (ArraySize(p) >= 8) ? (ulong)StringToInteger(p[7]) : 0,
                                   ArraySize(p) >= 8);
+      FillAuditNoteTickets(G_OPEN_MASTER_TICKET, G_OPEN_SLAVE_TICKET);
 
       SyncLog(StringFormat("[SFX-SYNC] Slave open result tx_id=%s ok=%s ticket=%d err=%d", G_OPEN_TX_ID, G_OPEN_SLAVE_OK ? "true" : "false", G_OPEN_SLAVE_TICKET, G_OPEN_LAST_ERROR_SLAVE));
 
@@ -3153,6 +3165,9 @@ void HandleMasterIncomingPacket(const string msg)
       double force_slave_bal = (ArraySize(p) >= 6) ? StringToDouble(p[5]) : 0.0;
       SyncLog(StringFormat("[SFX-SYNC] FORCE_FLAT result tx_id=%s ok=%s remain=%d closed=%d bal=%.2f",
                            G_FORCE_FLAT_TX_ID, ok ? "true" : "false", remain, closed, force_slave_bal));
+      FillAuditLogEvent("FORCE_FLAT", G_FORCE_FLAT_REASON, G_PAIR_KEY, G_FORCE_FLAT_TX_ID,
+                        FillAuditMasterPositionIsBuy(G_PAIR_MASTER_TICKET),
+                        G_PAIR_MASTER_TICKET, G_PAIR_SLAVE_TICKET, false, ok && remain == 0);
       if(ok && remain == 0)
       {
          G_SLAVE_PAIR_OPEN_REPORT = false;

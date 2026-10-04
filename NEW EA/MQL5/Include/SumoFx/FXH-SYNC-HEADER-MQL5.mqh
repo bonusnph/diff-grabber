@@ -502,6 +502,8 @@ datetime G_NEG_HIST_TIME[5];
 int      G_NEG_HIST_OPEN[5];
 double   G_NEG_HIST_PTS[5];
 int      G_NEG_HIST_COUNT = 0;
+bool     G_FA_LAST_REALIZED_OK = false;
+double   G_FA_LAST_REALIZED_PTS = 0.0;
 
 int NegDiffNeedCount()
 {
@@ -554,8 +556,10 @@ void NegDiffArmOpen(const bool masterBuy)
       G_NEG_ARMED_OPEN = false;
       return;
    }
-   G_NEG_SNAP_OPEN = DiffOpenPtsFor(masterBuy);
+   G_NEG_SNAP_OPEN = 0.0;
    G_NEG_ARMED_OPEN = true;
+   if(masterBuy)
+      return;
 }
 
 void NegDiffArmClose(const bool masterBuy)
@@ -565,8 +569,10 @@ void NegDiffArmClose(const bool masterBuy)
       G_NEG_ARMED_CLOSE = false;
       return;
    }
-   G_NEG_SNAP_CLOSE = DiffClosePtsFor(masterBuy);
+   G_NEG_SNAP_CLOSE = 0.0;
    G_NEG_ARMED_CLOSE = true;
+   if(masterBuy)
+      return;
 }
 
 void NegDiffDisarmOpen()
@@ -603,14 +609,17 @@ void NegDiffApply(const bool isOpen)
    else if(!G_NEG_ARMED_CLOSE)
       return;
 
-   const double pts = isOpen ? G_NEG_SNAP_OPEN : G_NEG_SNAP_CLOSE;
    if(isOpen)
       NegDiffDisarmOpen();
    else
       NegDiffDisarmClose();
    if(!I_NEG_DIFF_FORCE_ENABLED)
       return;
+   // Unknown fills are not a hit and do not reset the streak.
+   if(!G_FA_LAST_REALIZED_OK)
+      return;
 
+   const double pts = G_FA_LAST_REALIZED_PTS;
    const bool hit = (pts <= (double)I_NEG_DIFF_FORCE_PTS);
    int streak = isOpen ? G_NEG_STREAK_OPEN : G_NEG_STREAK_CLOSE;
    if(hit)
@@ -631,8 +640,9 @@ void NegDiffApply(const bool isOpen)
          G_NEG_TRIGGER_OPEN = true;
       else
          G_NEG_TRIGGER_CLOSE = true;
-      NegDiffLatchCloseOnly(isOpen);
-      SyncLog(StringFormat("[SFX-SYNC] neg-diff force trigger side=%s streak=%d pts=%.1f",
+      // Close-only only: never flatten the live pair from this trigger.
+      NegDiffLatchCloseOnly(false);
+      SyncLog(StringFormat("[SFX-SYNC] neg-diff force trigger side=%s streak=%d realized_pts=%.1f",
                            isOpen ? "OPEN" : "CLOSE", streak, pts));
    }
 }
@@ -651,7 +661,7 @@ string NegDiffHudBlock()
    const int leftOpen = MathMax(0, need - G_NEG_STREAK_OPEN);
    const int leftClose = MathMax(0, need - G_NEG_STREAK_CLOSE);
    string out = "\n";
-   out += "NEG DIFF FORCE: on\n";
+   out += "NEG DIFF FORCE: on (realized fills)\n";
    out += StringFormat("OPEN streak %d/%d left %d\n", G_NEG_STREAK_OPEN, need, leftOpen);
    out += StringFormat("CLOSE streak %d/%d left %d\n", G_NEG_STREAK_CLOSE, need, leftClose);
    if(G_NEG_TRIGGER_OPEN)
@@ -2130,9 +2140,15 @@ void SetDiffHudTitleMode(const bool autosync_armed)
 }
 
 // Capture globals live in the expert, above OpenOrder. This module only reads them.
+#define FILL_AUDIT_SCHEMA_VER "v2"
+#define FILL_AUDIT_CSV_HEADER "event_timestamp,symbol,master_account,slave_account,action,reason,pair_id,tx_id,master_side,master_ticket,slave_ticket,signal_pts,master_bid,master_ask,slave_bid,slave_ask,master_request,master_fill,master_slip_pts,master_slip_class,slave_request,slave_fill,slave_slip_pts,slave_slip_class,realized_pts,gap_pts,flagged,prices_ok,master_exec_ms,slave_exec_ms,pair_span_ms,open_mode,close_mode"
+
 bool   G_FA_ACTIVE = false;
 bool   G_FA_FINALIZED = false;
 bool   G_FA_IS_OPEN = false;
+string G_FA_ACTION = "";
+string G_FA_REASON = "";
+string G_FA_PAIR_ID = "";
 string G_FA_TX = "";
 bool   G_FA_MASTER_BUY = false;
 double G_FA_SIGNAL = 0.0;
@@ -2148,6 +2164,8 @@ bool   G_FA_SLAVE_OK = false;
 double G_FA_SLAVE_REQ = 0.0;
 double G_FA_SLAVE_FILL = 0.0;
 int    G_FA_SLAVE_SLIP = 0;
+int    G_FA_MASTER_TICKET = 0;
+int    G_FA_SLAVE_TICKET = 0;
 bool   G_FA_MASTER_EXEC_SET = false;
 ulong  G_FA_MASTER_EXEC_MS = 0;
 bool   G_FA_SLAVE_EXEC_SET = false;
@@ -2160,6 +2178,8 @@ string G_FA_DETAIL_TEXT = "";
 bool   G_FA_CSV_PENDING = false;
 string G_FA_CSV_BUFFER = "";
 bool   G_FA_CSV_HEADER = false;
+datetime G_FA_TS_LOCAL = 0;
+ulong    G_FA_TS_US = 0;
 
 void FillAuditClearCapture()
 {
@@ -2283,33 +2303,116 @@ string G_AUDIT_SLAVE_ACCOUNT = "";
 
 string FillAuditCsvFileName()
 {
-   return StringFormat("FILL_AUDIT_%I64d_%s.csv", AccountInfoInteger(ACCOUNT_LOGIN), G_SYMBOL);
+   return StringFormat("FILL_AUDIT_%s_%I64d_%s.csv", FILL_AUDIT_SCHEMA_VER,
+                      AccountInfoInteger(ACCOUNT_LOGIN), G_SYMBOL);
+}
+
+string FillAuditEventTimestamp()
+{
+   const datetime local = TimeLocal();
+   const ulong us = GetMicrosecondCount();
+   if(G_FA_TS_LOCAL != local)
+   {
+      G_FA_TS_LOCAL = local;
+      G_FA_TS_US = us;
+   }
+   int ms = (int)((us - G_FA_TS_US) / 1000);
+   if(ms < 0)
+      ms = 0;
+   if(ms > 999)
+      ms = 999;
+   return StringFormat("%s.%03d", TimeToString(local, TIME_DATE | TIME_MINUTES | TIME_SECONDS), ms);
+}
+
+string FillAuditCsvPrice(const bool ok, const double px)
+{
+   if(!ok || px <= 0.0)
+      return "";
+   return StringFormat("%.8f", px);
+}
+
+string FillAuditCsvDouble(const bool ok, const double v, const int digits)
+{
+   if(!ok)
+      return "";
+   return DoubleToString(v, digits);
+}
+
+string FillAuditCsvSlipPts(const bool ok, const int slip)
+{
+   if(!ok)
+      return "";
+   return IntegerToString(slip);
+}
+
+string FillAuditCsvTicket(const int ticket)
+{
+   if(ticket <= 0)
+      return "";
+   return IntegerToString(ticket);
+}
+
+void FillAuditNoteTickets(const int masterTicket, const int slaveTicket)
+{
+   if(masterTicket > 0)
+      G_FA_MASTER_TICKET = masterTicket;
+   if(slaveTicket > 0)
+      G_FA_SLAVE_TICKET = slaveTicket;
+}
+
+void FillAuditResetSession()
+{
+   G_FA_MASTER_OK = false;
+   G_FA_SLAVE_OK = false;
+   G_FA_MASTER_REQ = 0.0;
+   G_FA_MASTER_FILL = 0.0;
+   G_FA_MASTER_SLIP = 0;
+   G_FA_SLAVE_REQ = 0.0;
+   G_FA_SLAVE_FILL = 0.0;
+   G_FA_SLAVE_SLIP = 0;
+   G_FA_MASTER_TICKET = 0;
+   G_FA_SLAVE_TICKET = 0;
+   G_FA_MASTER_EXEC_SET = false;
+   G_FA_MASTER_EXEC_MS = 0;
+   G_FA_SLAVE_EXEC_SET = false;
+   G_FA_SLAVE_EXEC_MS = 0;
+   G_FA_LAST_REALIZED_OK = false;
+   G_FA_LAST_REALIZED_PTS = 0.0;
 }
 
 void FillAuditQueueRow(const bool pricesOk, const double realized, const double gap, const int flagged, const bool bothLegsOk)
 {
+   if(!I_FILL_AUDIT_ENABLED)
+      return;
    const ulong nw = NowMs();
-   const string ts = StringFormat("%s.%03d",
-                                  TimeToString(TimeCurrent(), TIME_DATE | TIME_MINUTES | TIME_SECONDS),
-                                  (int)(nw % 1000));
+   const string ts = FillAuditEventTimestamp();
    const ulong spanMs = (G_FA_BEGUN_MS > 0 && nw >= G_FA_BEGUN_MS) ? (nw - G_FA_BEGUN_MS) : 0;
    const string masterExec = G_FA_MASTER_EXEC_SET ? StringFormat("%I64u", G_FA_MASTER_EXEC_MS) : "";
    const string slaveExec = G_FA_SLAVE_EXEC_SET ? StringFormat("%I64u", G_FA_SLAVE_EXEC_MS) : "";
    const string masterAccount = StringFormat("%I64d", AccountInfoInteger(ACCOUNT_LOGIN));
+   const string action = (StringLen(G_FA_ACTION) > 0) ? G_FA_ACTION : (G_FA_IS_OPEN ? "OPEN" : "CLOSE");
    const string row = StringFormat(
-      "%s,%s,%s,%s,%s,%s,%s,%.4f,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f,%d,%s,%.8f,%.8f,%d,%s,%.4f,%.4f,%d,%d,%s,%s,%I64u,%s,%s\n",
+      "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%d,%d,%s,%s,%I64u,%s,%s\n",
       ts, G_SYMBOL, masterAccount, G_AUDIT_SLAVE_ACCOUNT,
-      G_FA_IS_OPEN ? "OPEN" : "CLOSE",
-      G_FA_TX,
+      action, G_FA_REASON, G_FA_PAIR_ID, G_FA_TX,
       G_FA_MASTER_BUY ? "BUY" : "SELL",
-      G_FA_SIGNAL,
-      G_FA_M_BID, G_FA_M_ASK, G_FA_S_BID, G_FA_S_ASK,
-      G_FA_MASTER_REQ, G_FA_MASTER_FILL, G_FA_MASTER_SLIP,
+      FillAuditCsvTicket(G_FA_MASTER_TICKET),
+      FillAuditCsvTicket(G_FA_SLAVE_TICKET),
+      FillAuditCsvDouble(true, G_FA_SIGNAL, 4),
+      FillAuditCsvPrice(G_FA_M_BID > 0.0, G_FA_M_BID),
+      FillAuditCsvPrice(G_FA_M_ASK > 0.0, G_FA_M_ASK),
+      FillAuditCsvPrice(G_FA_S_BID > 0.0, G_FA_S_BID),
+      FillAuditCsvPrice(G_FA_S_ASK > 0.0, G_FA_S_ASK),
+      FillAuditCsvPrice(G_FA_MASTER_REQ > 0.0, G_FA_MASTER_REQ),
+      FillAuditCsvPrice(G_FA_MASTER_OK, G_FA_MASTER_FILL),
+      FillAuditCsvSlipPts(G_FA_MASTER_OK, G_FA_MASTER_SLIP),
       FillAuditSlipClass(G_FA_MASTER_OK, G_FA_MASTER_SLIP),
-      G_FA_SLAVE_REQ, G_FA_SLAVE_FILL, G_FA_SLAVE_SLIP,
+      FillAuditCsvPrice(G_FA_SLAVE_REQ > 0.0, G_FA_SLAVE_REQ),
+      FillAuditCsvPrice(G_FA_SLAVE_OK, G_FA_SLAVE_FILL),
+      FillAuditCsvSlipPts(G_FA_SLAVE_OK, G_FA_SLAVE_SLIP),
       FillAuditSlipClass(G_FA_SLAVE_OK, G_FA_SLAVE_SLIP),
-      pricesOk ? realized : 0.0,
-      pricesOk ? gap : 0.0,
+      FillAuditCsvDouble(pricesOk, realized, 4),
+      FillAuditCsvDouble(pricesOk, gap, 4),
       flagged,
       (bothLegsOk && pricesOk) ? 1 : 0,
       masterExec, slaveExec, spanMs,
@@ -2320,7 +2423,7 @@ void FillAuditQueueRow(const bool pricesOk, const double realized, const double 
 
 void FillAuditFinish(const bool bothLegsOk)
 {
-   if(!I_FILL_AUDIT_ENABLED || I_ROLE != ROLE_SOURCE_MASTER)
+   if(I_ROLE != ROLE_SOURCE_MASTER)
       return;
    if(!G_FA_ACTIVE || G_FA_FINALIZED)
       return;
@@ -2330,11 +2433,14 @@ void FillAuditFinish(const bool bothLegsOk)
    double realized = 0.0;
    double gap = 0.0;
    int flagged = 0;
+   G_FA_LAST_REALIZED_OK = pricesOk;
+   G_FA_LAST_REALIZED_PTS = 0.0;
    if(pricesOk)
    {
       realized = FillAuditRealizedPts(G_FA_IS_OPEN, G_FA_MASTER_BUY, G_FA_MASTER_FILL, G_FA_SLAVE_FILL);
+      G_FA_LAST_REALIZED_PTS = realized;
       gap = G_FA_SIGNAL - realized;
-      if(gap >= (double)MathMax(0, I_FILL_AUDIT_GAP_PTS))
+      if(I_FILL_AUDIT_ENABLED && gap >= (double)MathMax(0, I_FILL_AUDIT_GAP_PTS))
       {
          flagged = 1;
          G_FA_COUNT++;
@@ -2344,12 +2450,12 @@ void FillAuditFinish(const bool bothLegsOk)
             "SLIPPAGE %s gap %.1f (sig %.1f -> fill %.1f) M%s S%s | n=%d streak=%d",
             G_FA_IS_OPEN ? "OPEN" : "CLOSE",
             gap, G_FA_SIGNAL, realized,
-            FillAuditSignedInt(G_FA_MASTER_SLIP),
-            FillAuditSignedInt(G_FA_SLAVE_SLIP),
+            G_FA_MASTER_OK ? FillAuditSignedInt(G_FA_MASTER_SLIP) : "?",
+            G_FA_SLAVE_OK ? FillAuditSignedInt(G_FA_SLAVE_SLIP) : "?",
             G_FA_COUNT, G_FA_STREAK);
          G_FA_DETAIL_UNTIL = NowMs() + (ulong)hold * 1000UL;
       }
-      else
+      else if(I_FILL_AUDIT_ENABLED)
          G_FA_STREAK = 0;
    }
    FillAuditQueueRow(pricesOk, realized, gap, flagged, bothLegsOk);
@@ -2358,7 +2464,7 @@ void FillAuditFinish(const bool bothLegsOk)
 
 void FillAuditBegin(const bool isOpen, const string txId, const bool masterBuy, const string reasonTag)
 {
-   if(!I_FILL_AUDIT_ENABLED || I_ROLE != ROLE_SOURCE_MASTER)
+   if(I_ROLE != ROLE_SOURCE_MASTER)
       return;
    if(G_FA_ACTIVE && !G_FA_FINALIZED)
       FillAuditFinish(false);
@@ -2366,6 +2472,9 @@ void FillAuditBegin(const bool isOpen, const string txId, const bool masterBuy, 
    G_FA_ACTIVE = true;
    G_FA_FINALIZED = false;
    G_FA_IS_OPEN = isOpen;
+   G_FA_ACTION = isOpen ? "OPEN" : "CLOSE";
+   G_FA_REASON = reasonTag;
+   G_FA_PAIR_ID = isOpen ? txId : G_PAIR_KEY;
    G_FA_TX = txId;
    G_FA_BEGUN_MS = NowMs();
    G_FA_MASTER_BUY = masterBuy;
@@ -2379,59 +2488,90 @@ void FillAuditBegin(const bool isOpen, const string txId, const bool masterBuy, 
       G_FA_SIGNAL = G_DIFF_SIGNAL_SNAP_CLOSE_PTS;
    else
       G_FA_SIGNAL = isOpen ? DiffOpenPtsFor(masterBuy) : DiffClosePtsFor(masterBuy);
-   G_FA_MASTER_OK = false;
-   G_FA_SLAVE_OK = false;
-   G_FA_MASTER_REQ = 0.0;
-   G_FA_MASTER_FILL = 0.0;
-   G_FA_MASTER_SLIP = 0;
-   G_FA_SLAVE_REQ = 0.0;
-   G_FA_SLAVE_FILL = 0.0;
-   G_FA_SLAVE_SLIP = 0;
-   G_FA_MASTER_EXEC_SET = false;
-   G_FA_MASTER_EXEC_MS = 0;
-   G_FA_SLAVE_EXEC_SET = false;
-   G_FA_SLAVE_EXEC_MS = 0;
+   FillAuditResetSession();
+   if(!isOpen)
+   {
+      G_FA_MASTER_TICKET = G_PAIR_MASTER_TICKET;
+      G_FA_SLAVE_TICKET = G_PAIR_SLAVE_TICKET;
+   }
 }
 
 void FillAuditTakeMasterLeg()
 {
-   if(!I_FILL_AUDIT_ENABLED || !G_FA_ACTIVE || G_FA_FINALIZED)
+   if(!G_FA_ACTIVE || G_FA_FINALIZED)
       return;
    if(G_FILL_CAP_EXEC_SET)
    {
       G_FA_MASTER_EXEC_SET = true;
       G_FA_MASTER_EXEC_MS = G_FILL_CAP_EXEC_MS;
    }
+   if(G_FILL_CAP_REQUEST > 0.0)
+      G_FA_MASTER_REQ = G_FILL_CAP_REQUEST;
    if(!G_FILL_CAP_VALID)
    {
       G_FA_MASTER_OK = false;
+      G_FA_MASTER_FILL = 0.0;
+      G_FA_MASTER_SLIP = 0;
       return;
    }
    G_FA_MASTER_OK = true;
-   G_FA_MASTER_REQ = G_FILL_CAP_REQUEST;
    G_FA_MASTER_FILL = G_FILL_CAP_FILL;
    G_FA_MASTER_SLIP = FillAuditSlipPts(G_FILL_CAP_IS_BUY, G_FILL_CAP_REQUEST, G_FILL_CAP_FILL);
 }
 
 void FillAuditNoteSlavePrices(const double request, const double fill, const ulong execMs, const bool hasExec)
 {
-   if(!I_FILL_AUDIT_ENABLED || !G_FA_ACTIVE || G_FA_FINALIZED)
+   if(!G_FA_ACTIVE || G_FA_FINALIZED)
       return;
    if(hasExec && (execMs > 0 || (request > 0.0 && fill > 0.0)))
    {
       G_FA_SLAVE_EXEC_SET = true;
       G_FA_SLAVE_EXEC_MS = execMs;
    }
+   if(request > 0.0)
+      G_FA_SLAVE_REQ = request;
    if(request <= 0.0 || fill <= 0.0)
    {
       G_FA_SLAVE_OK = false;
+      G_FA_SLAVE_FILL = 0.0;
+      G_FA_SLAVE_SLIP = 0;
       return;
    }
    const bool slaveBuy = G_FA_IS_OPEN ? !G_FA_MASTER_BUY : G_FA_MASTER_BUY;
    G_FA_SLAVE_OK = true;
-   G_FA_SLAVE_REQ = request;
    G_FA_SLAVE_FILL = fill;
    G_FA_SLAVE_SLIP = FillAuditSlipPts(slaveBuy, request, fill);
+}
+
+void FillAuditLogEvent(const string action, const string reason, const string pairId, const string txId,
+                       const bool masterBuy, const int masterTicket, const int slaveTicket,
+                       const bool takeMasterCapture, const bool bothLegsOk)
+{
+   if(I_ROLE != ROLE_SOURCE_MASTER)
+      return;
+   if(G_FA_ACTIVE && !G_FA_FINALIZED)
+      FillAuditFinish(false);
+
+   G_FA_ACTIVE = true;
+   G_FA_FINALIZED = false;
+   G_FA_IS_OPEN = false;
+   G_FA_ACTION = action;
+   G_FA_REASON = reason;
+   G_FA_PAIR_ID = pairId;
+   G_FA_TX = txId;
+   G_FA_BEGUN_MS = NowMs();
+   G_FA_MASTER_BUY = masterBuy;
+   G_FA_M_BID = G_DIFF_SELF_BID;
+   G_FA_M_ASK = G_DIFF_SELF_ASK;
+   G_FA_S_BID = G_DIFF_SLAVE_BID;
+   G_FA_S_ASK = G_DIFF_SLAVE_ASK;
+   G_FA_SIGNAL = 0.0;
+   FillAuditResetSession();
+   G_FA_MASTER_TICKET = masterTicket;
+   G_FA_SLAVE_TICKET = slaveTicket;
+   if(takeMasterCapture)
+      FillAuditTakeMasterLeg();
+   FillAuditFinish(bothLegsOk);
 }
 
 void FillAuditEnsureCsvHeader()
@@ -2448,13 +2588,8 @@ void FillAuditEnsureCsvHeader()
       int hw = FileOpen(fname, FILE_WRITE | FILE_SHARE_READ | FILE_ANSI);
       if(hw != INVALID_HANDLE)
       {
-         FileWriteString(hw,
-            "event_timestamp,symbol,master_account,slave_account,action,tx_id,master_side,signal_pts,"
-            "master_bid,master_ask,slave_bid,slave_ask,"
-            "master_request,master_fill,master_slip_pts,master_slip_class,"
-            "slave_request,slave_fill,slave_slip_pts,slave_slip_class,"
-            "realized_pts,gap_pts,flagged,prices_ok,"
-            "master_exec_ms,slave_exec_ms,pair_span_ms,open_mode,close_mode\n");
+         FileWriteString(hw, FILL_AUDIT_CSV_HEADER);
+         FileWriteString(hw, "\n");
          FileClose(hw);
       }
    }
