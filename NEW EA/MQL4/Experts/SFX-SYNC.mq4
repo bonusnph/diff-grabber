@@ -3,7 +3,7 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.24"
+#define SFX_SYNC_EA_VERSION "1.25"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -37,15 +37,15 @@ enum ENUM_DIFF_SIGNAL_MODE
 
 enum ENUM_OPEN_MODE
 {
-   OPEN_BALANCED = 0,
-   OPEN_MASTER_FIRST = 1
+   OPEN_BALANCED = 0,      // Balance
+   OPEN_MASTER_FIRST = 1   // Master First
 };
 
 enum ENUM_CLOSE_MODE
 {
-   CLOSE_BALANCED = 0,
-   CLOSE_MASTER_FIRST = 1,
-   CLOSE_MASTER_FIRST_WITH_RESCUE = 2
+   CLOSE_BALANCED = 0,                    // Balance
+   CLOSE_MASTER_FIRST = 1,                // Master First
+   CLOSE_MASTER_FIRST_WITH_RESCUE = 2     // Master First + Rescue
 };
 
 enum ENUM_LOCK_SCOPE
@@ -77,7 +77,7 @@ struct DpmEvent
 // I_PORT, I_MASTER_SIDE, I_DYN_LOT_ENABLED, I_DYN_LOT_MIN, I_DYN_LOT_MAX,
 // I_DYN_LOT_STEP_UP, I_DYN_LOT_STEP_DOWN, I_DYN_LOT_PROFIT_STREAK_N,
 // I_DYN_LOT_LOSS_STREAK_M, I_DYN_LOT_STABLE_LOOP_Y, I_DYN_LOT_COUNT_SCHEDULED,
-// I_OPEN_MODE, I_CLOSE_MODE, I_LOCK_ENABLED, I_LOCK_GROUP, I_LOCK_SCOPE,
+// I_LOCK_ENABLED, I_LOCK_GROUP, I_LOCK_SCOPE,
 // I_LOCK_STALE_MS, I_LOCK_DEBUG_LOG, I_PAIR_SETTLE_GRACE_MS, I_LOOP_MS,
 // I_DIFF_SIGNAL_MODE_VAL, I_DIFF_OPEN_THRESHOLD_PTS, I_DIFF_CLOSE_THRESHOLD_PTS,
 // I_DIFF_QUOTES_FRESH_MS, I_DIFF_QUOTES_FRESH_AUTO, I_DIFF_MAX_SPREAD_SELF,
@@ -117,8 +117,8 @@ bool      I_DYN_LOT_COUNT_SCHEDULED = false; // Dynamic lot: count weekend/sched
 input double    I_MIN_BALANCE_MASTER = 0.00;       // Min master balance to allow new open (0 = off)
 input double    I_MIN_BALANCE_SLAVE  = 0.00;       // Min slave balance to allow new open (0 = off)
 int       I_SLIPPAGE = 30;              // Max slippage (points) for sync orders
-ENUM_OPEN_MODE I_OPEN_MODE = OPEN_BALANCED;   // How to sequence master/slave opens
-ENUM_CLOSE_MODE I_CLOSE_MODE = CLOSE_BALANCED; // How to sequence closes (and rescue)
+input ENUM_OPEN_MODE I_OPEN_MODE = OPEN_BALANCED;   // How to sequence master/slave opens
+input ENUM_CLOSE_MODE I_CLOSE_MODE = CLOSE_BALANCED; // How to sequence closes (and rescue)
 bool      I_LOCK_ENABLED = true;                   // Enable cross-instance global lock for open/close intents
 string    I_LOCK_GROUP = "DEFAULT";                // User-defined lock namespace
 ENUM_LOCK_SCOPE I_LOCK_SCOPE = LOCK_SCOPE_PAIR_ACTION; // Lock granularity inside a group
@@ -2897,8 +2897,24 @@ void StartOpenTransaction()
    }
    else
    {
+      const ulong open_started_ms = NowMs();
       G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), DynActiveLot(), err);
       G_OPEN_MASTER_OK = (G_OPEN_MASTER_TICKET > 0);
+      if(!G_OPEN_MASTER_OK)
+      {
+         int recovered_ticket = -1;
+         if(RecoverMasterOpenTicketMt4(exec_side, open_started_ms, recovered_ticket))
+         {
+            G_OPEN_MASTER_TICKET = recovered_ticket;
+            G_OPEN_MASTER_OK = true;
+            err = 0;
+            FillAuditNoteRecoveredPosition(recovered_ticket);
+            SyncLog(StringFormat("[SFX-SYNC] OPEN_MASTER_FIRST master recovered tx_id=%s ticket=%d",
+                                 G_OPEN_TX_ID, G_OPEN_MASTER_TICKET));
+            ExpertPrintLn(StringFormat("[SFX-SYNC] OPEN_MASTER_FIRST master recovered tx_id=%s ticket=%d",
+                                       G_OPEN_TX_ID, G_OPEN_MASTER_TICKET));
+         }
+      }
       G_OPEN_LAST_ERROR_MASTER = err;
       SyncLog(StringFormat("[SFX-SYNC] OPEN_MASTER_FIRST master result tx_id=%s ok=%s ticket=%d err=%d connected=%d trade_allowed=%d%s", G_OPEN_TX_ID, G_OPEN_MASTER_OK ? "true" : "false", G_OPEN_MASTER_TICKET, err, (int)IsConnected(), (int)IsTradeAllowed(), master_open_diff_snap));
       FillAuditTakeMasterLeg();
