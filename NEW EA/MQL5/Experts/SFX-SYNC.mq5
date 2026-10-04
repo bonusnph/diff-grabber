@@ -3,7 +3,7 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.24"
+#define SFX_SYNC_EA_VERSION "1.25"
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -36,15 +36,15 @@ enum ENUM_DIFF_SIGNAL_MODE
 
 enum ENUM_OPEN_MODE
 {
-   OPEN_BALANCED = 0,
-   OPEN_MASTER_FIRST = 1
+   OPEN_BALANCED = 0,      // Balance
+   OPEN_MASTER_FIRST = 1   // Master First
 };
 
 enum ENUM_CLOSE_MODE
 {
-   CLOSE_BALANCED = 0,
-   CLOSE_MASTER_FIRST = 1,
-   CLOSE_MASTER_FIRST_WITH_RESCUE = 2
+   CLOSE_BALANCED = 0,                    // Balance
+   CLOSE_MASTER_FIRST = 1,                // Master First
+   CLOSE_MASTER_FIRST_WITH_RESCUE = 2     // Master First + Rescue
 };
 
 enum ENUM_LOCK_SCOPE
@@ -76,7 +76,7 @@ struct DpmEvent
 // I_PORT, I_MASTER_SIDE, I_DYN_LOT_ENABLED, I_DYN_LOT_MIN, I_DYN_LOT_MAX,
 // I_DYN_LOT_STEP_UP, I_DYN_LOT_STEP_DOWN, I_DYN_LOT_PROFIT_STREAK_N,
 // I_DYN_LOT_LOSS_STREAK_M, I_DYN_LOT_STABLE_LOOP_Y, I_DYN_LOT_COUNT_SCHEDULED,
-// I_OPEN_MODE, I_CLOSE_MODE, I_LOCK_ENABLED, I_LOCK_GROUP, I_LOCK_SCOPE,
+// I_LOCK_ENABLED, I_LOCK_GROUP, I_LOCK_SCOPE,
 // I_LOCK_STALE_MS, I_LOCK_DEBUG_LOG, I_PAIR_SETTLE_GRACE_MS, I_LOOP_MS,
 // I_DIFF_SIGNAL_MODE_VAL, I_DIFF_OPEN_THRESHOLD_PTS, I_DIFF_CLOSE_THRESHOLD_PTS,
 // I_DIFF_QUOTES_FRESH_MS, I_DIFF_QUOTES_FRESH_AUTO, I_DIFF_MAX_SPREAD_SELF,
@@ -116,8 +116,8 @@ bool      I_DYN_LOT_COUNT_SCHEDULED = false; // Dynamic lot: count weekend/sched
 input double    I_MIN_BALANCE_MASTER = 0.00;       // Min master balance to allow new open (0 = off)
 input double    I_MIN_BALANCE_SLAVE  = 0.00;       // Min slave balance to allow new open (0 = off)
 int             I_SLIPPAGE = 30;              // Max slippage (points) for sync orders
-ENUM_OPEN_MODE I_OPEN_MODE = OPEN_BALANCED;   // How to sequence master/slave opens
-ENUM_CLOSE_MODE I_CLOSE_MODE = CLOSE_BALANCED; // How to sequence closes (and rescue)
+input ENUM_OPEN_MODE I_OPEN_MODE = OPEN_BALANCED;   // How to sequence master/slave opens
+input ENUM_CLOSE_MODE I_CLOSE_MODE = CLOSE_BALANCED; // How to sequence closes (and rescue)
 bool      I_LOCK_ENABLED = true;                   // Enable cross-instance global lock for open/close intents
 string    I_LOCK_GROUP = "DEFAULT";                // User-defined lock namespace
 ENUM_LOCK_SCOPE I_LOCK_SCOPE = LOCK_SCOPE_PAIR_ACTION; // Lock granularity inside a group
@@ -270,6 +270,8 @@ string G_PENDING_OPEN_INTENT_TAG = "UI_BUTTON";
 bool   G_PAIR_ACTIVE = false;
 string G_PAIR_KEY = "";
 int    G_PAIR_MASTER_TICKET = -1;
+ENUM_SIDE G_PAIR_MASTER_SIDE = SIDE_BUY;
+double    G_PAIR_MASTER_LOT = 0.0;
 int    G_PAIR_SLAVE_TICKET = -1;
 bool   G_SLAVE_PAIR_OPEN_REPORT = false;
 int    G_SLAVE_EA_OPEN_COUNT = 0;
@@ -330,6 +332,10 @@ int    G_SLAVE_LAST_OPEN_OK = -1; // -1 unknown, 0 fail, 1 success
 int    G_SLAVE_LAST_OPEN_TICKET = -1;
 int    G_SLAVE_LAST_OPEN_ERR = 0;
 ulong  G_SLAVE_LAST_OPEN_STARTED_MS = 0;
+datetime G_SLAVE_LAST_OPEN_SERVER_TIME = 0;
+double   G_SLAVE_LAST_OPEN_LOTS = 0.0;
+ulong    G_SLAVE_LAST_OPEN_EXCLUDE[];
+int      G_SLAVE_LAST_OPEN_EXCLUDE_N = 0;
 string G_SLAVE_PAIR_KEY = "";
 int    G_SLAVE_PAIR_TICKET = -1;
 
@@ -1242,6 +1248,10 @@ int CountEaOpenOrdersOnSlaveSymbol();
 void ResetForceFlatState();
 void StartForceFlatSlave(const string reason);
 void MonitorForceFlatState();
+void RememberPairMasterLeg(const ENUM_SIDE side, const double lots);
+void ClearPairMasterMeta();
+int SnapshotEaTicketsMt5(ulong &tickets[]);
+bool RecoverMasterOpenTicketMt5(const ENUM_SIDE side, const double lots, const datetime opened_not_before, const ulong &exclude_tickets[], const int exclude_n, int &ticket_out);
 void RefreshDiffHud();
 
 void DispatchMasterRaw(const string raw)
@@ -1365,7 +1375,10 @@ int OpenOrder(const ENUM_ORDER_TYPE type, const double lots, int &err_out)
 {
    err_out = 0;
    FillAuditClearCapture();
-   const ulong opened_after_ms = NowMs();
+   ulong known_tickets[];
+   const int known_n = SnapshotEaTicketsMt5(known_tickets);
+   const datetime opened_not_before = TimeCurrent();
+   const ENUM_SIDE recover_side = (type == ORDER_TYPE_BUY) ? SIDE_BUY : SIDE_SELL;
    const string sym = G_SYMBOL;
    MqlTick tk;
    if(!SymbolInfoTick(sym, tk))
@@ -1401,14 +1414,13 @@ int OpenOrder(const ENUM_ORDER_TYPE type, const double lots, int &err_out)
 
    if(res.retcode == TRADE_RETCODE_PLACED)
    {
-      const ENUM_SIDE side = isBuy ? SIDE_BUY : SIDE_SELL;
       const ulong wait_ms = (ulong)MathMax(200, I_SLAVE_OPEN_TIMEOUT_MS);
       const ulong until_ms = NowMs() + wait_ms;
       int recovered_ticket = -1;
       // Some brokers return PLACED first, then finalize to a position shortly after.
       while(NowMs() <= until_ms)
       {
-         if(RecoverMasterOpenTicketMt5(side, opened_after_ms, recovered_ticket))
+         if(RecoverMasterOpenTicketMt5(recover_side, lots, opened_not_before, known_tickets, known_n, recovered_ticket))
          {
             FillAuditNoteMt5Fill(isBuy, request, res.deal, res.price, (ulong)recovered_ticket);
             return recovered_ticket;
@@ -1426,7 +1438,6 @@ int OpenOrder(const ENUM_ORDER_TYPE type, const double lots, int &err_out)
    // Broker may finalize the position asynchronously after DONE; loop until visible
    // so we never report fail while the order is actually filled (MT5 close uses position ticket).
    {
-      const ENUM_SIDE side = isBuy ? SIDE_BUY : SIDE_SELL;
       const ulong wait_ms = (ulong)MathMax(200, I_SLAVE_OPEN_TIMEOUT_MS);
       const ulong until_ms = NowMs() + wait_ms;
       int recovered_ticket = -1;
@@ -1446,7 +1457,7 @@ int OpenOrder(const ENUM_ORDER_TYPE type, const double lots, int &err_out)
             FillAuditNoteMt5Fill(isBuy, request, res.deal, res.price, (ulong)res.order);
             return (int)res.order;
          }
-         if(RecoverMasterOpenTicketMt5(side, opened_after_ms, recovered_ticket))
+         if(RecoverMasterOpenTicketMt5(recover_side, lots, opened_not_before, known_tickets, known_n, recovered_ticket))
          {
             FillAuditNoteMt5Fill(isBuy, request, res.deal, res.price, (ulong)recovered_ticket);
             return recovered_ticket;
@@ -1498,7 +1509,52 @@ bool IsMt5OpenTransientError(const int err)
    }
 }
 
-bool RecoverMasterOpenTicketMt5(const ENUM_SIDE side, const ulong opened_after_ms, int &ticket_out)
+bool LotsMatch(const double a, const double b)
+{
+   double step = SymbolInfoDouble(G_SYMBOL, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0)
+      step = 0.01;
+   return (MathAbs(a - b) <= (step * 0.5));
+}
+
+bool TicketInExcludeMt5(const ulong ticket, const ulong &exclude[], const int exclude_n)
+{
+   for(int i = 0; i < exclude_n; i++)
+   {
+      if(exclude[i] == ticket)
+         return true;
+   }
+   return false;
+}
+
+int SnapshotEaTicketsMt5(ulong &tickets[])
+{
+   int n = 0;
+   ArrayResize(tickets, PositionsTotal());
+   const long magic = (long)OrderMagic();
+   for(int i = (int)PositionsTotal() - 1; i >= 0; i--)
+   {
+      const ulong pt = PositionGetTicket(i);
+      if(pt == 0)
+         continue;
+      if(!PositionSelectByTicket(pt))
+         continue;
+      if(PositionGetString(POSITION_SYMBOL) != G_SYMBOL)
+         continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != magic)
+         continue;
+      tickets[n++] = pt;
+   }
+   ArrayResize(tickets, n);
+   return n;
+}
+
+bool RecoverMasterOpenTicketMt5(const ENUM_SIDE side,
+                                const double lots,
+                                const datetime opened_not_before,
+                                const ulong &exclude_tickets[],
+                                const int exclude_n,
+                                int &ticket_out)
 {
    ticket_out = -1;
    const ENUM_POSITION_TYPE want_pt = (side == SIDE_BUY) ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
@@ -1517,9 +1573,14 @@ bool RecoverMasterOpenTicketMt5(const ENUM_SIDE side, const ulong opened_after_m
          continue;
       if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != want_pt)
          continue;
-      const long tmsc = (long)PositionGetInteger(POSITION_TIME_MSC);
-      if(tmsc + 2 < (long)opened_after_ms)
+      if(TicketInExcludeMt5(pt, exclude_tickets, exclude_n))
          continue;
+      if(lots > 0.0 && !LotsMatch(PositionGetDouble(POSITION_VOLUME), lots))
+         continue;
+      const datetime pos_time = (datetime)PositionGetInteger(POSITION_TIME);
+      if(opened_not_before > 0 && pos_time + 2 < opened_not_before)
+         continue;
+      const long tmsc = (long)PositionGetInteger(POSITION_TIME_MSC);
       if(tmsc >= best_time_msc)
       {
          best_time_msc = tmsc;
@@ -2245,6 +2306,7 @@ void CloseOnlyWeekendResetPair()
    G_PAIR_ACTIVE = false;
    G_PAIR_KEY = "";
    G_PAIR_MASTER_TICKET = -1;
+   ClearPairMasterMeta();
    G_PAIR_SLAVE_TICKET = -1;
    G_SLAVE_PAIR_OPEN_REPORT = false;
    G_LAST_SLAVE_PAIR_STATUS_MS = 0;
@@ -2344,6 +2406,10 @@ void SlaveWeekendReset()
    G_SLAVE_LAST_OPEN_TICKET = -1;
    G_SLAVE_LAST_OPEN_ERR = 0;
    G_SLAVE_LAST_OPEN_STARTED_MS = 0;
+   G_SLAVE_LAST_OPEN_SERVER_TIME = 0;
+   G_SLAVE_LAST_OPEN_LOTS = 0.0;
+   G_SLAVE_LAST_OPEN_EXCLUDE_N = 0;
+   ArrayResize(G_SLAVE_LAST_OPEN_EXCLUDE, 0);
 }
 
 void SlaveCheckPendingOpenTimeout()
@@ -2415,6 +2481,12 @@ void MasterTryAdoptOpenPair(const string pair_key, const int slave_ticket, const
    G_PAIR_ACTIVE = true;
    G_PAIR_KEY = pair_key;
    G_PAIR_MASTER_TICKET = ticket;
+   {
+      double adopt_lot = 0.0;
+      if(PositionSelectByTicket((ulong)ticket))
+         adopt_lot = PositionGetDouble(POSITION_VOLUME);
+      RememberPairMasterLeg(is_buy ? SIDE_BUY : SIDE_SELL, adopt_lot);
+   }
    if(slave_ticket > 0)
       G_PAIR_SLAVE_TICKET = slave_ticket;
    G_SLAVE_PAIR_OPEN_REPORT = (slave_open || slave_count > 0);
@@ -2695,6 +2767,7 @@ bool TryClearDegraded(const string reason)
    G_PAIR_ACTIVE = false;
    G_PAIR_KEY = "";
    G_PAIR_MASTER_TICKET = -1;
+   ClearPairMasterMeta();
    G_PAIR_SLAVE_TICKET = -1;
    G_SLAVE_PAIR_OPEN_REPORT = false;
    G_LAST_SLAVE_PAIR_STATUS_MS = 0;
@@ -2707,11 +2780,40 @@ bool TryClearDegraded(const string reason)
    return true;
 }
 
+void RememberPairMasterLeg(const ENUM_SIDE side, const double lots)
+{
+   G_PAIR_MASTER_SIDE = side;
+   G_PAIR_MASTER_LOT = lots;
+}
+
+void ClearPairMasterMeta()
+{
+   G_PAIR_MASTER_SIDE = SIDE_BUY;
+   G_PAIR_MASTER_LOT = 0.0;
+}
+
+bool SlaveLegConfirmedOpen()
+{
+   return (G_SLAVE_PAIR_OPEN_REPORT || G_SLAVE_EA_OPEN_COUNT > 0 || G_PAIR_SLAVE_TICKET > 0);
+}
+
+bool SlavePairStatusFresh()
+{
+   if(G_LAST_SLAVE_PAIR_STATUS_MS == 0)
+      return false;
+   return ((NowMs() - G_LAST_SLAVE_PAIR_STATUS_MS) <= (ulong)MathMax(200, I_PAIR_STATUS_STALE_MS));
+}
+
 bool TryRescueHedge()
 {
    if(NegDiffForceLatched())
       return false;
    if(I_CLOSE_MODE != CLOSE_MASTER_FIRST_WITH_RESCUE) return false;
+   if(G_PAIR_MASTER_LOT <= 0.0)
+   {
+      SyncLog("[SFX-SYNC] Rescue hedge skipped — original master lot unknown");
+      return false;
+   }
    const int max_att = MathMax(0, I_RESCUE_MAX_ATTEMPTS);
    if(G_RESCUE_ATTEMPTS_USED >= max_att)
    {
@@ -2722,8 +2824,8 @@ bool TryRescueHedge()
 
    G_RESCUE_ATTEMPTS_USED++;
    int err = 0;
-   ENUM_ORDER_TYPE type = SideToOrderType(DiffEffectiveMasterSide());
-   int rescue_ticket = OpenOrder(type, DynActiveLot(), err);
+   ENUM_ORDER_TYPE type = SideToOrderType(G_PAIR_MASTER_SIDE);
+   int rescue_ticket = OpenOrder(type, G_PAIR_MASTER_LOT, err);
    if(rescue_ticket > 0)
    {
       G_PAIR_MASTER_TICKET = rescue_ticket;
@@ -2746,6 +2848,8 @@ void FinalizeOpenCommit()
    G_PAIR_ACTIVE = true;
    G_PAIR_KEY = G_OPEN_TX_ID;
    G_PAIR_MASTER_TICKET = G_OPEN_MASTER_TICKET;
+   RememberPairMasterLeg((G_OPEN_SIDE == "SELL") ? SIDE_SELL : SIDE_BUY,
+                         (G_OPEN_LOT_SLAVE > 0.0) ? G_OPEN_LOT_SLAVE : DynActiveLot());
    G_PAIR_SLAVE_TICKET = G_OPEN_SLAVE_TICKET;
    G_SLAVE_PAIR_OPEN_REPORT = true;
    G_LAST_SLAVE_PAIR_STATUS_MS = NowMs();
@@ -2807,6 +2911,7 @@ void CompleteCloseSuccess()
    G_PAIR_ACTIVE = false;
    G_PAIR_KEY = "";
    G_PAIR_MASTER_TICKET = -1;
+   ClearPairMasterMeta();
    G_PAIR_SLAVE_TICKET = -1;
    G_SLAVE_PAIR_OPEN_REPORT = false;
    G_LAST_SLAVE_PAIR_STATUS_MS = 0;
@@ -2827,19 +2932,42 @@ void HandleCloseFailure(const string why)
    FillAuditFinish(false);
    NegDiffDisarmClose();
    SyncLog(StringFormat("[SFX-SYNC] CLOSE failed reason=%s", why));
-   if(why == "SLAVE_CLOSE_FAIL" || why == "SLAVE_CLOSE_TIMEOUT")
-      StartForceFlatSlave("CLOSE_PATH_RECONCILE");
+
+   const bool master_already_flat =
+      G_CLOSE_MASTER_OK &&
+      (G_PAIR_MASTER_TICKET <= 0 || !MasterPairLegTicketLive(G_PAIR_MASTER_TICKET));
+   const bool slave_confirmed_open = SlaveLegConfirmedOpen();
+   const bool want_force_flat = (why == "SLAVE_CLOSE_FAIL" || why == "SLAVE_CLOSE_TIMEOUT");
+   bool rescued = false;
+
    if(I_CLOSE_MODE == CLOSE_MASTER_FIRST_WITH_RESCUE)
    {
-      ExpertPrintLn(StringFormat("[SFX-SYNC] CLOSE failed reason=%s — trying rescue hedge", why));
-      if(TryRescueHedge())
+      bool allow_rescue = false;
+      if(master_already_flat && slave_confirmed_open)
       {
-         ResetCloseTxState();
-         return;
+         if(why == "SLAVE_CLOSE_FAIL")
+            allow_rescue = true;
+         else if((why == "SLAVE_CLOSE_TIMEOUT" || why == "CLOSE_OVERALL_TIMEOUT") && SlavePairStatusFresh())
+            allow_rescue = true;
+      }
+      if(allow_rescue)
+      {
+         ExpertPrintLn(StringFormat("[SFX-SYNC] CLOSE failed reason=%s — trying rescue hedge", why));
+         rescued = TryRescueHedge();
+      }
+      else
+      {
+         SyncLog(StringFormat("[SFX-SYNC] Rescue hedge skipped reason=%s master_flat=%s slave_open=%s",
+                              why, master_already_flat ? "true" : "false",
+                              slave_confirmed_open ? "true" : "false"));
       }
    }
-   MarkDegraded(why);
+
+   if(!rescued)
+      MarkDegraded(why);
    ResetCloseTxState();
+   if(!rescued && want_force_flat)
+      StartForceFlatSlave("CLOSE_PATH_RECONCILE");
 }
 
 void StartOpenTransaction()
@@ -2911,15 +3039,17 @@ void StartOpenTransaction()
       G_PAIR_OPEN_INTENT_MS = NowMs();
       SendMsg(G_PEER, BuildOpenIntent());
       const int max_attempts = 1 + MathMax(0, I_MASTER_OPEN_RETRY_COUNT_BALANCED);
-      const ulong open_started_ms = NowMs();
       for(int attempt = 1; attempt <= max_attempts; attempt++)
       {
-         G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), DynActiveLot(), err);
+         ulong known_tickets[];
+         const int known_n = SnapshotEaTicketsMt5(known_tickets);
+         const datetime opened_not_before = TimeCurrent();
+         G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), G_OPEN_LOT_SLAVE, err);
          G_OPEN_MASTER_OK = (G_OPEN_MASTER_TICKET > 0);
          if(!G_OPEN_MASTER_OK)
          {
             int recovered_ticket = -1;
-            if(RecoverMasterOpenTicketMt5(exec_side, open_started_ms, recovered_ticket))
+            if(RecoverMasterOpenTicketMt5(exec_side, G_OPEN_LOT_SLAVE, opened_not_before, known_tickets, known_n, recovered_ticket))
             {
                G_OPEN_MASTER_TICKET = recovered_ticket;
                G_OPEN_MASTER_OK = true;
@@ -2955,8 +3085,26 @@ void StartOpenTransaction()
    }
    else
    {
-      G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), DynActiveLot(), err);
+      ulong known_tickets[];
+      const int known_n = SnapshotEaTicketsMt5(known_tickets);
+      const datetime opened_not_before = TimeCurrent();
+      G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), G_OPEN_LOT_SLAVE, err);
       G_OPEN_MASTER_OK = (G_OPEN_MASTER_TICKET > 0);
+      if(!G_OPEN_MASTER_OK)
+      {
+         int recovered_ticket = -1;
+         if(RecoverMasterOpenTicketMt5(exec_side, G_OPEN_LOT_SLAVE, opened_not_before, known_tickets, known_n, recovered_ticket))
+         {
+            G_OPEN_MASTER_TICKET = recovered_ticket;
+            G_OPEN_MASTER_OK = true;
+            err = 0;
+            FillAuditNoteRecoveredPosition((ulong)recovered_ticket);
+            SyncLog(StringFormat("[SFX-SYNC] OPEN_MASTER_FIRST master recovered tx_id=%s ticket=%d",
+                                 G_OPEN_TX_ID, G_OPEN_MASTER_TICKET));
+            ExpertPrintLn(StringFormat("[SFX-SYNC] OPEN_MASTER_FIRST master recovered tx_id=%s ticket=%d",
+                                       G_OPEN_TX_ID, G_OPEN_MASTER_TICKET));
+         }
+      }
       G_OPEN_LAST_ERROR_MASTER = err;
       SyncLog(StringFormat("[SFX-SYNC] OPEN_MASTER_FIRST master result tx_id=%s ok=%s ticket=%d err=%d%s", G_OPEN_TX_ID, G_OPEN_MASTER_OK ? "true" : "false", G_OPEN_MASTER_TICKET, err, master_open_diff_snap));
       FillAuditTakeMasterLeg();
@@ -2977,7 +3125,7 @@ void StartCloseTransaction(const string reason)
       SyncLog(StringFormat("[SFX-SYNC] CLOSE blocked code=%s detail=%s", guard_code, guard_detail));
       return;
    }
-   if(G_CLOSE_TX_ACTIVE || G_OPEN_TX_ACTIVE) return;
+   if(G_CLOSE_TX_ACTIVE || G_OPEN_TX_ACTIVE || G_FORCE_FLAT_ACTIVE) return;
    if(!G_PAIR_ACTIVE)
    {
       SyncLog("[SFX-SYNC] CLOSE skipped: no active pair");
@@ -3241,7 +3389,25 @@ void HandleMasterIncomingPacket(const string msg)
          G_SLAVE_EA_OPEN_COUNT = 0;
          G_PAIR_SLAVE_TICKET = -1;
          ArmPostCloseOpenGuard("FORCE_FLAT_SYNC");
+         const bool master_flat = (G_PAIR_MASTER_TICKET <= 0 || !MasterPairLegTicketLive(G_PAIR_MASTER_TICKET));
          ResetForceFlatState();
+         if(G_PAIR_ACTIVE && master_flat)
+         {
+            G_PAIR_ACTIVE = false;
+            G_PAIR_KEY = "";
+            G_PAIR_MASTER_TICKET = -1;
+            ClearPairMasterMeta();
+            G_LAST_SLAVE_PAIR_STATUS_MS = 0;
+            G_PAIR_OPENED_MS = 0;
+            G_PAIR_OPEN_INTENT_MS = 0;
+            G_DEGRADED = false;
+            G_RESCUE_ATTEMPTS_USED = 0;
+            if(DiffIsMasterAuto())
+               DiffAutoUnlockSearching();
+            DynOnPairClosed(G_DYN_LAST_CLOSE_SCHEDULED);
+            G_DYN_LAST_CLOSE_SCHEDULED = false;
+            SyncLog("[SFX-SYNC] FORCE_FLAT reconciled both legs flat");
+         }
       }
       else if(G_FORCE_FLAT_RETRY_LEFT <= 0)
       {
@@ -3364,8 +3530,9 @@ void HandleSlaveIncomingPacket(const string msg)
          {
             int recovered_ticket = -1;
             const ENUM_SIDE rec_side = (type == ORDER_TYPE_BUY) ? SIDE_BUY : SIDE_SELL;
-            const ulong since_ms = (G_SLAVE_LAST_OPEN_STARTED_MS > 0) ? G_SLAVE_LAST_OPEN_STARTED_MS : 0;
-            if(RecoverMasterOpenTicketMt5(rec_side, since_ms, recovered_ticket) && recovered_ticket > 0)
+            if(RecoverMasterOpenTicketMt5(rec_side, G_SLAVE_LAST_OPEN_LOTS, G_SLAVE_LAST_OPEN_SERVER_TIME,
+                                          G_SLAVE_LAST_OPEN_EXCLUDE, G_SLAVE_LAST_OPEN_EXCLUDE_N, recovered_ticket)
+               && recovered_ticket > 0)
             {
                G_SLAVE_LAST_OPEN_OK = 1;
                G_SLAVE_LAST_OPEN_TICKET = recovered_ticket;
@@ -3387,6 +3554,9 @@ void HandleSlaveIncomingPacket(const string msg)
       }
 
       G_SLAVE_LAST_OPEN_STARTED_MS = NowMs();
+      G_SLAVE_LAST_OPEN_SERVER_TIME = TimeCurrent();
+      G_SLAVE_LAST_OPEN_LOTS = lot_slave;
+      G_SLAVE_LAST_OPEN_EXCLUDE_N = SnapshotEaTicketsMt5(G_SLAVE_LAST_OPEN_EXCLUDE);
       int err = 0;
       int tk = OpenOrder(type, lot_slave, err);
       bool ok = (tk > 0);
@@ -3426,6 +3596,10 @@ void HandleSlaveIncomingPacket(const string msg)
          G_SLAVE_LAST_OPEN_TICKET = -1;
          G_SLAVE_LAST_OPEN_ERR = 0;
          G_SLAVE_LAST_OPEN_STARTED_MS = 0;
+         G_SLAVE_LAST_OPEN_SERVER_TIME = 0;
+         G_SLAVE_LAST_OPEN_LOTS = 0.0;
+         G_SLAVE_LAST_OPEN_EXCLUDE_N = 0;
+         ArrayResize(G_SLAVE_LAST_OPEN_EXCLUDE, 0);
       }
       return;
    }
@@ -3589,7 +3763,7 @@ void MasterLoop()
       }
 
       // Post-commit leg mismatch -> immediate PAIR_BROKEN close-sync.
-      if(G_PAIR_ACTIVE && !G_CLOSE_TX_ACTIVE && !G_OPEN_TX_ACTIVE)
+      if(G_PAIR_ACTIVE && !G_CLOSE_TX_ACTIVE && !G_OPEN_TX_ACTIVE && !G_FORCE_FLAT_ACTIVE)
       {
          const ulong now_ms = NowMs();
          bool master_open = MasterPairLegTicketLive(G_PAIR_MASTER_TICKET);
