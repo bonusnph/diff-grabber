@@ -1615,6 +1615,44 @@ string FormatMatchTicketsMt4(const int &tickets[], const int n)
    return list;
 }
 
+string CanonicalMatchTicketSetMt4(const int &tickets[], const int n)
+{
+   int sorted[];
+   ArrayResize(sorted, n);
+   for(int i = 0; i < n; i++)
+      sorted[i] = tickets[i];
+   for(int a = 0; a < n; a++)
+   {
+      for(int b = a + 1; b < n; b++)
+      {
+         if(sorted[b] < sorted[a])
+         {
+            const int tmp = sorted[a];
+            sorted[a] = sorted[b];
+            sorted[b] = tmp;
+         }
+      }
+   }
+   return FormatMatchTicketsMt4(sorted, n);
+}
+
+string FormatMatchTicketsWithLotsMt4(const int &tickets[], const int n, const double expected_lots)
+{
+   string list = "";
+   for(int i = 0; i < n; i++)
+   {
+      if(i > 0)
+         list += ",";
+      list += IntegerToString(tickets[i]);
+      double real_lot = 0.0;
+      if(OrderSelect(tickets[i], SELECT_BY_TICKET, MODE_TRADES))
+         real_lot = OrderLots();
+      if(expected_lots > 0.0 && !LotsMatch(real_lot, expected_lots))
+         list += StringFormat("(lot=%.2f)", real_lot);
+   }
+   return list;
+}
+
 bool CloseTicketIfOpenWithPolicy(const int ticket, const bool retry_transient)
 {
    FillAuditClearCapture();
@@ -3084,6 +3122,7 @@ void StartOpenTransaction()
       const int known_n = SnapshotEaTicketsMt4(known_tickets);
       const datetime opened_not_before = TimeCurrent();
       int last_send_attempt = 0;
+      string dup_warned_set = "";
       for(int attempt = 1; attempt <= max_attempts; attempt++)
       {
          if(attempt >= 2)
@@ -3105,6 +3144,7 @@ void StartOpenTransaction()
                   ExpertPrintLn(warn);
                   HudBannerSet(warn, 20);
                   Alert(warn);
+                  dup_warned_set = CanonicalMatchTicketSetMt4(match_tickets, match_n);
                }
                G_OPEN_MASTER_TICKET = recovered_ticket;
                G_OPEN_MASTER_OK = true;
@@ -3131,6 +3171,7 @@ void StartOpenTransaction()
                   ExpertPrintLn(warn);
                   HudBannerSet(warn, 20);
                   Alert(warn);
+                  dup_warned_set = CanonicalMatchTicketSetMt4(partial_tickets, partial_n);
                }
                double real_lot = 0.0;
                if(OrderSelect(partial_ticket, SELECT_BY_TICKET, MODE_TRADES))
@@ -3191,15 +3232,20 @@ void StartOpenTransaction()
          int late_tickets[];
          int late_earliest = -1;
          const int late_n = CollectMatchingMasterOpenTicketsMt4(exec_side, G_OPEN_LOT_SLAVE, opened_not_before,
-                                                               known_tickets, known_n, late_tickets, late_earliest, true);
+                                                               known_tickets, known_n, late_tickets, late_earliest, false);
          if(late_n > 1)
          {
-            const string warn = StringFormat("[SFX-SYNC] DUPLICATE_MASTER_SUSPECT tx_id=%s attempt=%d tickets=%s",
-                                             G_OPEN_TX_ID, last_send_attempt, FormatMatchTicketsMt4(late_tickets, late_n));
-            SyncLog(warn);
-            ExpertPrintLn(warn);
-            HudBannerSet(warn, 20);
-            Alert(warn);
+            const string late_set = CanonicalMatchTicketSetMt4(late_tickets, late_n);
+            if(late_set != dup_warned_set)
+            {
+               const string warn = StringFormat("[SFX-SYNC] DUPLICATE_MASTER_SUSPECT tx_id=%s attempt=%d tickets=%s",
+                                                G_OPEN_TX_ID, last_send_attempt,
+                                                FormatMatchTicketsWithLotsMt4(late_tickets, late_n, G_OPEN_LOT_SLAVE));
+               SyncLog(warn);
+               ExpertPrintLn(warn);
+               HudBannerSet(warn, 20);
+               Alert(warn);
+            }
          }
       }
       FillAuditTakeMasterLeg();
