@@ -270,6 +270,8 @@ string G_PENDING_OPEN_INTENT_TAG = "UI_BUTTON";
 bool   G_PAIR_ACTIVE = false;
 string G_PAIR_KEY = "";
 int    G_PAIR_MASTER_TICKET = -1;
+ENUM_SIDE G_PAIR_MASTER_SIDE = SIDE_BUY;
+double    G_PAIR_MASTER_LOT = 0.0;
 int    G_PAIR_SLAVE_TICKET = -1;
 bool   G_SLAVE_PAIR_OPEN_REPORT = false;
 int    G_SLAVE_EA_OPEN_COUNT = 0;
@@ -330,6 +332,10 @@ int    G_SLAVE_LAST_OPEN_OK = -1; // -1 unknown, 0 fail, 1 success
 int    G_SLAVE_LAST_OPEN_TICKET = -1;
 int    G_SLAVE_LAST_OPEN_ERR = 0;
 ulong  G_SLAVE_LAST_OPEN_STARTED_MS = 0;
+datetime G_SLAVE_LAST_OPEN_SERVER_TIME = 0;
+double   G_SLAVE_LAST_OPEN_LOTS = 0.0;
+int      G_SLAVE_LAST_OPEN_EXCLUDE[];
+int      G_SLAVE_LAST_OPEN_EXCLUDE_N = 0;
 string G_SLAVE_PAIR_KEY = "";
 int    G_SLAVE_PAIR_TICKET = -1;
 
@@ -1259,6 +1265,10 @@ int CountEaOpenOrdersOnSlaveSymbol();
 void ResetForceFlatState();
 void StartForceFlatSlave(const string reason);
 void MonitorForceFlatState();
+void RememberPairMasterLeg(const ENUM_SIDE side, const double lots);
+void ClearPairMasterMeta();
+int SnapshotEaTicketsMt4(int &tickets[]);
+bool RecoverMasterOpenTicketMt4(const ENUM_SIDE side, const double lots, const datetime opened_not_before, const int &exclude_tickets[], const int exclude_n, int &ticket_out);
 void RefreshDiffHud();
 
 void DispatchMasterRaw(const string raw)
@@ -1351,7 +1361,10 @@ int OpenOrder(const int type, const double lots, int &err_out)
 {
    err_out = 0;
    FillAuditClearCapture();
-   const ulong opened_after_ms = NowMs();
+   int known_tickets[];
+   const int known_n = SnapshotEaTicketsMt4(known_tickets);
+   const datetime opened_not_before = TimeCurrent();
+   const ENUM_SIDE recover_side = (type == OP_BUY) ? SIDE_BUY : SIDE_SELL;
    string sym = G_SYMBOL;
    RefreshRates();
    ResetLastError();
@@ -1373,7 +1386,6 @@ int OpenOrder(const int type, const double lots, int &err_out)
    if(ticket < 0)
    {
       err_out = GetLastError();
-      const ENUM_SIDE side = isBuy ? SIDE_BUY : SIDE_SELL;
       int recovered_ticket = -1;
       if(IsMt4OpenTransientError(err_out))
       {
@@ -1382,7 +1394,7 @@ int OpenOrder(const int type, const double lots, int &err_out)
          // Broker can timeout/requote while order is already accepted upstream.
          while(NowMs() <= until_ms)
          {
-            if(RecoverMasterOpenTicketMt4(side, opened_after_ms, recovered_ticket))
+            if(RecoverMasterOpenTicketMt4(recover_side, lots, opened_not_before, known_tickets, known_n, recovered_ticket))
             {
                FillAuditNoteRecoveredPosition(recovered_ticket);
                return recovered_ticket;
@@ -1393,7 +1405,7 @@ int OpenOrder(const int type, const double lots, int &err_out)
       else
       {
          // One-shot safety net for non-transient errors in case the order was actually accepted.
-         if(RecoverMasterOpenTicketMt4(side, opened_after_ms, recovered_ticket))
+         if(RecoverMasterOpenTicketMt4(recover_side, lots, opened_not_before, known_tickets, known_n, recovered_ticket))
          {
             FillAuditNoteRecoveredPosition(recovered_ticket);
             return recovered_ticket;
@@ -1450,11 +1462,57 @@ bool IsMt4OpenTransientError(const int err)
    }
 }
 
-bool RecoverMasterOpenTicketMt4(const ENUM_SIDE side, const ulong opened_after_ms, int &ticket_out)
+bool LotsMatch(const double a, const double b)
+{
+   double step = MarketInfo(G_SYMBOL, MODE_LOTSTEP);
+   if(step <= 0.0)
+      step = 0.01;
+   return (MathAbs(a - b) <= (step * 0.5));
+}
+
+bool TicketInExcludeMt4(const int ticket, const int &exclude[], const int exclude_n)
+{
+   for(int i = 0; i < exclude_n; i++)
+   {
+      if(exclude[i] == ticket)
+         return true;
+   }
+   return false;
+}
+
+int SnapshotEaTicketsMt4(int &tickets[])
+{
+   int n = 0;
+   ArrayResize(tickets, OrdersTotal());
+   const int magic = OrderMagic();
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderCloseTime() != 0)
+         continue;
+      if(OrderSymbol() != G_SYMBOL)
+         continue;
+      if(OrderMagicNumber() != magic)
+         continue;
+      const int typ = OrderType();
+      if(typ != OP_BUY && typ != OP_SELL)
+         continue;
+      tickets[n++] = OrderTicket();
+   }
+   ArrayResize(tickets, n);
+   return n;
+}
+
+bool RecoverMasterOpenTicketMt4(const ENUM_SIDE side,
+                                const double lots,
+                                const datetime opened_not_before,
+                                const int &exclude_tickets[],
+                                const int exclude_n,
+                                int &ticket_out)
 {
    ticket_out = -1;
    const int want_type = (side == SIDE_BUY) ? OP_BUY : OP_SELL;
-   const long min_open_sec = (long)(opened_after_ms / 1000);
    int best_ticket = -1;
    datetime best_time = 0;
    for(int i = OrdersTotal() - 1; i >= 0; i--)
@@ -1467,13 +1525,18 @@ bool RecoverMasterOpenTicketMt4(const ENUM_SIDE side, const ulong opened_after_m
          continue;
       if(OrderType() != want_type)
          continue;
-      const long open_sec = (long)OrderOpenTime();
-      if(open_sec + 1 < min_open_sec)
+      const int tk = OrderTicket();
+      if(TicketInExcludeMt4(tk, exclude_tickets, exclude_n))
          continue;
-      if(OrderOpenTime() >= best_time)
+      if(lots > 0.0 && !LotsMatch(OrderLots(), lots))
+         continue;
+      const datetime pos_time = OrderOpenTime();
+      if(opened_not_before > 0 && pos_time + 2 < opened_not_before)
+         continue;
+      if(pos_time >= best_time)
       {
-         best_time = OrderOpenTime();
-         best_ticket = OrderTicket();
+         best_time = pos_time;
+         best_ticket = tk;
       }
    }
    if(best_ticket <= 0)
@@ -2174,6 +2237,7 @@ void CloseOnlyWeekendResetPair()
    G_PAIR_ACTIVE = false;
    G_PAIR_KEY = "";
    G_PAIR_MASTER_TICKET = -1;
+   ClearPairMasterMeta();
    G_PAIR_SLAVE_TICKET = -1;
    G_SLAVE_PAIR_OPEN_REPORT = false;
    G_LAST_SLAVE_PAIR_STATUS_MS = 0;
@@ -2273,6 +2337,10 @@ void SlaveWeekendReset()
    G_SLAVE_LAST_OPEN_TICKET = -1;
    G_SLAVE_LAST_OPEN_ERR = 0;
    G_SLAVE_LAST_OPEN_STARTED_MS = 0;
+   G_SLAVE_LAST_OPEN_SERVER_TIME = 0;
+   G_SLAVE_LAST_OPEN_LOTS = 0.0;
+   G_SLAVE_LAST_OPEN_EXCLUDE_N = 0;
+   ArrayResize(G_SLAVE_LAST_OPEN_EXCLUDE, 0);
 }
 
 void SlaveCheckPendingOpenTimeout()
@@ -2346,6 +2414,12 @@ void MasterTryAdoptOpenPair(const string pair_key, const int slave_ticket, const
    G_PAIR_ACTIVE = true;
    G_PAIR_KEY = pair_key;
    G_PAIR_MASTER_TICKET = ticket;
+   {
+      double adopt_lot = 0.0;
+      if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES) && OrderCloseTime() == 0)
+         adopt_lot = OrderLots();
+      RememberPairMasterLeg(is_buy ? SIDE_BUY : SIDE_SELL, adopt_lot);
+   }
    if(slave_ticket > 0)
       G_PAIR_SLAVE_TICKET = slave_ticket;
    G_SLAVE_PAIR_OPEN_REPORT = (slave_open || slave_count > 0);
@@ -2635,6 +2709,7 @@ bool TryClearDegraded(const string reason)
    G_PAIR_ACTIVE = false;
    G_PAIR_KEY = "";
    G_PAIR_MASTER_TICKET = -1;
+   ClearPairMasterMeta();
    G_PAIR_SLAVE_TICKET = -1;
    G_SLAVE_PAIR_OPEN_REPORT = false;
    G_LAST_SLAVE_PAIR_STATUS_MS = 0;
@@ -2647,11 +2722,40 @@ bool TryClearDegraded(const string reason)
    return true;
 }
 
+void RememberPairMasterLeg(const ENUM_SIDE side, const double lots)
+{
+   G_PAIR_MASTER_SIDE = side;
+   G_PAIR_MASTER_LOT = lots;
+}
+
+void ClearPairMasterMeta()
+{
+   G_PAIR_MASTER_SIDE = SIDE_BUY;
+   G_PAIR_MASTER_LOT = 0.0;
+}
+
+bool SlaveLegConfirmedOpen()
+{
+   return (G_SLAVE_PAIR_OPEN_REPORT || G_SLAVE_EA_OPEN_COUNT > 0 || G_PAIR_SLAVE_TICKET > 0);
+}
+
+bool SlavePairStatusFresh()
+{
+   if(G_LAST_SLAVE_PAIR_STATUS_MS == 0)
+      return false;
+   return ((NowMs() - G_LAST_SLAVE_PAIR_STATUS_MS) <= (ulong)MathMax(200, I_PAIR_STATUS_STALE_MS));
+}
+
 bool TryRescueHedge()
 {
    if(NegDiffForceLatched())
       return false;
    if(I_CLOSE_MODE != CLOSE_MASTER_FIRST_WITH_RESCUE) return false;
+   if(G_PAIR_MASTER_LOT <= 0.0)
+   {
+      SyncLog("[SFX-SYNC] Rescue hedge skipped — original master lot unknown");
+      return false;
+   }
    const int max_att = MathMax(0, I_RESCUE_MAX_ATTEMPTS);
    if(G_RESCUE_ATTEMPTS_USED >= max_att)
    {
@@ -2662,8 +2766,8 @@ bool TryRescueHedge()
 
    G_RESCUE_ATTEMPTS_USED++;
    int err = 0;
-   int type = SideToOrderType(DiffEffectiveMasterSide());
-   int rescue_ticket = OpenOrder(type, DynActiveLot(), err);
+   int type = SideToOrderType(G_PAIR_MASTER_SIDE);
+   int rescue_ticket = OpenOrder(type, G_PAIR_MASTER_LOT, err);
    if(rescue_ticket > 0)
    {
       G_PAIR_MASTER_TICKET = rescue_ticket;
@@ -2686,6 +2790,8 @@ void FinalizeOpenCommit()
    G_PAIR_ACTIVE = true;
    G_PAIR_KEY = G_OPEN_TX_ID;
    G_PAIR_MASTER_TICKET = G_OPEN_MASTER_TICKET;
+   RememberPairMasterLeg((G_OPEN_SIDE == "SELL") ? SIDE_SELL : SIDE_BUY,
+                         (G_OPEN_LOT_SLAVE > 0.0) ? G_OPEN_LOT_SLAVE : DynActiveLot());
    G_PAIR_SLAVE_TICKET = G_OPEN_SLAVE_TICKET;
    G_SLAVE_PAIR_OPEN_REPORT = true;
    G_LAST_SLAVE_PAIR_STATUS_MS = NowMs();
@@ -2749,6 +2855,7 @@ void CompleteCloseSuccess()
    G_PAIR_ACTIVE = false;
    G_PAIR_KEY = "";
    G_PAIR_MASTER_TICKET = -1;
+   ClearPairMasterMeta();
    G_PAIR_SLAVE_TICKET = -1;
    G_SLAVE_PAIR_OPEN_REPORT = false;
    G_LAST_SLAVE_PAIR_STATUS_MS = 0;
@@ -2769,31 +2876,42 @@ void HandleCloseFailure(const string why)
    FillAuditFinish(false);
    NegDiffDisarmClose();
    SyncLog(StringFormat("[SFX-SYNC] CLOSE failed reason=%s", why));
-   if(why == "SLAVE_CLOSE_FAIL" || why == "SLAVE_CLOSE_TIMEOUT")
-      StartForceFlatSlave("CLOSE_PATH_RECONCILE");
+
+   const bool master_already_flat =
+      G_CLOSE_MASTER_OK &&
+      (G_PAIR_MASTER_TICKET <= 0 || !MasterPairLegTicketLive(G_PAIR_MASTER_TICKET));
+   const bool slave_confirmed_open = SlaveLegConfirmedOpen();
+   const bool want_force_flat = (why == "SLAVE_CLOSE_FAIL" || why == "SLAVE_CLOSE_TIMEOUT");
+   bool rescued = false;
+
    if(I_CLOSE_MODE == CLOSE_MASTER_FIRST_WITH_RESCUE)
    {
-      const bool master_already_flat =
-         G_CLOSE_MASTER_OK &&
-         (G_PAIR_MASTER_TICKET <= 0 || !MasterPairLegTicketLive(G_PAIR_MASTER_TICKET));
-      if(master_already_flat &&
-         (why == "SLAVE_CLOSE_FAIL" || why == "SLAVE_CLOSE_TIMEOUT" || why == "CLOSE_OVERALL_TIMEOUT"))
+      bool allow_rescue = false;
+      if(master_already_flat && slave_confirmed_open)
+      {
+         if(why == "SLAVE_CLOSE_FAIL")
+            allow_rescue = true;
+         else if((why == "SLAVE_CLOSE_TIMEOUT" || why == "CLOSE_OVERALL_TIMEOUT") && SlavePairStatusFresh())
+            allow_rescue = true;
+      }
+      if(allow_rescue)
       {
          ExpertPrintLn(StringFormat("[SFX-SYNC] CLOSE failed reason=%s — trying rescue hedge", why));
-         if(TryRescueHedge())
-         {
-            ResetCloseTxState();
-            return;
-         }
+         rescued = TryRescueHedge();
       }
       else
       {
-         SyncLog(StringFormat("[SFX-SYNC] Rescue hedge skipped reason=%s master_flat=%s",
-                              why, master_already_flat ? "true" : "false"));
+         SyncLog(StringFormat("[SFX-SYNC] Rescue hedge skipped reason=%s master_flat=%s slave_open=%s",
+                              why, master_already_flat ? "true" : "false",
+                              slave_confirmed_open ? "true" : "false"));
       }
    }
-   MarkDegraded(why);
+
+   if(!rescued)
+      MarkDegraded(why);
    ResetCloseTxState();
+   if(!rescued && want_force_flat)
+      StartForceFlatSlave("CLOSE_PATH_RECONCILE");
 }
 
 void StartOpenTransaction()
@@ -2865,15 +2983,17 @@ void StartOpenTransaction()
       G_PAIR_OPEN_INTENT_MS = NowMs();
       SendMsg(G_PEER, BuildOpenIntent());
       const int max_attempts = 1 + MathMax(0, I_MASTER_OPEN_RETRY_COUNT_BALANCED);
-      const ulong open_started_ms = NowMs();
       for(int attempt = 1; attempt <= max_attempts; attempt++)
       {
-         G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), DynActiveLot(), err);
+         int known_tickets[];
+         const int known_n = SnapshotEaTicketsMt4(known_tickets);
+         const datetime opened_not_before = TimeCurrent();
+         G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), G_OPEN_LOT_SLAVE, err);
          G_OPEN_MASTER_OK = (G_OPEN_MASTER_TICKET > 0);
          if(!G_OPEN_MASTER_OK)
          {
             int recovered_ticket = -1;
-            if(RecoverMasterOpenTicketMt4(exec_side, open_started_ms, recovered_ticket))
+            if(RecoverMasterOpenTicketMt4(exec_side, G_OPEN_LOT_SLAVE, opened_not_before, known_tickets, known_n, recovered_ticket))
             {
                G_OPEN_MASTER_TICKET = recovered_ticket;
                G_OPEN_MASTER_OK = true;
@@ -2909,13 +3029,15 @@ void StartOpenTransaction()
    }
    else
    {
-      const ulong open_started_ms = NowMs();
-      G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), DynActiveLot(), err);
+      int known_tickets[];
+      const int known_n = SnapshotEaTicketsMt4(known_tickets);
+      const datetime opened_not_before = TimeCurrent();
+      G_OPEN_MASTER_TICKET = OpenOrder(SideToOrderType(exec_side), G_OPEN_LOT_SLAVE, err);
       G_OPEN_MASTER_OK = (G_OPEN_MASTER_TICKET > 0);
       if(!G_OPEN_MASTER_OK)
       {
          int recovered_ticket = -1;
-         if(RecoverMasterOpenTicketMt4(exec_side, open_started_ms, recovered_ticket))
+         if(RecoverMasterOpenTicketMt4(exec_side, G_OPEN_LOT_SLAVE, opened_not_before, known_tickets, known_n, recovered_ticket))
          {
             G_OPEN_MASTER_TICKET = recovered_ticket;
             G_OPEN_MASTER_OK = true;
@@ -2947,7 +3069,7 @@ void StartCloseTransaction(const string reason)
       SyncLog(StringFormat("[SFX-SYNC] CLOSE blocked code=%s detail=%s", guard_code, guard_detail));
       return;
    }
-   if(G_CLOSE_TX_ACTIVE || G_OPEN_TX_ACTIVE) return;
+   if(G_CLOSE_TX_ACTIVE || G_OPEN_TX_ACTIVE || G_FORCE_FLAT_ACTIVE) return;
    if(!G_PAIR_ACTIVE)
    {
       SyncLog("[SFX-SYNC] CLOSE skipped: no active pair");
@@ -3209,7 +3331,25 @@ void HandleMasterIncomingPacket(const string msg)
          G_SLAVE_EA_OPEN_COUNT = 0;
          G_PAIR_SLAVE_TICKET = -1;
          ArmPostCloseOpenGuard("FORCE_FLAT_SYNC");
+         const bool master_flat = (G_PAIR_MASTER_TICKET <= 0 || !MasterPairLegTicketLive(G_PAIR_MASTER_TICKET));
          ResetForceFlatState();
+         if(G_PAIR_ACTIVE && master_flat)
+         {
+            G_PAIR_ACTIVE = false;
+            G_PAIR_KEY = "";
+            G_PAIR_MASTER_TICKET = -1;
+            ClearPairMasterMeta();
+            G_LAST_SLAVE_PAIR_STATUS_MS = 0;
+            G_PAIR_OPENED_MS = 0;
+            G_PAIR_OPEN_INTENT_MS = 0;
+            G_DEGRADED = false;
+            G_RESCUE_ATTEMPTS_USED = 0;
+            if(DiffIsMasterAuto())
+               DiffAutoUnlockSearching();
+            DynOnPairClosed(G_DYN_LAST_CLOSE_SCHEDULED);
+            G_DYN_LAST_CLOSE_SCHEDULED = false;
+            SyncLog("[SFX-SYNC] FORCE_FLAT reconciled both legs flat");
+         }
       }
       else if(G_FORCE_FLAT_RETRY_LEFT <= 0)
       {
@@ -3327,8 +3467,9 @@ void HandleSlaveIncomingPacket(const string msg)
          {
             int recovered_ticket = -1;
             const ENUM_SIDE rec_side = (type == OP_BUY) ? SIDE_BUY : SIDE_SELL;
-            const ulong since_ms = (G_SLAVE_LAST_OPEN_STARTED_MS > 0) ? G_SLAVE_LAST_OPEN_STARTED_MS : 0;
-            if(RecoverMasterOpenTicketMt4(rec_side, since_ms, recovered_ticket) && recovered_ticket > 0)
+            if(RecoverMasterOpenTicketMt4(rec_side, G_SLAVE_LAST_OPEN_LOTS, G_SLAVE_LAST_OPEN_SERVER_TIME,
+                                          G_SLAVE_LAST_OPEN_EXCLUDE, G_SLAVE_LAST_OPEN_EXCLUDE_N, recovered_ticket)
+               && recovered_ticket > 0)
             {
                G_SLAVE_LAST_OPEN_OK = 1;
                G_SLAVE_LAST_OPEN_TICKET = recovered_ticket;
@@ -3350,6 +3491,9 @@ void HandleSlaveIncomingPacket(const string msg)
       }
 
       G_SLAVE_LAST_OPEN_STARTED_MS = NowMs();
+      G_SLAVE_LAST_OPEN_SERVER_TIME = TimeCurrent();
+      G_SLAVE_LAST_OPEN_LOTS = lot_slave;
+      G_SLAVE_LAST_OPEN_EXCLUDE_N = SnapshotEaTicketsMt4(G_SLAVE_LAST_OPEN_EXCLUDE);
       int err = 0;
       int tk = OpenOrder(type, lot_slave, err);
       bool ok = (tk > 0);
@@ -3389,6 +3533,10 @@ void HandleSlaveIncomingPacket(const string msg)
          G_SLAVE_LAST_OPEN_TICKET = -1;
          G_SLAVE_LAST_OPEN_ERR = 0;
          G_SLAVE_LAST_OPEN_STARTED_MS = 0;
+         G_SLAVE_LAST_OPEN_SERVER_TIME = 0;
+         G_SLAVE_LAST_OPEN_LOTS = 0.0;
+         G_SLAVE_LAST_OPEN_EXCLUDE_N = 0;
+         ArrayResize(G_SLAVE_LAST_OPEN_EXCLUDE, 0);
       }
       return;
    }
@@ -3550,7 +3698,7 @@ void MasterLoop()
       }
 
       // Post-commit leg mismatch -> immediate PAIR_BROKEN close-sync.
-      if(G_PAIR_ACTIVE && !G_CLOSE_TX_ACTIVE && !G_OPEN_TX_ACTIVE)
+      if(G_PAIR_ACTIVE && !G_CLOSE_TX_ACTIVE && !G_OPEN_TX_ACTIVE && !G_FORCE_FLAT_ACTIVE)
       {
          ulong now_ms = NowMs();
          bool master_open = MasterPairLegTicketLive(G_PAIR_MASTER_TICKET);
