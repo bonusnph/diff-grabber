@@ -3,7 +3,10 @@
 //|                                  Copyright 2026, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#define SFX_SYNC_EA_VERSION "1.27"
+#define SFX_SYNC_EA_VERSION "1.28"
+#ifndef SFX_SYNC_PROTOCOL_VERSION
+#define SFX_SYNC_PROTOCOL_VERSION "1.27"
+#endif
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -215,12 +218,8 @@ input bool        I_NEG_DIFF_FORCE_ENABLED = false; // Close-only after consecut
 input int         I_NEG_DIFF_FORCE_PTS = -1;        // Hit when realized fill pts of a completed pair-tx <= this
 input int         I_NEG_DIFF_FORCE_COUNT = 5;       // Consecutive losing OPEN or CLOSE pair-tx before close-only
 input bool        I_NEG_DIFF_FORCE_CLEAR_STATE = false; // One-shot: delete this port's neg-diff keys (then set false)
-input ENUM_SFX_NOTIFY I_NOTIFY_CHANNEL = NOTIFY_OFF; // Notification channel (MT Push/Both for time-critical)
-input int         I_PUSH_MIN_INTERVAL_SEC = 60;     // Min seconds between same-event alerts
-input bool        I_NOTIFY_TEST_ON_INIT = false;    // Send one test alert on attach
-input string      I_TG_BOT_TOKEN = "";              // Optional token; prefer I_TG_TOKEN_FILE (never logged)
-input string      I_TG_CHAT_ID = "";                // Telegram chat id (user or -group)
-input string      I_TG_TOKEN_FILE = "SFX-SYNC-telegram-token.txt"; // Common Files token if I_TG_BOT_TOKEN empty
+input ENUM_SFX_NOTIFY I_NOTIFY_CHANNEL = NOTIFY_OFF; // Off / MT Push / Telegram (queue) / Both
+input bool        I_NOTIFY_TEST_ON_INIT = false;    // Master only: one test alert on attach
 
 bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
 int               I_DIFF_ZONE_STABILITY_TICKS = 7;         // Ticks in positive zone required
@@ -3207,21 +3206,21 @@ void HandleMasterIncomingPacket(const string msg)
          return;
       }
       string peer_version = (ArraySize(p) >= 4) ? p[3] : "";
-      if(peer_version != SFX_SYNC_EA_VERSION)
+      if(peer_version != SFX_SYNC_PROTOCOL_VERSION)
       {
          string ln = StringFormat(
             "[SFX-SYNC] HELLO version mismatch local=%s peer=%s — rejecting and detaching",
-            SFX_SYNC_EA_VERSION,
+            SFX_SYNC_PROTOCOL_VERSION,
             StringLen(peer_version) > 0 ? peer_version : "<unknown>");
          SyncLog(ln);
          ExpertPrintLn(ln);
          Alert(StringFormat("[SFX-SYNC] Version mismatch local=%s peer=%s — EA detaching",
-                            SFX_SYNC_EA_VERSION,
+                            SFX_SYNC_PROTOCOL_VERSION,
                             StringLen(peer_version) > 0 ? peer_version : "<unknown>"));
          NotifyEventAndFlushTg("VERSION_MISMATCH",
-                               StringFormat("local=%s peer=%s", SFX_SYNC_EA_VERSION,
+                               StringFormat("local=%s peer=%s", SFX_SYNC_PROTOCOL_VERSION,
                                             StringLen(peer_version) > 0 ? peer_version : "<unknown>"));
-         SendMsg(G_PEER, StringFormat("HELLO_ACK;VERSION_MISMATCH;%s", SFX_SYNC_EA_VERSION));
+         SendMsg(G_PEER, StringFormat("HELLO_ACK;VERSION_MISMATCH;%s", SFX_SYNC_PROTOCOL_VERSION));
          CloseClient(G_PEER);
          ExpertRemove();
          return;
@@ -3229,7 +3228,7 @@ void HandleMasterIncomingPacket(const string msg)
       G_HANDSHAKE_OK = true;
       G_LINK_PAIR_STATUS_SEEN = false;
       G_LAST_SLAVE_PAIR_STATUS_MS = 0;
-      SendMsg(G_PEER, StringFormat("HELLO_ACK;YES;%s", SFX_SYNC_EA_VERSION));
+      SendMsg(G_PEER, StringFormat("HELLO_ACK;YES;%s", SFX_SYNC_PROTOCOL_VERSION));
       ExpertPrintLn(StringFormat("Handshake OK slave_account=%s ver=%s", p[2], peer_version));
       G_AUDIT_SLAVE_ACCOUNT = p[2];
       SyncLog(StringFormat("[SFX-SYNC] Slave handshake success account=%s ver=%s", p[2], peer_version));
@@ -3451,13 +3450,13 @@ void HandleSlaveIncomingPacket(const string msg)
          string peer_v = (ArraySize(p) >= 3) ? p[2] : "<unknown>";
          string ln = StringFormat(
             "[SFX-SYNC] HELLO_ACK VERSION_MISMATCH local=%s master=%s — detaching",
-            SFX_SYNC_EA_VERSION, peer_v);
+            SFX_SYNC_PROTOCOL_VERSION, peer_v);
          SyncLog(ln);
          ExpertPrintLn(ln);
          Alert(StringFormat("[SFX-SYNC] Version mismatch local=%s master=%s — EA detaching",
-                            SFX_SYNC_EA_VERSION, peer_v));
+                            SFX_SYNC_PROTOCOL_VERSION, peer_v));
          NotifyEventAndFlushTg("VERSION_MISMATCH",
-                               StringFormat("local=%s master=%s", SFX_SYNC_EA_VERSION, peer_v));
+                               StringFormat("local=%s master=%s", SFX_SYNC_PROTOCOL_VERSION, peer_v));
          G_HANDSHAKE_OK = false;
          CloseClient(G_PEER);
          ExpertRemove();
@@ -3893,7 +3892,7 @@ void SlaveLoop()
       G_SLAVE_HELLO_SENT_MS = 0;
       if(G_PEER != NULL && G_PEER.IsSocketConnected())
       {
-         SendMsg(G_PEER, StringFormat("HELLO;%s;%d;%s", I_SECRET, AccountNumber(), SFX_SYNC_EA_VERSION));
+         SendMsg(G_PEER, StringFormat("HELLO;%s;%d;%s", I_SECRET, AccountNumber(), SFX_SYNC_PROTOCOL_VERSION));
          G_SLAVE_HELLO_SENT_MS = NowMs();
       }
    }
