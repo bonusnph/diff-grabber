@@ -33,6 +33,7 @@ string G_RESOLVED_TOKEN = "";
 bool   G_TG_OK = false;
 bool   G_PERM_DISABLED = false;
 bool   G_PERM_LOGGED = false;
+bool   G_SKIP400_LOGGED = false;
 ulong  G_BACKOFF_UNTIL_MS = 0;
 int    G_ERR_BACKOFF_SEC = 5;
 bool   G_FAIL_LOGGED = false;
@@ -222,6 +223,70 @@ int NotifyExtractRetryAfterSec(const string src)
    return val;
 }
 
+string NotifyAsciiLower(const string s)
+{
+   string t = s;
+   const int n = StringLen(t);
+   for(int i = 0; i < n; i++)
+   {
+      const int c = StringGetCharacter(t, i);
+      if(c >= 'A' && c <= 'Z')
+         StringSetCharacter(t, i, (ushort)(c + 32));
+   }
+   return t;
+}
+
+bool NotifyIFind(const string hay, const string needle)
+{
+   return (StringFind(NotifyAsciiLower(hay), NotifyAsciiLower(needle)) >= 0);
+}
+
+string NotifyExtractMigrateChatId(const string src)
+{
+   const string lower = NotifyAsciiLower(src);
+   const int p = StringFind(lower, "migrate_to_chat_id");
+   if(p < 0)
+      return "";
+   const int n = StringLen(src);
+   int i = p + 18;
+   while(i < n)
+   {
+      const int c = StringGetCharacter(src, i);
+      if(c == '-' || (c >= '0' && c <= '9'))
+         break;
+      i++;
+   }
+   string out = "";
+   if(i < n && StringGetCharacter(src, i) == '-')
+   {
+      out = "-";
+      i++;
+   }
+   int digits = 0;
+   while(i < n)
+   {
+      const int c = StringGetCharacter(src, i);
+      if(c < '0' || c > '9')
+         break;
+      out += NotifyCharToStr(c);
+      digits++;
+      i++;
+      if(digits >= 20)
+         break;
+   }
+   if(digits <= 0)
+      return "";
+   return out;
+}
+
+bool NotifyHttp400IsChatFatal(const string body)
+{
+   return (NotifyIFind(body, "chat not found") ||
+           NotifyIFind(body, "migrate_to_chat_id") ||
+           NotifyIFind(body, "upgraded to a supergroup") ||
+           NotifyIFind(body, "chat_id is empty"));
+}
+
 int FileReadChunk(const int h, uchar &buf[], const int maxn)
 {
    if(maxn <= 0)
@@ -352,6 +417,8 @@ bool OffsetReadNamed(const string name, long &off, string &qid)
 
 bool OffsetSave()
 {
+   if(G_LOCK_HANDLE == INVALID_HANDLE)
+      return false;
    ResetLastError();
    const int h = FileOpen(SFX_NOTIFY_STATE_TMP, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
    if(h == INVALID_HANDLE)
@@ -454,7 +521,10 @@ bool NotifierLockTry()
    ResetLastError();
    G_LOCK_HANDLE = FileOpen(SFX_NOTIFY_LOCK_FILE, FILE_WRITE|FILE_BIN|FILE_COMMON);
    if(G_LOCK_HANDLE != INVALID_HANDLE)
+   {
+      OffsetInitOnAttach();
       return true;
+   }
    const ulong now = NowMs();
    if(G_LOCK_LAST_PRINT_MS == 0 || (now - G_LOCK_LAST_PRINT_MS) >= (ulong)SFX_NOTIFY_LOCK_PRINT_MS)
    {
@@ -531,7 +601,8 @@ void RecoverRotateTail(const long qsize_at_check)
          ArrayResize(complete, last_nl + 1);
          for(int c = 0; c <= last_nl; c++)
             complete[c] = merged[c];
-         QueueAppendBytes(complete, last_nl + 1);
+         if(!QueueAppendBytes(complete, last_nl + 1))
+            Print("[SFX-SYNC-NOTIFIER] rotate tail append failed");
          leftover_n = total - (last_nl + 1);
          ArrayResize(leftover, leftover_n);
          for(int r = 0; r < leftover_n; r++)
@@ -590,7 +661,31 @@ int NotifyTelegramPost(const string text)
    const int err = GetLastError();
    if(http == 400)
    {
-      Print("[SFX-SYNC-NOTIFIER] Telegram HTTP 400 - skipping this line (malformed payload, token not logged)");
+      const string resp = CharArrayToString(resultData);
+      if(NotifyHttp400IsChatFatal(resp))
+      {
+         if(!G_PERM_LOGGED)
+         {
+            const string mig = NotifyExtractMigrateChatId(resp);
+            string warn = "[SFX-SYNC-NOTIFIER] Telegram HTTP 400 chat/config error - sending disabled until reinit (token not logged)";
+            if(StringLen(mig) > 0)
+               warn += ". New chat id from migrate_to_chat_id: " + mig;
+            Print(warn);
+            Alert(warn);
+            G_PERM_LOGGED = true;
+         }
+         G_PERM_DISABLED = true;
+         G_TG_OK = false;
+         // Keep SFX-SYNC-notifier.lock until OnDeinit so a second instance does not send in parallel.
+         return -2;
+      }
+      const string skip = "[SFX-SYNC-NOTIFIER] Telegram HTTP 400 - skipping this line (malformed payload, token not logged)";
+      Print(skip);
+      if(!G_SKIP400_LOGGED)
+      {
+         Alert(skip);
+         G_SKIP400_LOGGED = true;
+      }
       return 2;
    }
    if(http == 401 || http == 403 || http == 404)
@@ -762,12 +857,8 @@ void ProcessQueueOnce()
    }
    if(advance)
    {
-      if(StringLen(G_QUEUE_FIRST_ID) <= 0)
-      {
-         const int tab = StringFind(trimmed, "\t");
-         if(tab > 0)
-            G_QUEUE_FIRST_ID = StringSubstr(trimmed, 0, tab);
-      }
+      if(StringLen(G_QUEUE_FIRST_ID) <= 0 && G_QUEUE_OFFSET > 0)
+         G_QUEUE_FIRST_ID = QueueFirstLineId();
       G_QUEUE_OFFSET += line_bytes;
       OffsetSave();
       if(G_QUEUE_OFFSET >= qsize)
@@ -781,6 +872,7 @@ int OnInit()
    G_TG_OK = false;
    G_PERM_DISABLED = false;
    G_PERM_LOGGED = false;
+   G_SKIP400_LOGGED = false;
    G_BACKOFF_UNTIL_MS = 0;
    G_ERR_BACKOFF_SEC = 5;
    G_FAIL_LOGGED = false;
