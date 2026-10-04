@@ -2831,11 +2831,23 @@ void HandleCloseFailure(const string why)
       StartForceFlatSlave("CLOSE_PATH_RECONCILE");
    if(I_CLOSE_MODE == CLOSE_MASTER_FIRST_WITH_RESCUE)
    {
-      ExpertPrintLn(StringFormat("[SFX-SYNC] CLOSE failed reason=%s — trying rescue hedge", why));
-      if(TryRescueHedge())
+      const bool master_already_flat =
+         G_CLOSE_MASTER_OK &&
+         (G_PAIR_MASTER_TICKET <= 0 || !MasterPairLegTicketLive(G_PAIR_MASTER_TICKET));
+      if(master_already_flat &&
+         (why == "SLAVE_CLOSE_FAIL" || why == "SLAVE_CLOSE_TIMEOUT" || why == "CLOSE_OVERALL_TIMEOUT"))
       {
-         ResetCloseTxState();
-         return;
+         ExpertPrintLn(StringFormat("[SFX-SYNC] CLOSE failed reason=%s — trying rescue hedge", why));
+         if(TryRescueHedge())
+         {
+            ResetCloseTxState();
+            return;
+         }
+      }
+      else
+      {
+         SyncLog(StringFormat("[SFX-SYNC] Rescue hedge skipped reason=%s master_flat=%s",
+                              why, master_already_flat ? "true" : "false"));
       }
    }
    MarkDegraded(why);
