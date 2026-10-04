@@ -2820,8 +2820,7 @@ void HandleCloseFailure(const string why)
    FillAuditFinish(false);
    NegDiffDisarmClose();
    SyncLog(StringFormat("[SFX-SYNC] CLOSE failed reason=%s", why));
-   if(why == "SLAVE_CLOSE_FAIL" || why == "SLAVE_CLOSE_TIMEOUT")
-      StartForceFlatSlave("CLOSE_PATH_RECONCILE");
+   const bool want_force_flat = (why == "SLAVE_CLOSE_FAIL" || why == "SLAVE_CLOSE_TIMEOUT");
    if(I_CLOSE_MODE == CLOSE_MASTER_FIRST_WITH_RESCUE)
    {
       ExpertPrintLn(StringFormat("[SFX-SYNC] CLOSE failed reason=%s — trying rescue hedge", why));
@@ -2833,6 +2832,8 @@ void HandleCloseFailure(const string why)
    }
    MarkDegraded(why);
    ResetCloseTxState();
+   if(want_force_flat)
+      StartForceFlatSlave("CLOSE_PATH_RECONCILE");
 }
 
 void StartOpenTransaction()
