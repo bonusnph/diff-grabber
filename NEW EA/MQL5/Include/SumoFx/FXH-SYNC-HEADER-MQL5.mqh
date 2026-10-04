@@ -649,7 +649,12 @@ bool NotifyQueueFileAppend(const string line)
 void NotifyQueuePendingAdd(const string line)
 {
    if(G_NOTIFY_FILE_PENDING_N >= SFX_NOTIFY_PEND_FILE_MAX)
+   {
+      const string ln = "[SFX-SYNC] notify queue pending slots full - dropping a line";
+      Print(ln);
+      SyncLog(ln);
       return;
+   }
    G_NOTIFY_FILE_PENDING[G_NOTIFY_FILE_PENDING_N] = line;
    G_NOTIFY_FILE_PENDING_N++;
 }

@@ -2,7 +2,7 @@
 //|                                            SFX-SYNC-NOTIFIER.mq5 |
 //| Standalone Telegram sender for SFX-SYNC. Attach on any other     |
 //| chart so WebRequest cannot stall the trading EA.                 |
-//| One notifier per PC (SFXNOTIFIER_LOCK).                          |
+//| One notifier per PC via SFX-SYNC-notifier.lock (all terminals).  |
 //+------------------------------------------------------------------+
 #define SFX_SYNC_NOTIFIER_VERSION "1.28"
 
@@ -14,13 +14,15 @@
 #define SFX_NOTIFY_QUEUE_FILE "SFX-SYNC-notify-queue.txt"
 #define SFX_NOTIFY_QUEUE_OLD  "SFX-SYNC-notify-queue.txt.old"
 #define SFX_NOTIFY_STATE_FILE "SFX-SYNC-notify-offset.txt"
+#define SFX_NOTIFY_STATE_TMP  "SFX-SYNC-notify-offset.tmp"
+#define SFX_NOTIFY_LOCK_FILE  "SFX-SYNC-notifier.lock"
 #define SFX_NOTIFY_TG_TIMEOUT_MS 5000
 #define SFX_NOTIFY_TG_RETRY_MAX_SEC 300
 #define SFX_NOTIFY_TG_BACKOFF_DEFAULT_SEC 30
 #define SFX_NOTIFY_FAIL_PRINT_MS 60000
+#define SFX_NOTIFY_LOCK_PRINT_MS 60000
 #define SFX_NOTIFY_ROTATE_BYTES 65536
-#define SFX_NOTIFIER_LOCK_GV "SFXNOTIFIER_LOCK"
-#define SFX_NOTIFIER_LOCK_STALE_SEC 30
+#define SFX_NOTIFY_READ_CHUNK 4096
 
 input string I_TG_BOT_TOKEN = "";              // Optional token; prefer I_TG_TOKEN_FILE (never logged)
 input string I_TG_CHAT_ID = "";                // Telegram chat id (user or -group)
@@ -38,8 +40,9 @@ bool   G_429_LOGGED = false;
 ulong  G_LAST_FAIL_PRINT_MS = 0;
 ulong  G_429_LAST_PRINT_MS = 0;
 long   G_QUEUE_OFFSET = 0;
-bool   G_HAVE_LOCK = false;
-bool   G_LOCK_LOGGED = false;
+string G_QUEUE_FIRST_ID = "";
+int    G_LOCK_HANDLE = INVALID_HANDLE;
+ulong  G_LOCK_LAST_PRINT_MS = 0;
 
 ulong NowMs()
 {
@@ -219,6 +222,22 @@ int NotifyExtractRetryAfterSec(const string src)
    return val;
 }
 
+int FileReadChunk(const int h, uchar &buf[], const int maxn)
+{
+   if(maxn <= 0)
+      return 0;
+   ArrayResize(buf, maxn);
+   const int got = (int)FileReadArray(h, buf, 0, maxn);
+   if(got <= 0)
+   {
+      ArrayResize(buf, 0);
+      return 0;
+   }
+   if(got < maxn)
+      ArrayResize(buf, got);
+   return got;
+}
+
 int QueueOpenRead()
 {
    ResetLastError();
@@ -226,30 +245,46 @@ int QueueOpenRead()
                    FILE_READ|FILE_BIN|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
 }
 
-bool OffsetSave()
+int LineIdFromBuf(uchar &buf[], const int n, string &id)
 {
-   ResetLastError();
-   const int h = FileOpen(SFX_NOTIFY_STATE_FILE,
-                          FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
-   if(h == INVALID_HANDLE)
-      return false;
-   FileWriteString(h, StringFormat("%I64d\n", G_QUEUE_OFFSET));
-   FileClose(h);
-   return true;
+   int nl = -1;
+   for(int i = 0; i < n; i++)
+   {
+      if((int)buf[i] == '\n')
+      {
+         nl = i;
+         break;
+      }
+   }
+   if(nl < 0)
+      return 0;
+   int end = nl;
+   if(end > 0 && (int)buf[end - 1] == '\r')
+      end--;
+   string line = "";
+   for(int j = 0; j < end; j++)
+      line += NotifyCharToStr((int)buf[j]);
+   line = NotifyTrim(line);
+   const int tab = StringFind(line, "\t");
+   if(tab <= 0)
+      id = line;
+   else
+      id = StringSubstr(line, 0, tab);
+   return (nl + 1);
 }
 
-long OffsetLoad()
+string QueueFirstLineId()
 {
-   ResetLastError();
-   const int h = FileOpen(SFX_NOTIFY_STATE_FILE,
-                          FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   const int h = QueueOpenRead();
    if(h == INVALID_HANDLE)
-      return -1;
-   const string raw = NotifyTrim(FileReadString(h));
+      return "";
+   uchar buf[];
+   const int got = FileReadChunk(h, buf, SFX_NOTIFY_READ_CHUNK);
    FileClose(h);
-   if(StringLen(raw) <= 0)
-      return 0;
-   return StringToInteger(raw);
+   string id = "";
+   if(got > 0)
+      LineIdFromBuf(buf, got, id);
+   return id;
 }
 
 int CountCompleteLines(const int h, const long upto)
@@ -257,80 +292,260 @@ int CountCompleteLines(const int h, const long upto)
    int n = 0;
    FileSeek(h, 0, SEEK_SET);
    long pos = 0;
-   while(pos < upto && !FileIsEnding(h))
+   uchar buf[];
+   while(pos < upto)
    {
-      const int c = FileReadInteger(h, CHAR_VALUE);
-      pos++;
-      if(c == '\n')
-         n++;
+      int want = SFX_NOTIFY_READ_CHUNK;
+      if((long)want > (upto - pos))
+         want = (int)(upto - pos);
+      const int got = FileReadChunk(h, buf, want);
+      if(got <= 0)
+         break;
+      for(int i = 0; i < got; i++)
+      {
+         if((int)buf[i] == '\n')
+            n++;
+      }
+      pos += got;
    }
    return n;
 }
 
+bool OffsetParse(const string raw, long &off, string &qid)
+{
+   const string t = NotifyTrim(raw);
+   if(StringLen(t) <= 0)
+      return false;
+   int tab = StringFind(t, "\t");
+   string num = t;
+   string id = "";
+   if(tab >= 0)
+   {
+      num = StringSubstr(t, 0, tab);
+      id = NotifyTrim(StringSubstr(t, tab + 1));
+   }
+   if(StringLen(num) <= 0)
+      return false;
+   for(int i = 0; i < StringLen(num); i++)
+   {
+      const int c = StringGetCharacter(num, i);
+      if(c < '0' || c > '9')
+         return false;
+   }
+   off = StringToInteger(num);
+   if(off < 0)
+      return false;
+   qid = id;
+   return true;
+}
+
+bool OffsetReadNamed(const string name, long &off, string &qid)
+{
+   ResetLastError();
+   const int h = FileOpen(name, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(h == INVALID_HANDLE)
+      return false;
+   const string raw = FileReadString(h);
+   FileClose(h);
+   return OffsetParse(raw, off, qid);
+}
+
+bool OffsetSave()
+{
+   ResetLastError();
+   const int h = FileOpen(SFX_NOTIFY_STATE_TMP, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(h == INVALID_HANDLE)
+      return false;
+   FileWriteString(h, StringFormat("%I64d\t%s\n", G_QUEUE_OFFSET, G_QUEUE_FIRST_ID));
+   FileClose(h);
+   FileDelete(SFX_NOTIFY_STATE_FILE, FILE_COMMON);
+   if(!FileMove(SFX_NOTIFY_STATE_TMP, FILE_COMMON, SFX_NOTIFY_STATE_FILE, FILE_COMMON))
+      return false;
+   return true;
+}
+
+void OffsetFirstAttach(const int qh, const long qsize, const string why)
+{
+   int skipped = 0;
+   if(qh != INVALID_HANDLE)
+      skipped = CountCompleteLines(qh, qsize);
+   G_QUEUE_OFFSET = qsize;
+   G_QUEUE_FIRST_ID = "";
+   if(qh != INVALID_HANDLE)
+   {
+      FileSeek(qh, 0, SEEK_SET);
+      uchar buf[];
+      const int got = FileReadChunk(qh, buf, SFX_NOTIFY_READ_CHUNK);
+      if(got > 0)
+         LineIdFromBuf(buf, got, G_QUEUE_FIRST_ID);
+   }
+   OffsetSave();
+   Print(StringFormat("[SFX-SYNC-NOTIFIER] first attach (%s): skipped %d existing queue line(s), offset=%I64d",
+                      why, skipped, G_QUEUE_OFFSET));
+}
+
 void OffsetInitOnAttach()
 {
-   const bool have_state = FileIsExist(SFX_NOTIFY_STATE_FILE, FILE_COMMON);
    const int qh = QueueOpenRead();
    long qsize = 0;
    if(qh != INVALID_HANDLE)
       qsize = (long)FileSize(qh);
 
-   if(!have_state)
+   const bool have_state = FileIsExist(SFX_NOTIFY_STATE_FILE, FILE_COMMON);
+   const bool have_tmp = FileIsExist(SFX_NOTIFY_STATE_TMP, FILE_COMMON);
+   long off = 0;
+   string qid = "";
+   bool parsed = false;
+   if(have_state)
+      parsed = OffsetReadNamed(SFX_NOTIFY_STATE_FILE, off, qid);
+   if(!parsed && have_tmp)
+      parsed = OffsetReadNamed(SFX_NOTIFY_STATE_TMP, off, qid);
+
+   if(!parsed)
    {
-      int skipped = 0;
-      if(qh != INVALID_HANDLE)
-         skipped = CountCompleteLines(qh, qsize);
-      G_QUEUE_OFFSET = qsize;
+      OffsetFirstAttach(qh, qsize, (!have_state && !have_tmp) ? "no state" : "unreadable state");
       if(qh != INVALID_HANDLE)
          FileClose(qh);
-      OffsetSave();
-      Print(StringFormat("[SFX-SYNC-NOTIFIER] first attach: skipped %d existing queue line(s), offset=%I64d",
-                         skipped, G_QUEUE_OFFSET));
       return;
    }
 
+   G_QUEUE_OFFSET = off;
+   G_QUEUE_FIRST_ID = qid;
+   string now_id = "";
    if(qh != INVALID_HANDLE)
+   {
+      FileSeek(qh, 0, SEEK_SET);
+      uchar buf[];
+      const int got = FileReadChunk(qh, buf, SFX_NOTIFY_READ_CHUNK);
+      if(got > 0)
+         LineIdFromBuf(buf, got, now_id);
       FileClose(qh);
-   const long loaded = OffsetLoad();
-   G_QUEUE_OFFSET = (loaded < 0) ? 0 : loaded;
-   if(qsize > 0 && G_QUEUE_OFFSET > qsize)
+   }
+
+   if(qsize < G_QUEUE_OFFSET)
+   {
       G_QUEUE_OFFSET = 0;
+      G_QUEUE_FIRST_ID = now_id;
+      OffsetSave();
+      Print("[SFX-SYNC-NOTIFIER] queue smaller than saved offset - reset offset to 0");
+      return;
+   }
+   if(StringLen(qid) > 0 && StringLen(now_id) > 0 && qid != now_id)
+   {
+      G_QUEUE_OFFSET = 0;
+      G_QUEUE_FIRST_ID = now_id;
+      OffsetSave();
+      Print("[SFX-SYNC-NOTIFIER] queue first-line id changed - reset offset to 0");
+   }
 }
 
 void NotifierLockRelease()
 {
-   if(!G_HAVE_LOCK)
+   if(G_LOCK_HANDLE == INVALID_HANDLE)
       return;
-   if(GlobalVariableCheck(SFX_NOTIFIER_LOCK_GV))
-      GlobalVariableDel(SFX_NOTIFIER_LOCK_GV);
-   G_HAVE_LOCK = false;
+   FileClose(G_LOCK_HANDLE);
+   G_LOCK_HANDLE = INVALID_HANDLE;
 }
 
 bool NotifierLockTry()
 {
-   const datetime now = TimeLocal();
-   if(G_HAVE_LOCK)
-   {
-      GlobalVariableSet(SFX_NOTIFIER_LOCK_GV, (double)now);
+   if(G_LOCK_HANDLE != INVALID_HANDLE)
       return true;
-   }
-   if(GlobalVariableCheck(SFX_NOTIFIER_LOCK_GV))
+   ResetLastError();
+   G_LOCK_HANDLE = FileOpen(SFX_NOTIFY_LOCK_FILE, FILE_WRITE|FILE_BIN|FILE_COMMON);
+   if(G_LOCK_HANDLE != INVALID_HANDLE)
+      return true;
+   const ulong now = NowMs();
+   if(G_LOCK_LAST_PRINT_MS == 0 || (now - G_LOCK_LAST_PRINT_MS) >= (ulong)SFX_NOTIFY_LOCK_PRINT_MS)
    {
-      const datetime held = (datetime)GlobalVariableGet(SFX_NOTIFIER_LOCK_GV);
-      if(held > 0 && (now - held) < SFX_NOTIFIER_LOCK_STALE_SEC)
+      Print("[SFX-SYNC-NOTIFIER] another notifier holds SFX-SYNC-notifier.lock - this instance will not send (one notifier per PC, all terminals)");
+      G_LOCK_LAST_PRINT_MS = now;
+   }
+   return false;
+}
+
+bool QueueAppendBytes(uchar &buf[], const int n)
+{
+   if(n <= 0)
+      return true;
+   ResetLastError();
+   int h = FileOpen(SFX_NOTIFY_QUEUE_FILE,
+                    FILE_READ|FILE_WRITE|FILE_BIN|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE)
+   {
+      ResetLastError();
+      h = FileOpen(SFX_NOTIFY_QUEUE_FILE,
+                   FILE_WRITE|FILE_BIN|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   }
+   if(h == INVALID_HANDLE)
+      return false;
+   FileSeek(h, 0, SEEK_END);
+   FileWriteArray(h, buf, 0, n);
+   FileClose(h);
+   return true;
+}
+
+void RecoverRotateTail(const long qsize_at_check)
+{
+   ResetLastError();
+   const int oh = FileOpen(SFX_NOTIFY_QUEUE_OLD,
+                           FILE_READ|FILE_BIN|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(oh == INVALID_HANDLE)
+      return;
+   const long oldsize = (long)FileSize(oh);
+   if(oldsize <= qsize_at_check)
+   {
+      FileClose(oh);
+      return;
+   }
+   FileSeek(oh, qsize_at_check, SEEK_SET);
+   long remain = oldsize - qsize_at_check;
+   uchar leftover[];
+   int leftover_n = 0;
+   while(remain > 0)
+   {
+      int want = SFX_NOTIFY_READ_CHUNK;
+      if((long)want > remain)
+         want = (int)remain;
+      uchar chunk[];
+      const int got = FileReadChunk(oh, chunk, want);
+      if(got <= 0)
+         break;
+      remain -= got;
+      uchar merged[];
+      ArrayResize(merged, leftover_n + got);
+      for(int i = 0; i < leftover_n; i++)
+         merged[i] = leftover[i];
+      for(int j = 0; j < got; j++)
+         merged[leftover_n + j] = chunk[j];
+      const int total = leftover_n + got;
+      int last_nl = -1;
+      for(int k = 0; k < total; k++)
       {
-         if(!G_LOCK_LOGGED)
-         {
-            Print("[SFX-SYNC-NOTIFIER] another notifier holds SFXNOTIFIER_LOCK - this instance will not send (one notifier per PC)");
-            G_LOCK_LOGGED = true;
-         }
-         return false;
+         if((int)merged[k] == '\n')
+            last_nl = k;
+      }
+      if(last_nl >= 0)
+      {
+         uchar complete[];
+         ArrayResize(complete, last_nl + 1);
+         for(int c = 0; c <= last_nl; c++)
+            complete[c] = merged[c];
+         QueueAppendBytes(complete, last_nl + 1);
+         leftover_n = total - (last_nl + 1);
+         ArrayResize(leftover, leftover_n);
+         for(int r = 0; r < leftover_n; r++)
+            leftover[r] = merged[last_nl + 1 + r];
+      }
+      else
+      {
+         leftover_n = total;
+         ArrayResize(leftover, leftover_n);
+         for(int r = 0; r < leftover_n; r++)
+            leftover[r] = merged[r];
       }
    }
-   GlobalVariableSet(SFX_NOTIFIER_LOCK_GV, (double)now);
-   G_HAVE_LOCK = true;
-   G_LOCK_LOGGED = false;
-   return true;
+   FileClose(oh);
 }
 
 void MaybeRotateQueue()
@@ -348,7 +563,9 @@ void MaybeRotateQueue()
    FileDelete(SFX_NOTIFY_QUEUE_OLD, FILE_COMMON);
    if(!FileMove(SFX_NOTIFY_QUEUE_FILE, FILE_COMMON, SFX_NOTIFY_QUEUE_OLD, FILE_COMMON))
       return;
+   RecoverRotateTail(qsize);
    G_QUEUE_OFFSET = 0;
+   G_QUEUE_FIRST_ID = QueueFirstLineId();
    OffsetSave();
    Print("[SFX-SYNC-NOTIFIER] rotated queue file to SFX-SYNC-notify-queue.txt.old");
 }
@@ -371,7 +588,12 @@ int NotifyTelegramPost(const string text)
    ResetLastError();
    const int http = WebRequest("POST", url, headers, SFX_NOTIFY_TG_TIMEOUT_MS, postData, resultData, resultHeaders);
    const int err = GetLastError();
-   if(http == 400 || http == 401 || http == 403 || http == 404)
+   if(http == 400)
+   {
+      Print("[SFX-SYNC-NOTIFIER] Telegram HTTP 400 - skipping this line (malformed payload, token not logged)");
+      return 2;
+   }
+   if(http == 401 || http == 403 || http == 404)
    {
       if(!G_PERM_LOGGED)
       {
@@ -384,7 +606,7 @@ int NotifyTelegramPost(const string text)
       }
       G_PERM_DISABLED = true;
       G_TG_OK = false;
-      NotifierLockRelease();
+      // Keep SFX-SYNC-notifier.lock until OnDeinit so a second instance does not send in parallel.
       return -2;
    }
    if(http == 429)
@@ -470,15 +692,17 @@ void ProcessQueueOnce()
    if(qsize < G_QUEUE_OFFSET)
    {
       G_QUEUE_OFFSET = 0;
+      FileSeek(h, 0, SEEK_SET);
+      uchar idbuf[];
+      const int got = FileReadChunk(h, idbuf, SFX_NOTIFY_READ_CHUNK);
+      G_QUEUE_FIRST_ID = "";
+      if(got > 0)
+         LineIdFromBuf(idbuf, got, G_QUEUE_FIRST_ID);
       OffsetSave();
+      Print("[SFX-SYNC-NOTIFIER] queue smaller than saved offset - reset offset to 0");
    }
-   if(G_QUEUE_OFFSET > qsize)
-   {
-      G_QUEUE_OFFSET = 0;
-      OffsetSave();
-   }
-   const int remain = (int)(qsize - G_QUEUE_OFFSET);
-   if(remain <= 0)
+   const long remain_all = qsize - G_QUEUE_OFFSET;
+   if(remain_all <= 0)
    {
       FileClose(h);
       MaybeRotateQueue();
@@ -486,14 +710,35 @@ void ProcessQueueOnce()
    }
    FileSeek(h, G_QUEUE_OFFSET, SEEK_SET);
    uchar buf[];
-   ArrayResize(buf, remain);
-   for(int i = 0; i < remain; i++)
-      buf[i] = (uchar)FileReadInteger(h, CHAR_VALUE);
-   FileClose(h);
-
+   int have = 0;
+   long still = remain_all;
+   bool have_line = false;
    string line = "";
    int line_bytes = 0;
-   if(!BytesToLine(buf, remain, line, line_bytes))
+   while(still > 0 && !have_line)
+   {
+      int want = SFX_NOTIFY_READ_CHUNK;
+      if((long)want > still)
+         want = (int)still;
+      uchar chunk[];
+      const int got = FileReadChunk(h, chunk, want);
+      if(got <= 0)
+         break;
+      still -= got;
+      uchar merged[];
+      ArrayResize(merged, have + got);
+      for(int i = 0; i < have; i++)
+         merged[i] = buf[i];
+      for(int j = 0; j < got; j++)
+         merged[have + j] = chunk[j];
+      have += got;
+      ArrayResize(buf, have);
+      for(int k = 0; k < have; k++)
+         buf[k] = merged[k];
+      have_line = BytesToLine(buf, have, line, line_bytes);
+   }
+   FileClose(h);
+   if(!have_line)
       return;
 
    const string trimmed = NotifyTrim(line);
@@ -517,6 +762,12 @@ void ProcessQueueOnce()
    }
    if(advance)
    {
+      if(StringLen(G_QUEUE_FIRST_ID) <= 0)
+      {
+         const int tab = StringFind(trimmed, "\t");
+         if(tab > 0)
+            G_QUEUE_FIRST_ID = StringSubstr(trimmed, 0, tab);
+      }
       G_QUEUE_OFFSET += line_bytes;
       OffsetSave();
       if(G_QUEUE_OFFSET >= qsize)
@@ -536,9 +787,10 @@ int OnInit()
    G_429_LOGGED = false;
    G_LAST_FAIL_PRINT_MS = 0;
    G_429_LAST_PRINT_MS = 0;
-   G_HAVE_LOCK = false;
-   G_LOCK_LOGGED = false;
+   G_LOCK_HANDLE = INVALID_HANDLE;
+   G_LOCK_LAST_PRINT_MS = 0;
    G_QUEUE_OFFSET = 0;
+   G_QUEUE_FIRST_ID = "";
    OffsetInitOnAttach();
 
    string token = NotifyTrim(I_TG_BOT_TOKEN);
@@ -570,7 +822,7 @@ int OnInit()
 
    G_RESOLVED_TOKEN = token;
    G_TG_OK = true;
-   Print("[SFX-SYNC-NOTIFIER] ready; polling Common Files queue SFX-SYNC-notify-queue.txt (one notifier per PC)");
+   Print("[SFX-SYNC-NOTIFIER] ready; polling Common Files queue (lock file SFX-SYNC-notifier.lock, one notifier per PC)");
    EventSetTimer((int)MathMax(1, I_POLL_SEC));
    return INIT_SUCCEEDED;
 }
