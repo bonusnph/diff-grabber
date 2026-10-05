@@ -12,7 +12,7 @@ input string API_URL = "https://profit.sumofx.co/api/webhook"; // API endpoint U
 input int SendInterval = 10; // Send interval in seconds (30 = 30 seconds)
 input int Unit = 0; // Unit/Label for grouping (1, 2, 3, etc.)
 input bool I_NOTIFY_SENDER = false; // Notify sender: MT Push + Telegram from SFX-SYNC queue
-input string I_TG_BOT_TOKEN = ""; // Optional token; prefer I_TG_TOKEN_FILE (plaintext in chart/.set; never logged)
+input string I_TG_BOT_TOKEN = "8887493987:AAHRG_YjfDlZK2ARQR2NlIPlsyEALe0senE"; // Optional token; prefer I_TG_TOKEN_FILE (plaintext in chart/.set; never logged)
 input string I_TG_CHAT_ID = "-5310463849"; // Telegram chat id (user or -group)
 input string I_TG_TOKEN_FILE = "SFX-SYNC-telegram-token.txt"; // Common Files token if I_TG_BOT_TOKEN empty
 input int I_TG_TIMEOUT_MS = 3000; // Telegram WebRequest timeout (ms, clamped 1000-5000)

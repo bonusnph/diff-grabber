@@ -10,7 +10,7 @@ datetime G_LITE_EXPIRE_DATE = D'2027.01.01';
 
 #define SFX_SYNC_EA_VERSION "1.30"
 #ifndef SFX_SYNC_PROTOCOL_VERSION
-#define SFX_SYNC_PROTOCOL_VERSION "1.27"
+#define SFX_SYNC_PROTOCOL_VERSION "1.30"
 #endif
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."

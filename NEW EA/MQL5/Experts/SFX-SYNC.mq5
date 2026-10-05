@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #define SFX_SYNC_EA_VERSION "1.30"
 #ifndef SFX_SYNC_PROTOCOL_VERSION
-#define SFX_SYNC_PROTOCOL_VERSION "1.27"
+#define SFX_SYNC_PROTOCOL_VERSION "1.30"
 #endif
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
