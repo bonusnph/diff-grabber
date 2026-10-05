@@ -46,13 +46,14 @@ function inferFractionDecimalsForPrice(p: number): number {
 }
 
 /**
- * Align BUY and SELL to the coarser implied precision (min decimals per leg), scale to integers, subtract.
- * Example: buy 4500.12 (2 dp), sell 4600.120 (3 dp) → scale ×100 → 450012 vs 460012 → diff 10000 ticks at 0.01.
+ * Align BUY and SELL to the finer implied precision (max decimals per leg), scale to integers, subtract.
+ * The coarser leg is scaled up, which pads missing fractional digits with zeros.
+ * Example: buy 4156.94 (2 dp), sell 4156.6 (1 dp) → scale ×100 → 415694 vs 415660 → diff -34.
  */
 export function spreadDiffWholeTicks(buyPrice: number, sellPrice: number): number {
 	const db = inferFractionDecimalsForPrice(buyPrice);
 	const ds = inferFractionDecimalsForPrice(sellPrice);
-	const d = Math.min(db, ds);
+	const d = Math.max(db, ds);
 	const scale = Math.pow(10, d);
 	return Math.round(sellPrice * scale) - Math.round(buyPrice * scale);
 }
