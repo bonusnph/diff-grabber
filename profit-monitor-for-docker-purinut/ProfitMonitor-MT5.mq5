@@ -2282,7 +2282,7 @@ void SendAccountData()
     double equity = AccountInfoDouble(ACCOUNT_EQUITY);
     
     // Determine broker time -> UTC offset so all open times are normalized
-    int brokerOffsetSeconds = (int)(TimeCurrent() - TimeGMT());
+    int brokerOffsetSeconds = StableBrokerUtcOffsetSeconds();
 
     // Build open orders JSON array and track latest position for backward compatibility
     string lastSide = "UNKNOWN";
@@ -2384,6 +2384,20 @@ string EscapeJSON(string text)
     StringReplace(result, "\r", "\\r");
     StringReplace(result, "\t", "\\t");
     return result;
+}
+
+//+------------------------------------------------------------------+
+//| Broker UTC offset, snapped to 15 minutes                         |
+//| TimeCurrent and TimeGMT advance on separate ticks, so a raw     |
+//| subtraction flickers by one second between sends.                |
+//+------------------------------------------------------------------+
+int StableBrokerUtcOffsetSeconds()
+{
+    int raw = (int)(TimeCurrent() - TimeGMT());
+    int step = 900;
+    if(raw >= 0)
+        return ((raw + step / 2) / step) * step;
+    return -(((-raw + step / 2) / step) * step);
 }
 
 //+------------------------------------------------------------------+

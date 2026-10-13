@@ -43,6 +43,47 @@ function asTimestamp(value: unknown): string {
 	return new Date().toISOString();
 }
 
+const OPEN_TIME_JITTER_MS = 2000;
+
+function orderOpenMs(openTime: string): number {
+	const ms = new Date(openTime).getTime();
+	return Number.isFinite(ms) ? ms : Number.NaN;
+}
+
+function sameOrderLeg(
+	a: NonNullable<AccountData['orders']>[number],
+	b: NonNullable<AccountData['orders']>[number]
+): boolean {
+	if (a.symbol !== b.symbol || a.side !== b.side) return false;
+	const aMagic = typeof a.magic === 'number' ? a.magic : null;
+	const bMagic = typeof b.magic === 'number' ? b.magic : null;
+	if (aMagic !== bMagic) return false;
+	const scale = Math.max(1, Math.abs(a.price), Math.abs(b.price));
+	return Math.abs(a.price - b.price) <= 1e-8 * scale;
+}
+
+/** Keep the stored open time when a resend of the same leg shifts it by at most two seconds. */
+export function keepStableOpenTimes(
+	previous: AccountData['orders'],
+	incoming: AccountData['orders']
+): NonNullable<AccountData['orders']> {
+	const next = incoming ?? [];
+	const pool = [...(previous ?? [])];
+	return next.map((order) => {
+		const nextMs = orderOpenMs(order.openTime);
+		const idx = pool.findIndex((prev) => {
+			if (!sameOrderLeg(prev, order)) return false;
+			const prevMs = orderOpenMs(prev.openTime);
+			if (!Number.isFinite(nextMs) || !Number.isFinite(prevMs)) return false;
+			return Math.abs(prevMs - nextMs) <= OPEN_TIME_JITTER_MS;
+		});
+		if (idx < 0) return order;
+		const match = pool.splice(idx, 1)[0];
+		if (!match || match.openTime === order.openTime) return order;
+		return { ...order, openTime: match.openTime };
+	});
+}
+
 function parseOrders(raw: unknown): AccountData['orders'] {
 	if (!raw) return [];
 	if (Array.isArray(raw)) return raw as AccountData['orders'];
@@ -329,6 +370,14 @@ class PostgresStorage {
 
 	async addAccountData(data: AccountData): Promise<void> {
 		const pool = await this.ensureReady();
+		const existing = await pool.query<{ position_orders: unknown }>(
+			'SELECT position_orders FROM accounts WHERE account_number = $1',
+			[data.account_number]
+		);
+		const orders = keepStableOpenTimes(
+			parseOrders(existing.rows[0]?.position_orders),
+			Array.isArray(data.orders) ? data.orders : []
+		);
 		await pool.query(
 			`
 			INSERT INTO accounts (
@@ -360,7 +409,7 @@ class PostgresStorage {
 				data.lastPositionSide ?? 'UNKNOWN',
 				data.lastPositionEntryPrice ?? 0,
 				data.lastSize ?? 0,
-				JSON.stringify(Array.isArray(data.orders) ? data.orders : [])
+				JSON.stringify(orders)
 			]
 		);
 	}

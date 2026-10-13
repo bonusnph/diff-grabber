@@ -2497,7 +2497,11 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											<div class="py-2.5">
 												<div class="flex items-start justify-between gap-2">
 													<div class="min-w-0">
-														<div class="font-mono text-sm text-[#f5f5f5] truncate">{p.symbol || '-'}</div>
+														<div class="font-mono text-sm truncate">
+															<span class="text-sky-300">{p.buySymbol || '—'}</span>
+															<span class="text-[#ececec]"> → </span>
+															<span class="text-orange-300">{p.sellSymbol || '—'}</span>
+														</div>
 														<div class="text-[10px] text-[#ececec] tabular-nums">{p.pairMagic !== undefined ? `#${p.pairMagic}` : '—'}</div>
 													</div>
 													<div class="text-right shrink-0">
@@ -2514,12 +2518,14 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												</div>
 												<div class="mt-2 grid grid-cols-2 gap-2 text-[11px]">
 													<div>
-														<div class="text-[#ececec]">BUY</div>
+														<div class="text-sky-300">BUY {p.buySymbol || '—'}</div>
+														<div class="text-[#ececec] truncate">{p.buyBroker || '—'}</div>
 														<div class="text-sky-300 tabular-nums">{p.buyPrice}</div>
 														<div class="text-[#ececec] tabular-nums">{p.buyOpenTime ? formatDateTime(p.buyOpenTime) : '—'}</div>
 													</div>
 													<div class="text-right">
-														<div class="text-[#ececec]">SELL</div>
+														<div class="text-orange-300">SELL {p.sellSymbol || '—'}</div>
+														<div class="text-[#ececec] truncate">{p.sellBroker || '—'}</div>
 														<div class="text-orange-300 tabular-nums">{p.sellPrice}</div>
 														<div class="text-[#ececec] tabular-nums">{p.sellOpenTime ? formatDateTime(p.sellOpenTime) : '—'}</div>
 													</div>
@@ -2540,8 +2546,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												</div>
 												<div class="mt-2 text-[11px]">
 													<div class={o.side === 'BUY' ? 'text-sky-300' : 'text-orange-300'}>
-														{o.side} {o.price}
+														{o.side} {o.symbol || '—'} {o.price}
 													</div>
+													<div class="text-[#ececec] truncate">{o.broker_name || '—'}</div>
 													<div class="text-[#ececec] tabular-nums">{o.openTime ? formatDateTime(o.openTime) : '—'}</div>
 												</div>
 											</div>
@@ -2565,36 +2572,70 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												{#each unitPairs as p}
 													<tr class="border-b border-stone-700/30">
 														<td class="py-1 px-2 text-[#ececec] font-mono tabular-nums text-[10px] opacity-80">{p.pairMagic !== undefined ? `#${p.pairMagic}` : '—'}</td>
-														<td class="py-1 px-2 text-[#f5f5f5] font-mono">{p.symbol || '-'}</td>
-														<td class="py-1 px-2 text-right text-sky-300 tabular-nums" title={`Account ${p.buyAccount} @ ${p.buyBroker}`}>{p.buyPrice}</td>
-														<td class="py-1 px-2 text-right text-orange-300 tabular-nums" title={`Account ${p.sellAccount} @ ${p.sellBroker}`}>{p.sellPrice}</td>
-														<td class="py-1 px-2 text-right font-semibold tabular-nums {p.diffPoints >= 0 ? 'fac-plus' : 'fac-minus'}">
+														<td class="py-1 px-2 align-top">
+															<div class="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-x-1 leading-snug">
+																<span class="text-sky-300">BUY</span>
+																<span class="font-mono text-[#f5f5f5]">{p.buySymbol || '—'}</span>
+																<span></span>
+																<span class="text-[10px] text-[#ececec] truncate" title={p.buyBroker}>{p.buyBroker || '—'}</span>
+																<span class="text-orange-300 mt-1">SELL</span>
+																<span class="font-mono text-[#f5f5f5] mt-1">{p.sellSymbol || '—'}</span>
+																<span></span>
+																<span class="text-[10px] text-[#ececec] truncate" title={p.sellBroker}>{p.sellBroker || '—'}</span>
+															</div>
+														</td>
+														<td class="py-1 px-2 text-right text-sky-300 tabular-nums align-top" title={`Account ${p.buyAccount} @ ${p.buyBroker}`}>{p.buyPrice}</td>
+														<td class="py-1 px-2 text-right text-orange-300 tabular-nums align-top" title={`Account ${p.sellAccount} @ ${p.sellBroker}`}>{p.sellPrice}</td>
+														<td class="py-1 px-2 text-right font-semibold tabular-nums align-top {p.diffPoints >= 0 ? 'fac-plus' : 'fac-minus'}">
 															{p.diffPoints >= 0 ? '+' : ''}{p.diffPoints.toFixed(0)}
 														</td>
-														<td class="py-1 px-2 text-right text-[#f5f5f5] tabular-nums">
+														<td class="py-1 px-2 text-right text-[#f5f5f5] tabular-nums align-top">
 															{p.buyLots.toFixed(2)}
 															{#if Math.abs(p.buyLots - p.sellLots) > 0.001}
 																<span class="text-[#ececec]"> / {p.sellLots.toFixed(2)}</span>
 															{/if}
 														</td>
-														<td class="py-1 px-2 text-left text-[#ececec] tabular-nums">{p.buyOpenTime ? formatDateTime(p.buyOpenTime) : '—'}</td>
-														<td class="py-1 px-2 text-left text-[#ececec] tabular-nums">{p.sellOpenTime ? formatDateTime(p.sellOpenTime) : '—'}</td>
+														<td class="py-1 px-2 text-left align-top">
+															<div class="text-[10px] text-sky-300 truncate" title={p.buyBroker}>{p.buyBroker || '—'}</div>
+															<div class="text-[#ececec] tabular-nums">{p.buyOpenTime ? formatDateTime(p.buyOpenTime) : '—'}</div>
+														</td>
+														<td class="py-1 px-2 text-left align-top">
+															<div class="text-[10px] text-orange-300 truncate" title={p.sellBroker}>{p.sellBroker || '—'}</div>
+															<div class="text-[#ececec] tabular-nums">{p.sellOpenTime ? formatDateTime(p.sellOpenTime) : '—'}</div>
+														</td>
 													</tr>
 												{/each}
 												{#each unitUnmatched as o}
 													<tr class="border-b border-stone-700/30 bg-amber-900/10">
 														<td class="py-1 px-2 text-amber-500 font-mono tabular-nums text-[10px]">{typeof o.magic === 'number' ? `!#${o.magic}` : '!—'}</td>
-														<td class="py-1 px-2 text-[#f5f5f5] font-mono">{o.symbol || '-'}</td>
-														<td class="py-1 px-2 text-right tabular-nums {o.side === 'BUY' ? 'text-sky-300' : 'text-stone-600'}" title={o.side === 'BUY' ? `Account ${o.account_number} @ ${o.broker_name}` : ''}>
+														<td class="py-1 px-2 align-top">
+															<div class="font-mono text-[#f5f5f5]">{o.symbol || '-'}</div>
+															<div class="text-[10px] truncate {o.side === 'BUY' ? 'text-sky-300' : 'text-orange-300'}" title={o.broker_name}>{o.side} · {o.broker_name || '—'}</div>
+														</td>
+														<td class="py-1 px-2 text-right tabular-nums align-top {o.side === 'BUY' ? 'text-sky-300' : 'text-stone-600'}" title={o.side === 'BUY' ? `Account ${o.account_number} @ ${o.broker_name}` : ''}>
 															{o.side === 'BUY' ? o.price : '-'}
 														</td>
-														<td class="py-1 px-2 text-right tabular-nums {o.side === 'SELL' ? 'text-orange-300' : 'text-stone-600'}" title={o.side === 'SELL' ? `Account ${o.account_number} @ ${o.broker_name}` : ''}>
+														<td class="py-1 px-2 text-right tabular-nums align-top {o.side === 'SELL' ? 'text-orange-300' : 'text-stone-600'}" title={o.side === 'SELL' ? `Account ${o.account_number} @ ${o.broker_name}` : ''}>
 															{o.side === 'SELL' ? o.price : '-'}
 														</td>
-														<td class="py-1 px-2 text-right text-amber-400 italic">solo</td>
-														<td class="py-1 px-2 text-right text-[#f5f5f5] tabular-nums">{o.lots.toFixed(2)}</td>
-														<td class="py-1 px-2 text-left text-[#ececec] tabular-nums">{o.side === 'BUY' && o.openTime ? formatDateTime(o.openTime) : '—'}</td>
-														<td class="py-1 px-2 text-left text-[#ececec] tabular-nums">{o.side === 'SELL' && o.openTime ? formatDateTime(o.openTime) : '—'}</td>
+														<td class="py-1 px-2 text-right text-amber-400 italic align-top">solo</td>
+														<td class="py-1 px-2 text-right text-[#f5f5f5] tabular-nums align-top">{o.lots.toFixed(2)}</td>
+														<td class="py-1 px-2 text-left align-top">
+															{#if o.side === 'BUY'}
+																<div class="text-[10px] text-sky-300 truncate" title={o.broker_name}>{o.broker_name || '—'}</div>
+																<div class="text-[#ececec] tabular-nums">{o.openTime ? formatDateTime(o.openTime) : '—'}</div>
+															{:else}
+																<div class="text-[#ececec] tabular-nums">—</div>
+															{/if}
+														</td>
+														<td class="py-1 px-2 text-left align-top">
+															{#if o.side === 'SELL'}
+																<div class="text-[10px] text-orange-300 truncate" title={o.broker_name}>{o.broker_name || '—'}</div>
+																<div class="text-[#ececec] tabular-nums">{o.openTime ? formatDateTime(o.openTime) : '—'}</div>
+															{:else}
+																<div class="text-[#ececec] tabular-nums">—</div>
+															{/if}
+														</td>
 													</tr>
 												{/each}
 											</tbody>
