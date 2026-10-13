@@ -8,6 +8,10 @@
 
 #define EA_VERSION "1.29"
 #property version EA_VERSION
+
+// Used when the authorization API cannot be reached.
+double   fallback_max_lots   = 1.0;
+datetime fallback_expires_at = D'2027.03.31 23:59:59';
 #property strict
 
 // =============================
@@ -42,7 +46,7 @@ int    input_display_width_pixels      = 520;          // Scope: Both — width 
 
 // Master decision parameters
 int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
-MasterSide input_master_side          = SIDE_SELL;     // Scope: Master — master direction (Slave auto-opposite)
+MasterSide input_master_side          = SIDE_AUTO;     // Scope: Master — master direction (Slave auto-opposite)
 input double input_lot                      = 0.01;          // Scope: Master — lot size for orders (applies to Master and Slave)
 
 // Centralized mode control (Master only)
@@ -394,6 +398,8 @@ bool   g_auth_check_in_progress = false;
 // Authorization state (includes per-account config)
 datetime g_api_auth_last_check_time = 0;
 bool g_api_auth_valid = false;
+bool g_auth_have_api_limits = false;  // true only after a successful API auth payload
+bool g_auth_limits_active = false;    // true when API or local fallback limits are in force
 datetime g_api_auth_expires = 0;
 double g_api_auth_max_lots = 0.0;
 int g_api_auth_open_cooldown = 0;     // Per-account cooldown (0 = use input default)
@@ -1011,6 +1017,59 @@ bool NeedAuthorizationCheck()
    return (hours_since_last >= input_api_auth_interval_hours) || !g_api_auth_valid;
 }
 
+// Apply hardcoded auth limits when the authorization API cannot be reached.
+// Existing API limits are kept when they are stricter than the fallback.
+bool ApplyAuthApiFallback(const bool skipped_api_call)
+{
+   double lots = fallback_max_lots;
+   datetime expires = fallback_expires_at;
+
+   if (g_auth_have_api_limits)
+   {
+      if (g_account_max_lots > 0.0 && lots > g_account_max_lots)
+         lots = g_account_max_lots;
+      if (g_account_expires_at > 0 && expires > g_account_expires_at)
+         expires = g_account_expires_at;
+   }
+   else
+   {
+      g_api_auth_open_cooldown = 0;
+      g_api_auth_close_cooldown = 0;
+      g_api_auth_min_version = "";
+      g_api_version_blocked = false;
+   }
+
+   g_api_auth_max_lots = lots;
+   g_account_max_lots = lots;
+   g_api_auth_expires = expires;
+   g_account_expires_at = expires;
+
+   if (expires > 0 && TimeCurrent() > expires)
+   {
+      g_api_auth_error = StringFormat("Fallback authorization expired on %s", TimeToString(expires, TIME_DATE));
+      g_api_auth_valid = false;
+      g_account_authorized = false;
+      g_api_auth_hard_failure = true;
+      Print("[API-AUTH] ", g_api_auth_error);
+      LogEvent("AUTH_FALLBACK_EXPIRED", StringFormat("max_lots=%.2f;expires=%s", lots, TimeToString(expires, TIME_DATE)));
+      return false;
+   }
+
+   g_account_authorized = true;
+   g_api_auth_valid = true;
+   g_auth_limits_active = true;
+   g_api_auth_hard_failure = false;
+   g_api_auth_consecutive_failures = 0;
+   g_api_auth_last_check_time = TimeCurrent();
+   g_api_auth_error = "";
+
+   string reason = skipped_api_call ? "Authorization API call disabled" : "Authorization API unreachable";
+   Print("[API-AUTH] ", reason, ", using fallback max_lots=",
+         DoubleToString(lots, 2), " expires=", TimeToString(expires, TIME_DATE));
+   LogEvent("AUTH_FALLBACK", StringFormat("reason=%s;max_lots=%.2f;expires=%s", reason, lots, TimeToString(expires, TIME_DATE)));
+   return true;
+}
+
 // Perform authorization check via API (includes per-account config)
 bool CheckAccountAuthorization()
 {
@@ -1041,11 +1100,8 @@ bool CheckAccountAuthorization()
          g_api_auth_hard_failure = false;
          return true;
       }
-      
-      g_api_auth_hard_failure = true;
-      g_api_auth_valid = false;
-      g_account_authorized = false;
-      return false;
+
+      return ApplyAuthApiFallback(false);
    }
    
    datetime expires;
@@ -1085,6 +1141,8 @@ bool CheckAccountAuthorization()
    g_api_auth_close_cooldown = close_cooldown;
    g_api_auth_min_version = min_version;
    g_api_auth_valid = true;
+   g_auth_have_api_limits = true;
+   g_auth_limits_active = true;
    g_account_authorized = true;
    g_account_expires_at = expires;
    g_account_max_lots = max_lots;
@@ -2659,14 +2717,14 @@ void MasterReconcilePositions()
          FileWriteAllAtomic(PathCloseCmd(), line0);
          LogEvent("RECONCILE_MASTER_FOLLOW_CLOSE", StringFormat("cmd_id=%s;reason=PEER_MANUAL_CLOSE", cmd_id0));
          if(DryEnabled()){
-            if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string line0 = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id0, (long)g_seq, "N/A", "CLOSE", created_ms0, expire_ms0); FileWriteAllAtomic(PathCloseCmd(), line0); string ackSelf0 = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id0, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf0);} 
+            if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ FileWriteAllAtomic(PathCloseCmd(), line0); string ackSelf0 = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id0, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf0);} 
             g_prev_self_pairs=selfNowTmp; g_prev_peer_pairs=peerNowTmp; 
             return; 
          }
          bool ok0 = CloseAllByMagic(); CompactPairMapSelf(); WritePositions(); 
          string ack20 = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id0, (long)g_seq, "N/A", ok0?1:0, ok0?0:GetLastError()); 
          FileWriteAll(PathCloseAckSelf(), ack20);
-         if(ok0){ string line0 = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id0, (long)g_seq, "N/A", "CLOSE", created_ms0, expire_ms0); FileWriteAllAtomic(PathCloseCmd(), line0); }
+         if(ok0){ FileWriteAllAtomic(PathCloseCmd(), line0); }
          else{LogEvent("CLOSE_LOCAL_FAIL", StringFormat("reason=RECONCILE;err=%d", GetLastError()));}
          g_prev_self_pairs=selfNowTmp; g_prev_peer_pairs=peerNowTmp; 
          return;
@@ -2719,14 +2777,14 @@ void MasterReconcilePositions()
          FileWriteAllAtomic(PathCloseCmd(), line1);
          LogEvent("RECONCILE_MASTER_FOLLOW_CLOSE", StringFormat("cmd_id=%s;reason=PEER_MANUAL_CLOSE", cmd_id1));
          if(DryEnabled()){
-            if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string line1 = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id1, (long)g_seq, "N/A", "CLOSE", created_ms1, expire_ms1); FileWriteAllAtomic(PathCloseCmd(), line1); string ackSelf1 = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id1, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf1);} 
+            if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ FileWriteAllAtomic(PathCloseCmd(), line1); string ackSelf1 = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id1, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf1);} 
             g_prev_self_pairs=selfNowTmp2; g_prev_peer_pairs=peerNowTmp2; 
             return; 
          }
          bool ok1 = CloseAllByMagic(); CompactPairMapSelf(); WritePositions(); 
          string ack21 = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id1, (long)g_seq, "N/A", ok1?1:0, ok1?0:GetLastError()); 
          FileWriteAll(PathCloseAckSelf(), ack21);
-         if(ok1){ string line1 = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id1, (long)g_seq, "N/A", "CLOSE", created_ms1, expire_ms1); FileWriteAllAtomic(PathCloseCmd(), line1); }
+         if(ok1){ FileWriteAllAtomic(PathCloseCmd(), line1); }
          else{LogEvent("CLOSE_LOCAL_FAIL", StringFormat("reason=RECONCILE;err=%d", GetLastError()));}
          g_prev_self_pairs=selfNowTmp2; g_prev_peer_pairs=peerNowTmp2; 
          return;
@@ -2817,7 +2875,7 @@ void MasterReconcilePositions()
      string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms);
      FileWriteAllAtomic(PathCloseCmd(), line);
      LogEvent("RECONCILE_MASTER_FOLLOW_CLOSE", StringFormat("cmd_id=%s;reason=PEER_MANUAL_CLOSE", cmd_id));
-     if(DryEnabled()){ if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ string line = StringFormat("1,%s,%I64d,%s,%s,%I64u,%d\n", cmd_id, (long)g_seq, "N/A", "CLOSE", created_ms, expire_ms); FileWriteAllAtomic(PathCloseCmd(), line); string ackSelf = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf);} g_prev_self_pairs=selfNow; g_prev_peer_pairs=peerNow; return; }
+     if(DryEnabled()){ if(DryMode()==DRY_WRITE_CMD_AND_FAKE_ACK){ FileWriteAllAtomic(PathCloseCmd(), line); string ackSelf = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", 1, 0); FileWriteAll(PathCloseAckSelf(), ackSelf);} g_prev_self_pairs=selfNow; g_prev_peer_pairs=peerNow; return; }
      bool ok = CloseAllByMagic(); CompactPairMapSelf(); WritePositions();
      string ack = StringFormat("1,%s,%I64d,%s,%d,%d\n", cmd_id, (long)g_seq, "N/A", ok?1:0, ok?0:GetLastError()); 
      FileWriteAll(PathCloseAckSelf(), ack);
@@ -3975,9 +4033,9 @@ void MaybeOpenPair()
    if(g_role_conflict) return;
    if(!(input_role==ROLE_MASTER)) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(g_auth_limits_active && !g_account_authorized) return;
    // Check expiry date
-   if(IsAuthAPIEnabled() && g_account_expires_at > 0 && TimeCurrent() > g_account_expires_at)
+   if(g_auth_limits_active && g_account_expires_at > 0 && TimeCurrent() > g_account_expires_at)
    {
       g_account_authorized = false;
       g_api_auth_valid = false;
@@ -3986,7 +4044,7 @@ void MaybeOpenPair()
       return;
    }
    // Check lot limit
-   if(IsAuthAPIEnabled() && g_account_max_lots > 0 && input_lot > g_account_max_lots)
+   if(g_auth_limits_active && g_account_max_lots > 0 && input_lot > g_account_max_lots)
    {
       string error_msg = StringFormat("Account %d lot size violation: input_lot=%.2f exceeds max_lots=%.2f", AccountNumber(), input_lot, g_account_max_lots);
       Print("[API-AUTH] ", error_msg);
@@ -4477,7 +4535,7 @@ void MaybeClosePair()
    if(g_role_conflict) return;
    if(!(input_role==ROLE_MASTER)) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(g_auth_limits_active && !g_account_authorized) return;
    
    // Evaluate both L1 and L2 block states
    bool l1_blocked = IsDiffCloseBlocked();
@@ -4866,7 +4924,7 @@ void SlaveProcessOpenCmd()
    if(g_role_conflict) return;
    if(input_role==ROLE_MASTER) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(g_auth_limits_active && !g_account_authorized) return;
    string s;
    if(!FileReadAll(PathOpenCmd(), s)) { if(input_verbose_journal_logs) Print("[Slave] open_cmd.csv not found or not readable"); return; }
    // Very simple parse; assume last line is the command (single-line file)
@@ -4994,7 +5052,7 @@ void SlaveProcessCloseCmd()
    if(g_role_conflict) return;
    if(input_role==ROLE_MASTER) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(g_auth_limits_active && !g_account_authorized) return;
    string s;
    if(!FileReadAll(PathCloseCmd(), s)) return;
    // format: version,cmd_id,seq,pair_id,reason,created_ms,expire_ms[,audit...]
@@ -5571,7 +5629,7 @@ void DisplayUpdate()
       if(g_have_master_cmd && g_last_cmd_side != "")
       {
          if(g_last_cmd_side == "AUTO")
-            DisplaySetLine(line++, StringFormat("side=AUTO(SEARCHING)"));
+            DisplaySetLine(line++, "side=AUTO(SEARCHING)");
          else
          {
             string sideS = (g_last_cmd_side=="BUY")?"SELL":"BUY";
@@ -5580,7 +5638,7 @@ void DisplayUpdate()
       }
       else
       {
-         DisplaySetLine(line++, StringFormat("side(S)=N/A"));
+         DisplaySetLine(line++, "side(S)=N/A");
       }
       if(g_have_master_cmd)
       {
@@ -5803,7 +5861,7 @@ void MasterCloseNow()
 {
    if(!(input_role==ROLE_MASTER)) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(g_auth_limits_active && !g_account_authorized) return;
    // Release the debug hold so close can proceed
    if(input_debug_buttons_enabled) g_debug_hold_open = false;
    
@@ -5861,7 +5919,7 @@ void MasterCloseNow()
 void MasterOpenNowWithLots(const double lots)
 {
    if(!(input_role==ROLE_MASTER)) return;
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(g_auth_limits_active && !g_account_authorized) return;
    UpdateScheduledCloseOnlyMode();
    if(g_close_only_mode) return;
 
@@ -6077,6 +6135,25 @@ int OnInit()
 
    FolderEnsure();
 
+   // Auth API is off: do not call it, and enforce the hardcoded fallback limits.
+   if (!IsAuthAPIEnabled())
+   {
+      if (!ApplyAuthApiFallback(true))
+      {
+         Alert("Account authorization failed: ", g_api_auth_error);
+         return(INIT_FAILED);
+      }
+
+      if (input_role == ROLE_MASTER && g_account_max_lots > 0 && input_lot > g_account_max_lots)
+      {
+         string error_msg = StringFormat("Account %d lot size violation: input_lot=%.2f exceeds max_lots=%.2f", AccountNumber(), input_lot, g_account_max_lots);
+         Print("[API-AUTH] ", error_msg);
+         Alert("EA Lot Size Violation: " + error_msg);
+         LogEvent("AUTH_LOT_LIMIT_VIOLATION", StringFormat("account=%d;input_lot=%.2f;max_lots=%.2f", AccountNumber(), input_lot, g_account_max_lots));
+         return(INIT_FAILED);
+      }
+   }
+
    // Initialize API system
    if (IsAPIEnabled())
    {
@@ -6153,7 +6230,29 @@ void OnTimer()
    // === CRITICAL OPERATIONS - ทุกครั้ง ===
    
    // API system updates
-   if (IsAPIEnabled())
+   if (!IsAuthAPIEnabled())
+   {
+      if (g_account_expires_at > 0 && TimeCurrent() > g_account_expires_at)
+      {
+         string error_msg = StringFormat("Account %d expired on %s", AccountNumber(), TimeToString(g_account_expires_at));
+         Print("[API-AUTH] ", error_msg);
+         Alert("EA Authorization Expired: " + error_msg);
+         LogEvent("AUTH_EXPIRED", StringFormat("account=%d;expires=%s", AccountNumber(), TimeToString(g_account_expires_at)));
+         ExpertRemove();
+         return;
+      }
+
+      if (input_role == ROLE_MASTER && g_account_max_lots > 0 && input_lot > g_account_max_lots)
+      {
+         string error_msg = StringFormat("Account %d lot size violation: input_lot=%.2f exceeds max_lots=%.2f", AccountNumber(), input_lot, g_account_max_lots);
+         Print("[API-AUTH] ", error_msg);
+         Alert("EA Lot Size Violation: " + error_msg);
+         LogEvent("AUTH_LOT_LIMIT_VIOLATION", StringFormat("account=%d;input_lot=%.2f;max_lots=%.2f", AccountNumber(), input_lot, g_account_max_lots));
+         ExpertRemove();
+         return;
+      }
+   }
+   else
    {
       // Check authorization periodically (includes per-account config and version check)
       if (IsAuthAPIEnabled())
@@ -6210,7 +6309,10 @@ void OnTimer()
             return;
          }
       }
-      
+   }
+
+   if (IsAPIEnabled())
+   {
       // Fetch signal periodically (Master only)
       if (IsSignalAPIEnabled())
       {
