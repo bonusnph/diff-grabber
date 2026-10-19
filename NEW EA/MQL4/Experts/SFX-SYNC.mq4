@@ -109,7 +109,11 @@ struct DpmEvent
 // I_DND_SCHEDULE_MASTER, I_DND_MON_EN, I_DND_MON_START, I_DND_MON_END,
 // I_DND_TUE_EN, I_DND_TUE_START, I_DND_TUE_END, I_DND_WED_EN, I_DND_WED_START, I_DND_WED_END,
 // I_DND_THU_EN, I_DND_THU_START, I_DND_THU_END, I_DND_FRI_EN, I_DND_FRI_START, I_DND_FRI_END,
-// I_DND_WEEKEND_ENABLED, I_DND_WEEKEND_START_SAT, I_DND_WEEKEND_END_MON
+// I_DND_WEEKEND_ENABLED, I_DND_WEEKEND_START_SAT, I_DND_WEEKEND_END_MON,
+// I_OPEN_MODE, I_CLOSE_MODE,
+// I_FILL_AUDIT_ENABLED, I_FILL_AUDIT_GAP_PTS, I_FILL_AUDIT_HOLD_SEC,
+// I_NEG_DIFF_FORCE_ENABLED, I_NEG_DIFF_FORCE_PTS, I_NEG_DIFF_FORCE_COUNT,
+// I_NEG_DIFF_FORCE_CLEAR_STATE, I_NOTIFY_CHANNEL, I_NOTIFY_TEST_ON_INIT
 input ENUM_ROLE I_ROLE = ROLE_SOURCE_MASTER; // Master streams orders; slave copies
 ushort    I_PORT = 65110;              // TCP port (same on master and slave)
 string    I_MASTER_IP = "127.0.0.1";   // Slave only: master host or VPN IP
@@ -128,8 +132,8 @@ bool      I_DYN_LOT_COUNT_SCHEDULED = false; // Dynamic lot: count weekend/sched
 input double    I_MIN_BALANCE_MASTER = 0.00;       // Min master balance to allow new open (0 = off)
 input double    I_MIN_BALANCE_SLAVE  = 0.00;       // Min slave balance to allow new open (0 = off)
 int       I_SLIPPAGE = 30;              // Max slippage (points) for sync orders
-input ENUM_OPEN_MODE I_OPEN_MODE = OPEN_BALANCED;   // How to sequence master/slave opens
-input ENUM_CLOSE_MODE I_CLOSE_MODE = CLOSE_BALANCED; // How to sequence closes (and rescue)
+ENUM_OPEN_MODE I_OPEN_MODE = OPEN_BALANCED;   // How to sequence master/slave opens
+ENUM_CLOSE_MODE I_CLOSE_MODE = CLOSE_BALANCED; // How to sequence closes (and rescue)
 bool      I_LOCK_ENABLED = true;                   // Enable cross-instance global lock for open/close intents
 string    I_LOCK_GROUP = "DEFAULT";                // User-defined lock namespace
 ENUM_LOCK_SCOPE I_LOCK_SCOPE = LOCK_SCOPE_PAIR_ACTION; // Lock granularity inside a group
@@ -210,16 +214,16 @@ int               I_DPM_CLOSE_TH1  = 15;    // DPM close threshold level 1 (pts)
 int               I_DPM_CLOSE_TH2  = 25;    // DPM close threshold level 2 (pts)
 int               I_DPM_CLOSE_TH3  = 40;    // DPM close threshold level 3 (pts)
 
-input bool        I_FILL_AUDIT_ENABLED = true;  // Fill audit: log request vs fill, HUD slippage flag
-input int         I_FILL_AUDIT_GAP_PTS = 10;    // Fill audit: flag when signal minus realized gap reaches this (pts)
-input int         I_FILL_AUDIT_HOLD_SEC = 30;   // Fill audit: seconds to keep latest slippage detail on HUD
+bool              I_FILL_AUDIT_ENABLED = false; // Fill audit: log request vs fill, HUD slippage flag
+int               I_FILL_AUDIT_GAP_PTS = 10;    // Fill audit: flag when signal minus realized gap reaches this (pts)
+int               I_FILL_AUDIT_HOLD_SEC = 30;   // Fill audit: seconds to keep latest slippage detail on HUD
 
-input bool        I_NEG_DIFF_FORCE_ENABLED = false; // Close-only after consecutive losing pair fills (realized pts)
-input int         I_NEG_DIFF_FORCE_PTS = -1;        // Hit when realized fill pts of a completed pair-tx <= this
-input int         I_NEG_DIFF_FORCE_COUNT = 5;       // Consecutive losing OPEN or CLOSE pair-tx before close-only
-input bool        I_NEG_DIFF_FORCE_CLEAR_STATE = false; // One-shot: delete this port's neg-diff keys (then set false)
-input ENUM_SFX_NOTIFY I_NOTIFY_CHANNEL = NOTIFY_OFF; // Off / queue ch=P / queue ch=T / queue ch=B
-input bool        I_NOTIFY_TEST_ON_INIT = false;    // Master only: one test alert on attach
+bool              I_NEG_DIFF_FORCE_ENABLED = false; // Close-only after consecutive losing pair fills (realized pts)
+int               I_NEG_DIFF_FORCE_PTS = -1;        // Hit when realized fill pts of a completed pair-tx <= this
+int               I_NEG_DIFF_FORCE_COUNT = 5;       // Consecutive losing OPEN or CLOSE pair-tx before close-only
+bool              I_NEG_DIFF_FORCE_CLEAR_STATE = false; // One-shot: delete this port's neg-diff keys (then set false)
+ENUM_SFX_NOTIFY   I_NOTIFY_CHANNEL = NOTIFY_OFF; // Off / queue ch=P / queue ch=T / queue ch=B
+bool              I_NOTIFY_TEST_ON_INIT = false;    // Master only: one test alert on attach
 
 bool              I_DIFF_ZONE_STABILITY_ENABLED = true;   // Zone filter on diff before firing
 int               I_DIFF_ZONE_STABILITY_TICKS = 7;         // Ticks in positive zone required
