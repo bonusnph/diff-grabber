@@ -324,15 +324,42 @@ bool DiffQuotesFresh()
    return age_self <= (long)lim && age_slave <= (long)lim;
 }
 
+string DiffHudOpenCooldownRoundTag()
+{
+   const int lo = MathMax(0, I_OPEN_CD_MIN_SEC);
+   const int hi = MathMax(lo, I_OPEN_CD_MAX_SEC);
+   if(G_OPEN_CD_ROLLED_SEC <= 0)
+      return "";
+   if(I_OPEN_CD_RANDOM && hi > lo)
+      return StringFormat("%ds this round (%d-%d)", G_OPEN_CD_ROLLED_SEC, lo, hi);
+   return StringFormat("%ds this round", G_OPEN_CD_ROLLED_SEC);
+}
+
+void ArmDiffOpenCooldownAfterFlat()
+{
+   const int lo = MathMax(0, I_OPEN_CD_MIN_SEC);
+   const int hi = MathMax(lo, I_OPEN_CD_MAX_SEC);
+   int rolled = lo;
+   if(I_OPEN_CD_RANDOM && hi > lo)
+      rolled = lo + (MathRand() % (hi - lo + 1));
+   G_OPEN_CD_ROLLED_SEC = rolled;
+   if(rolled > 0)
+      G_DIFF_LAST_OPEN_SIGNAL_MS = NowMs();
+   else
+      G_DIFF_LAST_OPEN_SIGNAL_MS = 0;
+   SyncLog(StringFormat("[SFX-SYNC] OPEN cooldown armed %ds (range %d-%d random=%s)",
+                        rolled, lo, hi, (I_OPEN_CD_RANDOM && hi > lo) ? "yes" : "no"));
+}
+
 bool DiffHudOpenCooldownRemainMs(ulong &remMsOut)
 {
    remMsOut = 0;
-   if(I_DIFF_OPEN_COOLDOWN_SEC <= 0)
+   if(G_OPEN_CD_ROLLED_SEC <= 0)
       return false;
    if(G_DIFF_LAST_OPEN_SIGNAL_MS == 0)
       return false;
    const ulong nw = NowMs();
-   const ulong cdMs = (ulong)I_DIFF_OPEN_COOLDOWN_SEC * (ulong)1000;
+   const ulong cdMs = (ulong)G_OPEN_CD_ROLLED_SEC * (ulong)1000;
    if((nw - G_DIFF_LAST_OPEN_SIGNAL_MS) >= cdMs)
       return false;
    remMsOut = cdMs - (nw - G_DIFF_LAST_OPEN_SIGNAL_MS);
@@ -1262,9 +1289,15 @@ string DiffHudMasterCommentTail()
    {
       if(StringLen(out) > 0)
          out += "\n";
-      const ulong perO = (ulong)I_DIFF_OPEN_COOLDOWN_SEC * (ulong)1000;
-      out += StringFormat("DIFF HUD: auto-open cooldown %s (period %u s, after last DIFF_OPEN)\n",
-                          DiffHudFormatRemainMs(remO), (uint)(perO / 1000));
+      out += StringFormat("DIFF HUD: auto-open cooldown %s (%s, after flat)\n",
+                          DiffHudFormatRemainMs(remO), DiffHudOpenCooldownRoundTag());
+   }
+   else if(G_OPEN_CD_ROLLED_SEC > 0 && G_DIFF_LAST_OPEN_SIGNAL_MS > 0)
+   {
+      if(StringLen(out) > 0)
+         out += "\n";
+      out += StringFormat("DIFF HUD: auto-open cooldown ready (%s, after flat)\n",
+                          DiffHudOpenCooldownRoundTag());
    }
    ulong remA = 0;
    if(DiffHudAvgOpenCooldownRemainMs(remA))
@@ -1334,10 +1367,6 @@ string DiffHudFormatProgressBar(const double pctRaw)
 void DiffArmCooldownsAfterOpenPairCommit()
 {
    const ulong nw = NowMs();
-   if(I_DIFF_OPEN_COOLDOWN_SEC > 0)
-      G_DIFF_LAST_OPEN_SIGNAL_MS = nw;
-   else
-      G_DIFF_LAST_OPEN_SIGNAL_MS = 0;
    if(I_DIFF_CLOSE_COOLDOWN_SEC > 0)
       G_DIFF_LAST_CLOSE_SIGNAL_MS = nw;
    else
@@ -1390,16 +1419,20 @@ string DiffHudSignalOpenProgressBlock()
    ulong remOCd = 0;
    if(DiffHudOpenCooldownRemainMs(remOCd))
    {
-      const ulong perO = (ulong)I_DIFF_OPEN_COOLDOWN_SEC * (ulong)1000;
+      const ulong perO = (ulong)G_OPEN_CD_ROLLED_SEC * (ulong)1000;
       const ulong nwC = NowMs();
       double pctE = 0.0;
       if(perO > 0)
          pctE = 100.0 * (double)(nwC - G_DIFF_LAST_OPEN_SIGNAL_MS) / (double)perO;
       if(pctE > 100.0)
          pctE = 100.0;
-      lines += StringFormat(" open cooldown: %s of %u s  ", DiffHudFormatRemainMs(remOCd), (uint)(perO / 1000));
+      lines += StringFormat(" open cooldown: %s  %s  ", DiffHudOpenCooldownRoundTag(), DiffHudFormatRemainMs(remOCd));
       lines += DiffHudFormatProgressBar(pctE);
       lines += " elapsed\n\n";
+   }
+   else if(StringLen(DiffHudOpenCooldownRoundTag()) > 0 && G_DIFF_LAST_OPEN_SIGNAL_MS > 0)
+   {
+      lines += StringFormat(" open cooldown: ready, %s\n\n", DiffHudOpenCooldownRoundTag());
    }
    ulong remACd = 0;
    if(DiffHudAvgOpenCooldownRemainMs(remACd))
@@ -2290,7 +2323,8 @@ void DiffMasterTick()
    if(!G_PAIR_ACTIVE)
    {
       const ulong nw = NowMs();
-      if((nw - G_DIFF_LAST_OPEN_SIGNAL_MS) < (ulong)I_DIFF_OPEN_COOLDOWN_SEC * (ulong)1000)
+      if(G_OPEN_CD_ROLLED_SEC > 0 &&
+         (nw - G_DIFF_LAST_OPEN_SIGNAL_MS) < (ulong)G_OPEN_CD_ROLLED_SEC * (ulong)1000)
          return;
 
       const int th = I_DIFF_OPEN_THRESHOLD_PTS;

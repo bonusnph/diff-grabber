@@ -4,13 +4,14 @@
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
 // Lite hard cap for I_LOT. Edit this value to change the maximum lot.
-double G_LITE_MAX_LOT = 0.30;
+#define SFX_SYNC_LITE 1
+double G_LITE_MAX_LOT = 0.10;
 // Last server date the EA may run (inclusive). Stops at 00:00 the next server day.
-datetime G_LITE_EXPIRE_DATE = D'2027.01.01';
+datetime G_LITE_EXPIRE_DATE = D'2026.12.01';
 
-#define SFX_SYNC_EA_VERSION "1.30"
+#define SFX_SYNC_EA_VERSION "1.31"
 #ifndef SFX_SYNC_PROTOCOL_VERSION
-#define SFX_SYNC_PROTOCOL_VERSION "1.30"
+#define SFX_SYNC_PROTOCOL_VERSION "1.31"
 #endif
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
@@ -105,6 +106,19 @@ int       I_DYN_LOT_STABLE_LOOP_Y = 3;       // Dynamic lot: inc->dec oscillatio
 bool      I_DYN_LOT_COUNT_SCHEDULED = false; // Dynamic lot: count weekend/schedule closes in streak
 input double    I_MIN_BALANCE_MASTER = 0.00;       // Min master balance to allow new open (0 = off)
 input double    I_MIN_BALANCE_SLAVE  = 0.00;       // Min slave balance to allow new open (0 = off)
+bool      I_RAND_LOT_ENABLED = false;        // Random lot between min and max
+double    I_RAND_LOT_MIN = 0.10;             // Random lot lower bound
+double    I_RAND_LOT_MAX = 1.00;             // Random lot upper bound
+double    I_RAND_LOT_STEP = 0.10;            // Random lot step (0.10 = 0.10, 0.20, ...)
+bool      I_TP_ENABLED = false;              // Set take profit from entry
+int       I_TP_POINTS_MIN = 4000;            // Take profit distance min (points)
+int       I_TP_POINTS_MAX = 5000;            // Take profit distance max (points)
+bool      I_SL_ENABLED = false;              // Set stop loss from entry
+int       I_SL_POINTS_MIN = 3000;            // Stop loss distance min (points)
+int       I_SL_POINTS_MAX = 3000;            // Stop loss distance max (points)
+bool      I_OPEN_CD_RANDOM = true;           // Randomize open cooldown after flat
+int       I_OPEN_CD_MIN_SEC = 900;           // Open cooldown min seconds (also the fixed value)
+int       I_OPEN_CD_MAX_SEC = 3600;           // Open cooldown max seconds
 int       I_SLIPPAGE = 30;              // Max slippage (points) for sync orders
 ENUM_OPEN_MODE I_OPEN_MODE = OPEN_BALANCED;   // How to sequence master/slave opens
 ENUM_CLOSE_MODE I_CLOSE_MODE = CLOSE_BALANCED; // How to sequence closes (and rescue)
@@ -152,8 +166,8 @@ int               I_DIFF_QF_AUTO_MARGIN_MS = 220;       // AUTO: extra ms added 
 int               I_DIFF_QF_AUTO_MIN_MS = 520;         // AUTO: floor for computed fresh ms (prevents an overly tight limit)
 int               I_DIFF_QF_AUTO_MAX_MS = 7200;        // AUTO: ceiling for computed fresh ms (prevents runaway when one side stalls)
 int               I_DIFF_QF_AUTO_WARMUP_N = 22;        // AUTO: need at least this many gap samples on master and on slave before AUTO replaces manual fresh ms
-int               I_DIFF_MAX_SPREAD_SELF = 30;              // Block if this chart spread exceeds (pts)
-int               I_DIFF_MAX_SPREAD_PEER = 30;             // Block if slave spread exceeds (pts)
+input int         I_DIFF_MAX_SPREAD_SELF = 50;              // Block if this chart spread exceeds (pts)
+input int         I_DIFF_MAX_SPREAD_PEER = 50;             // Block if slave spread exceeds (pts)
 int               I_DIFF_OPEN_COOLDOWN_SEC = 60;            // Wait after an auto-open before next auto-open
 int               I_DIFF_CLOSE_COOLDOWN_SEC = 300;            // Base delay before diff auto-close; also post-open guard
 
@@ -356,6 +370,12 @@ double    G_DIFF_SLAVE_STREAM_PROFIT = 0.0;
 double    G_DIFF_MASTER_MAGIC_PL = 0.0;
 
 ulong     G_DIFF_LAST_OPEN_SIGNAL_MS = 0;
+int       G_OPEN_CD_ROLLED_SEC = 0;
+int       G_APPLY_TP_PTS = 0;
+int       G_APPLY_SL_PTS = 0;
+int       G_HUD_TP_PTS = 0;
+int       G_HUD_SL_PTS = 0;
+bool      G_HUD_STOPS_ROLLED = false;
 ulong     G_DIFF_LAST_CLOSE_SIGNAL_MS = 0;
 
 double    G_DIFF_SIGNAL_SNAP_OPEN_PTS = 0.0;
@@ -865,6 +885,36 @@ string LockHudMasterCommentLine()
    );
 }
 
+string HudStopsRange(const bool enabled, const int a, const int b)
+{
+   if(!enabled)
+      return "off";
+   int lo = a;
+   int hi = b;
+   if(hi < lo)
+   {
+      const int tmp = lo;
+      lo = hi;
+      hi = tmp;
+   }
+   if(lo == hi)
+      return IntegerToString(lo);
+   return StringFormat("%d-%d", lo, hi);
+}
+
+string HudStopsLine()
+{
+   if(!I_TP_ENABLED && !I_SL_ENABLED && !G_HUD_STOPS_ROLLED)
+      return "";
+   if(!G_HUD_STOPS_ROLLED)
+      return StringFormat("TP/SL: tp %s  sl %s\n",
+                          HudStopsRange(I_TP_ENABLED, I_TP_POINTS_MIN, I_TP_POINTS_MAX),
+                          HudStopsRange(I_SL_ENABLED, I_SL_POINTS_MIN, I_SL_POINTS_MAX));
+   const string tp = (G_HUD_TP_PTS > 0) ? (IntegerToString(G_HUD_TP_PTS) + " pts") : "off";
+   const string sl = (G_HUD_SL_PTS > 0) ? (IntegerToString(G_HUD_SL_PTS) + " pts") : "off";
+   return StringFormat("TP/SL this round: tp=%s  sl=%s\n", tp, sl);
+}
+
 void RefreshChartComment()
 {
    string lines = SyncPortTag() + "\n\n";
@@ -934,6 +984,7 @@ void RefreshChartComment()
          else
             lines += "Open-guard: READY\n";
          lines += MinBalanceHudLines();
+         lines += HudStopsLine();
 
          lines += "\n";
          lines += LockHudMasterCommentLine();
@@ -1252,6 +1303,7 @@ void SlaveCheckPendingOpenTimeout();
 void MasterRecoverOrphanLegsIfNeeded();
 void MasterHandleDisconnectDuringTransactions();
 void ArmPostCloseOpenGuard(const string reason);
+void ArmDiffOpenCooldownAfterFlat();
 bool MasterOpenGuardReason(string &code, string &detail);
 bool MasterCloseGuardReason(string &code, string &detail);
 int CountEaOpenOrdersOnSlaveSymbol();
@@ -1350,6 +1402,174 @@ void FillAuditStoreCapture(const bool isBuy, const double request, const double 
 void FillAuditNoteRecoveredPosition(const int ticket);
 double FillAuditOrderClosePrice(const int ticket);
 
+int RollInclusiveInt(const int a, const int b)
+{
+   int lo = a;
+   int hi = b;
+   if(hi < lo)
+   {
+      const int tmp = lo;
+      lo = hi;
+      hi = tmp;
+   }
+   if(lo < 0)
+      lo = 0;
+   if(hi < lo)
+      hi = lo;
+   if(hi == lo)
+      return lo;
+   return lo + (MathRand() % (hi - lo + 1));
+}
+
+double BrokerVolumeStep()
+{
+   double step = MarketInfo(G_SYMBOL, MODE_LOTSTEP);
+   if(step <= 0.0)
+      step = 0.01;
+   return step;
+}
+
+double AlignOpenLot(double lot)
+{
+   const double step = BrokerVolumeStep();
+   const double vmin = MarketInfo(G_SYMBOL, MODE_MINLOT);
+   const double vmax = MarketInfo(G_SYMBOL, MODE_MAXLOT);
+   if(step > 0.0)
+      lot = MathRound(lot / step) * step;
+   if(vmin > 0.0 && lot < vmin)
+      lot = vmin;
+   if(vmax > 0.0 && lot > vmax)
+      lot = vmax;
+#ifdef SFX_SYNC_LITE
+   if(lot > G_LITE_MAX_LOT)
+   {
+      lot = G_LITE_MAX_LOT;
+      if(step > 0.0)
+         lot = MathRound(lot / step) * step;
+   }
+#endif
+   if(vmin > 0.0 && lot < vmin)
+      lot = vmin;
+   return NormalizeDouble(lot, 2);
+}
+
+double RollOpenLot()
+{
+   if(!I_RAND_LOT_ENABLED)
+      return DynActiveLot();
+   double step = I_RAND_LOT_STEP;
+   if(step <= 0.0)
+      step = BrokerVolumeStep();
+   double minL = I_RAND_LOT_MIN;
+   double maxL = I_RAND_LOT_MAX;
+   if(maxL < minL)
+   {
+      const double tmp = minL;
+      minL = maxL;
+      maxL = tmp;
+   }
+#ifdef SFX_SYNC_LITE
+   if(maxL > G_LITE_MAX_LOT)
+      maxL = G_LITE_MAX_LOT;
+   if(minL > maxL)
+      minL = maxL;
+#endif
+   int n = 0;
+   if(step > 0.0)
+      n = (int)MathRound((maxL - minL) / step);
+   if(n < 0)
+      n = 0;
+   const int k = (n == 0) ? 0 : (MathRand() % (n + 1));
+   double lot = minL + (double)k * step;
+   if(lot > maxL)
+      lot = maxL;
+   return AlignOpenLot(lot);
+}
+
+void PrepareOpenStops()
+{
+   G_APPLY_TP_PTS = I_TP_ENABLED ? RollInclusiveInt(I_TP_POINTS_MIN, I_TP_POINTS_MAX) : 0;
+   G_APPLY_SL_PTS = I_SL_ENABLED ? RollInclusiveInt(I_SL_POINTS_MIN, I_SL_POINTS_MAX) : 0;
+   G_HUD_TP_PTS = G_APPLY_TP_PTS;
+   G_HUD_SL_PTS = G_APPLY_SL_PTS;
+   G_HUD_STOPS_ROLLED = true;
+}
+
+void UseReceivedStops(const int tpPts, const int slPts)
+{
+   G_APPLY_TP_PTS = MathMax(0, tpPts);
+   G_APPLY_SL_PTS = MathMax(0, slPts);
+}
+
+void ApplyEntryStops(const int ticket, const bool isBuy)
+{
+   if(ticket <= 0)
+      return;
+   if(G_APPLY_TP_PTS <= 0 && G_APPLY_SL_PTS <= 0)
+      return;
+   if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+   {
+      SyncLog(StringFormat("[SFX-SYNC] TP/SL skipped, ticket %d not selected", ticket));
+      return;
+   }
+   const double entry = OrderOpenPrice();
+   const double point = MarketInfo(G_SYMBOL, MODE_POINT);
+   const int digits = (int)MarketInfo(G_SYMBOL, MODE_DIGITS);
+   const int stops = (int)MarketInfo(G_SYMBOL, MODE_STOPLEVEL);
+   if(entry <= 0.0 || point <= 0.0)
+      return;
+   double tp = 0.0;
+   double sl = 0.0;
+   if(isBuy)
+   {
+      if(G_APPLY_TP_PTS > 0)
+         tp = NormalizeDouble(entry + (double)G_APPLY_TP_PTS * point, digits);
+      if(G_APPLY_SL_PTS > 0)
+         sl = NormalizeDouble(entry - (double)G_APPLY_SL_PTS * point, digits);
+   }
+   else
+   {
+      if(G_APPLY_TP_PTS > 0)
+         tp = NormalizeDouble(entry - (double)G_APPLY_TP_PTS * point, digits);
+      if(G_APPLY_SL_PTS > 0)
+         sl = NormalizeDouble(entry + (double)G_APPLY_SL_PTS * point, digits);
+   }
+   const double bid = MarketInfo(G_SYMBOL, MODE_BID);
+   const double ask = MarketInfo(G_SYMBOL, MODE_ASK);
+   const double minDist = (double)MathMax(0, stops) * point;
+   if(tp > 0.0)
+   {
+      const double gap = isBuy ? (tp - ask) : (bid - tp);
+      if(gap < minDist)
+      {
+         SyncLog(StringFormat("[SFX-SYNC] TP skipped ticket=%d pts=%d below stops level %d",
+                              ticket, G_APPLY_TP_PTS, stops));
+         tp = 0.0;
+      }
+   }
+   if(sl > 0.0)
+   {
+      const double gap = isBuy ? (bid - sl) : (sl - ask);
+      if(gap < minDist)
+      {
+         SyncLog(StringFormat("[SFX-SYNC] SL skipped ticket=%d pts=%d below stops level %d",
+                              ticket, G_APPLY_SL_PTS, stops));
+         sl = 0.0;
+      }
+   }
+   if(tp <= 0.0 && sl <= 0.0)
+      return;
+   ResetLastError();
+   if(!OrderModify(ticket, entry, sl, tp, 0, clrNONE))
+   {
+      SyncLog(StringFormat("[SFX-SYNC] TP/SL modify failed ticket=%d sl=%.5f tp=%.5f err=%d",
+                           ticket, sl, tp, GetLastError()));
+      return;
+   }
+   SyncLog(StringFormat("[SFX-SYNC] TP/SL set ticket=%d sl=%.5f tp=%.5f pts_sl=%d pts_tp=%d",
+                        ticket, sl, tp, G_APPLY_SL_PTS, G_APPLY_TP_PTS));
+}
+
 int OpenOrder(const int type, const double lots, int &err_out)
 {
    err_out = 0;
@@ -1390,6 +1610,7 @@ int OpenOrder(const int type, const double lots, int &err_out)
             if(RecoverMasterOpenTicketMt4(recover_side, lots, opened_not_before, known_tickets, known_n, recovered_ticket))
             {
                FillAuditNoteRecoveredPosition(recovered_ticket);
+               ApplyEntryStops(recovered_ticket, isBuy);
                return recovered_ticket;
             }
             Sleep(40);
@@ -1401,6 +1622,7 @@ int OpenOrder(const int type, const double lots, int &err_out)
          if(RecoverMasterOpenTicketMt4(recover_side, lots, opened_not_before, known_tickets, known_n, recovered_ticket))
          {
             FillAuditNoteRecoveredPosition(recovered_ticket);
+            ApplyEntryStops(recovered_ticket, isBuy);
             return recovered_ticket;
          }
       }
@@ -1410,6 +1632,8 @@ int OpenOrder(const int type, const double lots, int &err_out)
       const double fill = OrderOpenPrice();
       FillAuditStoreCapture(isBuy, price, fill, fill > 0.0);
    }
+   if(ticket > 0)
+      ApplyEntryStops(ticket, isBuy);
    return ticket;
 }
 
@@ -2055,6 +2279,7 @@ void ArmPostCloseOpenGuard(const string reason)
    if(I_ROLE != ROLE_SOURCE_MASTER)
       return;
    G_LAST_PAIR_CLOSE_MS = NowMs();
+   ArmDiffOpenCooldownAfterFlat();
    SyncLog(StringFormat("[SFX-SYNC] OPEN_GUARD armed after close reason=%s hold_ms=%d",
                         reason, MathMax(0, I_REOPEN_GUARD_AFTER_CLOSE_MS)));
 }
@@ -2256,7 +2481,6 @@ void ClearDegradedRefreshButton()
    ObjectSetString(0, "SFX_CLEAR_DEGRADED", OBJPROP_TOOLTIP, tip);
 }
 
-#define SFX_SYNC_LITE 1
 #include <SumoFx/FXH-SYNC-HEADER-MQL4.mqh>
 
 void ResetOpenTxState()
@@ -2692,16 +2916,18 @@ void MonitorForceFlatState()
 
 string BuildOpenIntent()
 {
-   const double lot_now = DynActiveLot();
+   const double lot_now = G_OPEN_LOT_SLAVE;
    return StringFormat(
-      "OPEN_INTENT;%s;%s;%s;%.2f;%.2f;%d;%d",
+      "OPEN_INTENT;%s;%s;%s;%.2f;%.2f;%d;%d;%d;%d",
       G_OPEN_TX_ID,
       G_SYMBOL,
       G_OPEN_SIDE,
       lot_now,
       lot_now,
       I_SLIPPAGE,
-      I_OPEN_ROLLBACK_TIMEOUT_MS
+      I_OPEN_ROLLBACK_TIMEOUT_MS,
+      G_APPLY_TP_PTS,
+      G_APPLY_SL_PTS
    );
 }
 
@@ -2725,10 +2951,11 @@ void PrintLogMasterOpenIntent(string tag)
    string intent_label = tag;
    if(tag == "DIFF_OPEN")
       intent_label = DiffOpenParenLabel();
-   const double lot_now = DynActiveLot();
+   const double lot_now = G_OPEN_LOT_SLAVE;
    string line = StringFormat(
-      "[SFX-SYNC] OPEN_INTENT_OUT %s tx_id=%s symbol=%s side_master=%s lot_m=%.2f lot_s=%.2f open_mode=%d",
-      intent_label, G_OPEN_TX_ID, G_SYMBOL, G_OPEN_SIDE, lot_now, lot_now, (int)I_OPEN_MODE
+      "[SFX-SYNC] OPEN_INTENT_OUT %s tx_id=%s symbol=%s side_master=%s lot_m=%.2f lot_s=%.2f open_mode=%d tp=%d sl=%d",
+      intent_label, G_OPEN_TX_ID, G_SYMBOL, G_OPEN_SIDE, lot_now, lot_now, (int)I_OPEN_MODE,
+      G_APPLY_TP_PTS, G_APPLY_SL_PTS
    );
    ExpertPrintLn(line);
    SyncLog(line);
@@ -2868,6 +3095,7 @@ bool TryRescueHedge()
    G_RESCUE_ATTEMPTS_USED++;
    int err = 0;
    int type = SideToOrderType(G_PAIR_MASTER_SIDE);
+   PrepareOpenStops();
    int rescue_ticket = OpenOrder(type, G_PAIR_MASTER_LOT, err);
    if(rescue_ticket > 0)
    {
@@ -3055,8 +3283,6 @@ void StartOpenTransaction()
       open_tag = "UI_BUTTON";
    G_DIFF_LAST_OPEN_INTENT_TAG = open_tag;
    G_PENDING_OPEN_INTENT_TAG = "UI_BUTTON";
-   if(open_tag == "DIFF_OPEN")
-      G_DIFF_LAST_OPEN_SIGNAL_MS = NowMs();
 
    string open_lock_key = "";
    double open_lock_token = 0.0;
@@ -3087,7 +3313,8 @@ void StartOpenTransaction()
    G_OPEN_SIDE = SideToString(exec_side);
    FillAuditBegin(true, G_OPEN_TX_ID, exec_side == SIDE_BUY, open_tag);
    NegDiffArmOpen(exec_side == SIDE_BUY);
-   G_OPEN_LOT_SLAVE = DynActiveLot();
+   G_OPEN_LOT_SLAVE = RollOpenLot();
+   PrepareOpenStops();
 
    int err = 0;
    string master_open_diff_snap = (open_tag == "DIFF_OPEN") ? (" " + DiffOpenParenLabel()) : "";
@@ -3126,6 +3353,7 @@ void StartOpenTransaction()
                   dup_warned_set = CanonicalMatchTicketSetMt4(match_tickets, match_n);
                }
                G_OPEN_MASTER_TICKET = recovered_ticket;
+               ApplyEntryStops(recovered_ticket, exec_side == SIDE_BUY);
                G_OPEN_MASTER_OK = true;
                err = 0;
                FillAuditNoteRecoveredPosition(recovered_ticket);
@@ -3178,6 +3406,7 @@ void StartOpenTransaction()
             if(RecoverMasterOpenTicketMt4(exec_side, G_OPEN_LOT_SLAVE, opened_not_before, known_tickets, known_n, recovered_ticket))
             {
                G_OPEN_MASTER_TICKET = recovered_ticket;
+               ApplyEntryStops(recovered_ticket, exec_side == SIDE_BUY);
                G_OPEN_MASTER_OK = true;
                err = 0;
                FillAuditNoteRecoveredPosition(recovered_ticket);
@@ -3244,6 +3473,7 @@ void StartOpenTransaction()
          if(RecoverMasterOpenTicketMt4(exec_side, G_OPEN_LOT_SLAVE, opened_not_before, known_tickets, known_n, recovered_ticket))
          {
             G_OPEN_MASTER_TICKET = recovered_ticket;
+            ApplyEntryStops(recovered_ticket, exec_side == SIDE_BUY);
             G_OPEN_MASTER_OK = true;
             err = 0;
             FillAuditNoteRecoveredPosition(recovered_ticket);
@@ -3437,7 +3667,7 @@ void HandleMasterIncomingPacket(const string msg)
       // so a dropped close result can finish here once both legs are actually flat.
       if(G_PAIR_ACTIVE && !G_OPEN_TX_ACTIVE && !G_CLOSE_TX_ACTIVE && !G_FORCE_FLAT_ACTIVE
          && !PairWithinSettleGrace()
-         && !slave_open_in && slave_ticket_in <= 0 && slave_ea_open_count <= 0
+         && !slave_open_in && slave_ea_open_count <= 0
          && MasterTrackedLegConfirmedClosed(G_PAIR_MASTER_TICKET))
       {
          if(StringLen(G_CLOSE_REASON) == 0)
@@ -3723,6 +3953,8 @@ void HandleSlaveIncomingPacket(const string msg)
       G_SLAVE_LAST_OPEN_LOTS = lot_slave;
       G_SLAVE_LAST_OPEN_EXCLUDE_N = SnapshotEaTicketsMt4(G_SLAVE_LAST_OPEN_EXCLUDE);
       int err = 0;
+      UseReceivedStops((ArraySize(p) >= 10) ? (int)StringToInteger(p[8]) : 0,
+                       (ArraySize(p) >= 10) ? (int)StringToInteger(p[9]) : 0);
       int tk = OpenOrder(type, lot_slave, err);
       bool ok = (tk > 0);
       G_SLAVE_PENDING_OPEN_TXID = txid;
