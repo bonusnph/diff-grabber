@@ -7,8 +7,12 @@
 #property link      "https://www.mql5.com"
 
 // EA Version constant (single source of truth)
-#define EA_VERSION "1.30"
+#define EA_VERSION "1.31"
 #property version EA_VERSION
+
+// Local expiry lock. Used only when input_api_auth_enabled = false (no API).
+// Format: "YYYY.MM.DD" — EA stops after 23:59:59 local PC time on this date. Empty = no lock.
+string g_lock_expire_date = "2026.11.30";
 
 // =============================
 // EA Heading Master–Slave (MT5)
@@ -33,7 +37,7 @@ enum Role { ROLE_MASTER = 0, ROLE_SLAVE = 1 };
 // Master fixed side direction
 enum MasterSide { SIDE_BUY = 0, SIDE_SELL = 1, SIDE_AUTO = 2 };
 input Role   input_role                     = ROLE_MASTER;   // Scope: Both — select EA role (ROLE_MASTER or ROLE_SLAVE)
-input string input_channel_id               = "A01";         // Scope: Both — channel identifier (must match across peers)
+string input_channel_id               = "A01";         // Scope: Both — channel identifier (must match across peers)
 string input_shared_dir               = "";            // Scope: Both — legacy (unused); Common Files is used by default
 string input_symbol                   = "";            // Scope: Both — empty uses current chart symbol
 bool   input_verbose_journal_logs     = true;          // Scope: Both — emit concise Journal logs for key events
@@ -49,22 +53,22 @@ int    input_display_width_pixels      = 520;           // Scope: Both — width
 int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
 input MasterSide input_master_side          = SIDE_AUTO;     // Scope: Master — master direction (Slave auto-opposite)
 input double input_lot                      = 0.01;          // Scope: Master — lot size for orders (applies to Master and Slave)
-double g_max_lots                     = 0.3;           // Maximum lot size per order (edit here)
+double g_max_lots                     = 0.15;           // Maximum lot size per order (edit here)
 
 // Centralized mode control (Master only)
-input bool   input_trading_positive_swap        = false;    // Scope: Master — Positive Swap mode: true=optimize for positive swap (disable scheduled/threshold/force-close; weekend only), false=enable scheduled/threshold/force-close
+bool   input_trading_positive_swap        = false;    // Scope: Master — Positive Swap mode: true=optimize for positive swap (disable scheduled/threshold/force-close; weekend only), false=enable scheduled/threshold/force-close
 
 // Positive Swap override (Master only)
 int    input_pswap_close_th_points        = 10000;     // Scope: Master — close threshold to enforce during positive swap window (03:00-05:30 local, non-Saturday)
 
 // Positive Swap Thursday auto-open (Master only)
-input string input_swap_thursday_open_time    = "03:30";   // Scope: Master — Thursday auto-open time (HH:mm, local)
-input double input_swap_trading_lots    = 0.01;       // Scope: Master — lots for Thursday auto-open
+string input_swap_thursday_open_time    = "03:30";   // Scope: Master — Thursday auto-open time (HH:mm, local)
+double input_swap_trading_lots    = 0.01;       // Scope: Master — lots for Thursday auto-open
 
 #define input_lot_master input_lot
 #define input_lot_slave  input_lot
-input int    input_open_threshold_points    = 20;            // Scope: Master — open threshold (points)
-input int    input_close_threshold_points   = 20;            // Scope: Master — close threshold (points)
+int    input_open_threshold_points    = 20;            // Scope: Master — open threshold (points)
+int    input_close_threshold_points   = 20;            // Scope: Master — close threshold (points)
 int    input_open_cooldown_seconds    = 300;           // Scope: Master — open cooldown after an open
 int    input_close_cooldown_seconds   = 60;            // Scope: Master — close cooldown after both sides opened
 int    input_max_open_pairs           = 1;             // Scope: Master — max concurrent pairs
@@ -76,7 +80,7 @@ int    input_raw_stability_timeout_ms = 500;          // Scope: Master — max w
 int    input_raw_hysteresis_offset   = 10;           // Scope: Master — hysteresis offset below threshold for reset (points)
 
 // Averaged diff gating (Master-only)
-input bool   input_avg_filter_enabled       = true;         // Scope: Master — enable EMA-based averaged diff gating
+bool   input_avg_filter_enabled       = true;         // Scope: Master — enable EMA-based averaged diff gating
 int    input_avg_period               = 9;             // Scope: Master — EMA period (ticks)
 bool   input_use_prefilter_median     = true;          // Scope: Master — apply median pre-filter before EMA
 int    input_prefilter_window         = 3;             // Scope: Master — median window (odd 3/5)
@@ -108,13 +112,13 @@ int    input_dpm_close_th2    = 25;     // Scope: Master — close observe thres
 int    input_dpm_close_th3    = 40;     // Scope: Master — close observe threshold level 3 (pts)
 
 // Zone Stability Filter (works with all modes - Master only)
-input  bool   input_zone_stability_enabled    = true;     // Scope: Master — enable zone stability check for all modes
-input  int    input_zone_stability_ticks      = 7;        // Scope: Master — consecutive ticks required in positive zone
-input  int    input_zone_negative_threshold   = -1;        // Scope: Master — threshold for negative zone detection (points)
+bool   input_zone_stability_enabled    = true;     // Scope: Master — enable zone stability check for all modes
+int    input_zone_stability_ticks      = 7;        // Scope: Master — consecutive ticks required in positive zone
+int    input_zone_negative_threshold   = -1;        // Scope: Master — threshold for negative zone detection (points)
 
 // Quality guards
-int    input_max_spread_points_self   = 30;            // Scope: Master — block if own spread exceeds (points)
-int    input_max_spread_points_peer   = 30;            // Scope: Master — check peer spread before opening (points)
+int    input_max_spread_points_self   = 50;            // Scope: Master — block if own spread exceeds (points)
+int    input_max_spread_points_peer   = 50;            // Scope: Master — check peer spread before opening (points)
 int    input_quotes_fresh_ms          = 400;           // Scope: Master — maximum acceptable quote age (ms)
 int    input_file_poll_ms             = 5;             // Scope: Master — background file polling cadence (ms)
 int    input_magic_number_base        = 0;        // Scope: Master — magic base per channel/symbol
@@ -149,7 +153,7 @@ bool   input_show_cooldown_info        = true;        // Scope: Master — show 
 // Extended controls (Master-only; synced to Slave via config)
 input double input_min_balance_master_usd    = 0.00;          // Scope: Master — minimum balance required on Master to allow new open
 input double input_min_balance_slave_usd     = 0.00;          // Scope: Master — minimum balance required on Slave to allow new open
-input double input_initial_capital_usd       = 0.00;          // Scope: Master — initial capital for profit calculation
+double input_initial_capital_usd       = 0.00;          // Scope: Master — initial capital for profit calculation
 
 // Scheduled Close Only Mode (Master only)
 bool   input_scheduled_close_only_enabled = true;     // Scope: Master — enable scheduled close only mode
@@ -158,8 +162,8 @@ string input_close_only_end_time          = "06:00";   // Scope: Master — end 
 
 // Weekend Close Only (Master only; enforced regardless of input_scheduled_close_only_enabled)
 bool   input_sat_close_only_enabled       = true;           // Scope: Master — enable weekend close-only (Sat start -> Mon end)
-input string input_sat_close_only_start_time    = "02:00";   // Scope: Master — Saturday start time (HH:mm)
-input string input_mon_close_only_end_time      = "08:00";   // Scope: Master — Monday end time (HH:mm)
+string input_sat_close_only_start_time    = "02:00";   // Scope: Master — Saturday start time (HH:mm)
+string input_mon_close_only_end_time      = "08:00";   // Scope: Master — Monday end time (HH:mm)
 
 // Close Threshold Scheduler (Master only)
 bool   input_close_th_schedule_enabled    = false;    // Scope: Master — enable scheduled close threshold changes
@@ -185,7 +189,7 @@ string input_force_close_time             = "02:30";  // Scope: Master — time 
 // Master API Switch
 bool   input_api_enabled = false;                  // Scope: Both — Enable/Disable ALL API features
 
-// Authorization API
+// Authorization API (when false, expiry is g_lock_expire_date at the top of this file)
 bool   input_api_auth_enabled = false;              // Scope: Both — Enable account authorization via API
 string input_api_auth_url = "https://script.google.com/macros/s/AKfycbzyxxyRp3xJSe501Cd4BrW-ZbAIJegZ8O5OG-AMKiz4bx3RA5A4ursYIPVKJYok--zS/exec?action=auth";                    // Scope: Both — Authorization API endpoint URL
 int    input_api_auth_interval_hours = 12;         // Scope: Both — Authorization check interval (hours)
@@ -1469,18 +1473,21 @@ void GetMasterSlaveQuotes(double &m_bid, double &m_ask, double &s_bid, double &s
 // -----------------------------
 // Trading helpers (MT5)
 // -----------------------------
-double ClampLots(const double lots)
+bool LotsExceedMax(const double lots)
 {
-   if(g_max_lots <= 0.0 || lots <= g_max_lots)
-      return lots;
-   return g_max_lots;
+   return (g_max_lots > 0.0 && lots > g_max_lots);
 }
 
 bool PlaceOrder(const bool isBuy, const double lots, ulong &ticket_out, double &price_out)
 {
    ticket_out = 0;
    price_out = 0.0;
-   const double volume = ClampLots(lots);
+   if(LotsExceedMax(lots))
+   {
+      Print(StringFormat("[LOCK] Order lot %.2f exceeds max lots %.2f", lots, g_max_lots));
+      return false;
+   }
+   const double volume = lots;
    MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req); ZeroMemory(res);
    req.action = TRADE_ACTION_DEAL;
    req.symbol = g_symbol;
@@ -2801,6 +2808,90 @@ bool IsAuthAPIEnabled()
    return IsAPIEnabled() && input_api_auth_enabled;
 }
 
+// Parse g_lock_expire_date ("YYYY.MM.DD") as end of that day. 0 = empty or invalid.
+datetime ParseLocalLockExpire()
+{
+   if(StringLen(g_lock_expire_date) < 10)
+      return 0;
+   int year  = (int)StringToInteger(StringSubstr(g_lock_expire_date, 0, 4));
+   int month = (int)StringToInteger(StringSubstr(g_lock_expire_date, 5, 2));
+   int day   = (int)StringToInteger(StringSubstr(g_lock_expire_date, 8, 2));
+   if(year < 2000 || month < 1 || month > 12 || day < 1 || day > 31)
+      return 0;
+   return StringToTime(StringFormat("%04d.%02d.%02d 23:59:59", year, month, day));
+}
+
+// Apply the file-header expiry when API auth is off. false = do not start the EA.
+bool InitLocalExpireLock()
+{
+   if(input_api_auth_enabled)
+      return true;
+   if(StringLen(g_lock_expire_date) == 0)
+      return true;
+
+   datetime exp = ParseLocalLockExpire();
+   if(exp <= 0)
+   {
+      string error_msg = StringFormat("Invalid lock expire date '%s' (use YYYY.MM.DD)", g_lock_expire_date);
+      Print("[LOCK] ", error_msg);
+      Alert(error_msg);
+      return false;
+   }
+
+   g_account_expires_at = exp;
+   if(TimeLocal() > exp)
+   {
+      g_account_authorized = false;
+      string error_msg = StringFormat("EA expired on %s", TimeToString(exp, TIME_DATE));
+      Print("[LOCK] ", error_msg);
+      Alert(error_msg);
+      LogEvent("LOCK_EXPIRED", StringFormat("expires=%s", TimeToString(exp, TIME_DATE)));
+      return false;
+   }
+
+   g_account_authorized = true;
+   if(input_verbose_journal_logs)
+      Print("[LOCK] Local expire lock active until ", TimeToString(exp, TIME_DATE), " (API auth disabled)");
+   return true;
+}
+
+// Stop the EA once the header expiry has passed. true = caller must return immediately.
+bool EnforceLocalExpireLock()
+{
+   if(input_api_auth_enabled)
+      return false;
+   if(g_account_expires_at <= 0)
+      return false;
+   if(TimeLocal() <= g_account_expires_at)
+      return false;
+
+   static bool s_removing = false;
+   g_account_authorized = false;
+   if(!s_removing)
+   {
+      s_removing = true;
+      string error_msg = StringFormat("EA expired on %s", TimeToString(g_account_expires_at, TIME_DATE));
+      Print("[LOCK] ", error_msg);
+      Alert(error_msg);
+      LogEvent("LOCK_EXPIRED", StringFormat("expires=%s", TimeToString(g_account_expires_at, TIME_DATE)));
+      ExpertRemove();
+   }
+   return true;
+}
+
+bool IsTradeAuthorized()
+{
+   if(!input_api_auth_enabled)
+   {
+      if(g_account_expires_at > 0 && TimeLocal() > g_account_expires_at)
+         return false;
+      return true;
+   }
+   if(IsAuthAPIEnabled() && !g_account_authorized)
+      return false;
+   return true;
+}
+
 // Check if signal API is enabled
 bool IsSignalAPIEnabled()
 {
@@ -4019,7 +4110,7 @@ void MaybeOpenPair()
    if(g_role_conflict) return;
    if(!(input_role==ROLE_MASTER)) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(!IsTradeAuthorized()) return;
    // Check expiry date
    if(IsAuthAPIEnabled() && g_account_expires_at > 0 && TimeCurrent() > g_account_expires_at)
    {
@@ -4366,7 +4457,7 @@ void MaybeClosePair()
    if(g_role_conflict) return;
    if(!(input_role==ROLE_MASTER)) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(!IsTradeAuthorized()) return;
    
    // Evaluate both L1 and L2 block states
    bool l1_blocked = IsDiffCloseBlocked();
@@ -4748,7 +4839,7 @@ void SlaveProcessOpenCmd()
    if(g_role_conflict) return;
    if(input_role==ROLE_MASTER) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(!IsTradeAuthorized()) return;
    string s; if(!FileReadAll(PathOpenCmd(), s)) {
       // If command file missing for a while, no-op
       if(input_verbose_journal_logs) Print("[Slave] open_cmd.csv not found or not readable");
@@ -4826,7 +4917,7 @@ void SlaveProcessCloseCmd()
    if(g_role_conflict) return;
    if(input_role==ROLE_MASTER) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(!IsTradeAuthorized()) return;
    string s; if(!FileReadAll(PathCloseCmd(), s)) return;
    string fields[]; int n = StringSplit(TrimAll(s), ',', fields); if(n<7) return;
    string cmd_id = fields[1]; string pair_id = fields[3]; ulong created_ms = (ulong)StringToDouble(fields[5]); int expire_ms=(int)StringToInteger(fields[6]);
@@ -5906,7 +5997,7 @@ void MasterOpenNow()
 {
    if(!(input_role==ROLE_MASTER)) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(!IsTradeAuthorized()) return;
    // Update scheduled close only mode state
    UpdateScheduledCloseOnlyMode();
    // Close Only mode: prevent new orders
@@ -5986,7 +6077,7 @@ void MasterCloseNow()
 {
    if(!(input_role==ROLE_MASTER)) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(!IsTradeAuthorized()) return;
    // Release the debug hold so close can proceed
    if(input_debug_buttons_enabled) g_debug_hold_open = false;
    
@@ -6031,7 +6122,7 @@ void MasterOpenNowWithLots(const double lots)
 {
    if(!(input_role==ROLE_MASTER)) return;
    // Account authorization check
-   if(IsAuthAPIEnabled() && !g_account_authorized) return;
+   if(!IsTradeAuthorized()) return;
    // Update scheduled close only mode state
    UpdateScheduledCloseOnlyMode();
    // Close Only mode: prevent new orders
@@ -6254,7 +6345,21 @@ int OnInit()
       }
    }
 
+   if(LotsExceedMax(input_lot))
+   {
+      Alert(StringFormat("Lot %.2f exceeds max lots %.2f. EA will not run.", input_lot, g_max_lots));
+      return(INIT_FAILED);
+   }
+   if(LotsExceedMax(input_swap_trading_lots))
+   {
+      Alert(StringFormat("Swap lots %.2f exceeds max lots %.2f. EA will not run.", input_swap_trading_lots, g_max_lots));
+      return(INIT_FAILED);
+   }
+
    FolderEnsure();
+
+   if(!InitLocalExpireLock())
+      return(INIT_FAILED);
 
    // Initialize API system
    if (IsAPIEnabled())
@@ -6466,6 +6571,7 @@ void OnTimer()
 {
    static int timer_count = 0;
    timer_count++;
+   if(EnforceLocalExpireLock()) return;
    
    // === CRITICAL OPERATIONS - ทุกครั้ง ===
    // API system updates
@@ -6590,6 +6696,7 @@ void OnTimer()
 
 void OnTick()
 {
+   if(EnforceLocalExpireLock()) return;
    WriteQuotes();
    ReadPeerQuotes();
    UpdatePeerStatus();
