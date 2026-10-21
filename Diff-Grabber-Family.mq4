@@ -8,12 +8,15 @@
 #property strict
 
 // EA Version constant (single source of truth)
-#define EA_VERSION "1.31"
+#define EA_VERSION "1.32"
 #property version EA_VERSION
 
 // Local expiry lock. Used only when input_api_auth_enabled = false (no API).
 // Format: "YYYY.MM.DD" — EA stops after 23:59:59 local PC time on this date. Empty = no lock.
 string g_lock_expire_date = "2026.11.30";
+// Re-check stored expiry once per hour. Init still validates immediately.
+int    g_expire_check_interval_sec = 3600;
+bool   g_expire_stop = false;
 
 // =============================
 // EA Heading Master–Slave (MT4)
@@ -49,7 +52,7 @@ int    input_display_width_pixels      = 520;          // Scope: Both — width 
 int    input_slippage_points          = 10;            // Scope: Both — slippage (points)
 input MasterSide input_master_side          = SIDE_AUTO;     // Scope: Master — master direction (Slave auto-opposite)
 input double input_lot                      = 0.01;          // Scope: Master — lot size for orders (applies to Master and Slave)
-double g_max_lots                     = 0.15;           // Maximum lot size per order (edit here)
+double g_max_lots                     = 0.20;           // Maximum lot size per order (edit here)
 
 // Centralized mode control (Master only)
 bool   input_trading_positive_swap        = false;    // Scope: Master — Positive Swap mode: true=optimize for positive swap (disable scheduled/threshold/force-close; weekend only), false=enable scheduled/threshold/force-close
@@ -1040,8 +1043,11 @@ bool InitLocalExpireLock()
 }
 
 // Stop the EA once the header expiry has passed. true = caller must return immediately.
+// Caller must invoke this at most once per g_expire_check_interval_sec.
 bool EnforceLocalExpireLock()
 {
+   if(g_expire_stop)
+      return true;
    if(input_api_auth_enabled)
       return false;
    if(g_account_expires_at <= 0)
@@ -1049,28 +1055,22 @@ bool EnforceLocalExpireLock()
    if(TimeLocal() <= g_account_expires_at)
       return false;
 
-   static bool s_removing = false;
+   g_expire_stop = true;
    g_account_authorized = false;
-   if(!s_removing)
-   {
-      s_removing = true;
-      string error_msg = StringFormat("EA expired on %s", TimeToString(g_account_expires_at, TIME_DATE));
-      Print("[LOCK] ", error_msg);
-      Alert(error_msg);
-      LogEvent("LOCK_EXPIRED", StringFormat("expires=%s", TimeToString(g_account_expires_at, TIME_DATE)));
-      ExpertRemove();
-   }
+   string error_msg = StringFormat("EA expired on %s", TimeToString(g_account_expires_at, TIME_DATE));
+   Print("[LOCK] ", error_msg);
+   Alert(error_msg);
+   LogEvent("LOCK_EXPIRED", StringFormat("expires=%s", TimeToString(g_account_expires_at, TIME_DATE)));
+   ExpertRemove();
    return true;
 }
 
 bool IsTradeAuthorized()
 {
+   if(g_expire_stop)
+      return false;
    if(!input_api_auth_enabled)
-   {
-      if(g_account_expires_at > 0 && TimeLocal() > g_account_expires_at)
-         return false;
       return true;
-   }
    if(IsAuthAPIEnabled() && !g_account_authorized)
       return false;
    return true;
@@ -4075,15 +4075,6 @@ void MaybeOpenPair()
    if(!(input_role==ROLE_MASTER)) return;
    // Account authorization check
    if(!IsTradeAuthorized()) return;
-   // Check expiry date
-   if(IsAuthAPIEnabled() && g_account_expires_at > 0 && TimeCurrent() > g_account_expires_at)
-   {
-      g_account_authorized = false;
-      g_api_auth_valid = false;
-      g_api_auth_error = StringFormat("Account %d expired on %s", AccountNumber(), TimeToString(g_account_expires_at));
-      Print("[API-AUTH] ", g_api_auth_error);
-      return;
-   }
    // Check lot limit
    if(IsAuthAPIEnabled() && g_account_max_lots > 0 && input_lot > g_account_max_lots)
    {
@@ -6625,8 +6616,20 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    static int timer_count = 0;
+   static int expire_check_sec = 0;
    timer_count++;
-   if(EnforceLocalExpireLock()) return;
+   expire_check_sec++;
+   bool expire_check_due = false;
+   if(g_expire_check_interval_sec < 1)
+      g_expire_check_interval_sec = 3600;
+   if(expire_check_sec >= g_expire_check_interval_sec)
+   {
+      expire_check_sec = 0;
+      expire_check_due = true;
+   }
+   // Stored expiry is evaluated once per hour, not on every timer tick.
+   if(expire_check_due && EnforceLocalExpireLock()) return;
+   if(g_expire_stop) return;
    
    // === CRITICAL OPERATIONS - ทุกครั้ง ===
    // API system updates
@@ -6665,9 +6668,10 @@ void OnTimer()
             return;
          }
          
-         // Check expiry date
-         if (g_account_expires_at > 0 && TimeCurrent() > g_account_expires_at)
+         // Check expiry date at most once per hour
+         if (expire_check_due && g_account_expires_at > 0 && TimeCurrent() > g_account_expires_at)
          {
+            g_expire_stop = true;
             string error_msg = StringFormat("Account %d expired on %s", AccountNumber(), TimeToString(g_account_expires_at));
             Print("[API-AUTH] ", error_msg);
             Alert("EA Authorization Expired: " + error_msg);
@@ -6748,7 +6752,7 @@ void OnTimer()
 
 void OnTick()
 {
-   if(EnforceLocalExpireLock()) return;
+   if(g_expire_stop) return;
    WriteQuotes();
    ReadPeerQuotes(); // refresh peer cache asap
    UpdatePeerStatus();
