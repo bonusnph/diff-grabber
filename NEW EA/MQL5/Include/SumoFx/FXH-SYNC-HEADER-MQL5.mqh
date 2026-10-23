@@ -1402,6 +1402,31 @@ void DiffArmCooldownsAfterOpenPairCommit()
    }
 }
 
+bool   G_CY_OPEN_ON = false;
+int    G_CY_OPEN_NEED = 0;
+int    G_CY_OPEN_COUNT = 0;
+ulong  G_CY_OPEN_LAST = 0;
+bool   G_CY_OPEN_REL = false;
+bool   G_CY_CLOSE_ON = false;
+int    G_CY_CLOSE_NEED = 0;
+int    G_CY_CLOSE_COUNT = 0;
+ulong  G_CY_CLOSE_LAST = 0;
+bool   G_CY_CLOSE_REL = false;
+int    G_CY_EPISODE = 0;
+bool   G_CY_EPISODE_READY = false;
+
+string CycleGateHudLine(const bool isOpen)
+{
+   if(!I_CYCLE_GATE_ENABLED)
+      return "";
+   const bool on = isOpen ? G_CY_OPEN_ON : G_CY_CLOSE_ON;
+   if(!on)
+      return "";
+   const int count = isOpen ? G_CY_OPEN_COUNT : G_CY_CLOSE_COUNT;
+   const int need = isOpen ? G_CY_OPEN_NEED : G_CY_CLOSE_NEED;
+   return StringFormat(" trigger rounds %d/%d (gap %ds)\n\n", count, need, MathMax(0, I_CYCLE_GAP_SEC));
+}
+
 string DiffHudSignalOpenProgressBlock()
 {
    if(I_ROLE != ROLE_SOURCE_MASTER)
@@ -1417,6 +1442,7 @@ string DiffHudSignalOpenProgressBlock()
    string lines = "\nOPEN signal (";
    lines += modeAvg ? "AVG" : (modeTg ? "TIME GATE" : "RAW stability");
    lines += ")\n\n";
+   lines += CycleGateHudLine(true);
 
    if(!I_DIFF_SYNC_ENABLED)
       lines += " (diff autosync off — reference only)\n\n";
@@ -1579,6 +1605,7 @@ string DiffHudSignalCloseProgressBlock()
    string lines = "\nCLOSE signal (";
    lines += modeAvg ? "AVG" : (modeTg ? "TIME GATE" : "RAW stability");
    lines += ")\n\n";
+   lines += CycleGateHudLine(false);
 
    if(!I_DIFF_SYNC_ENABLED)
       lines += " (diff autosync off — reference only)\n\n";
@@ -2276,6 +2303,198 @@ string DpmHudBlock()
    return out;
 }
 
+int CycleReleaseOffset()
+{
+   if(I_DIFF_SIGNAL_MODE_VAL == DIFF_SIGNAL_RAW_STABILITY)
+      return MathMax(0, I_DIFF_RAW_HYSTERESIS_OFFSET);
+   if(I_DIFF_SIGNAL_MODE_VAL == DIFF_SIGNAL_TIME_GATE)
+      return MathMax(0, I_DIFF_TIME_GATE_HYSTERESIS_OFFSET);
+   return 0;
+}
+
+string CycleEpisodeKey()
+{
+   uint sym = 2166136261u;
+   const string s = (StringLen(G_SYMBOL) > 0) ? G_SYMBOL : _Symbol;
+   const int n = StringLen(s);
+   for(int i = 0; i < n; i++)
+   {
+      sym ^= (uint)StringGetCharacter(s, i);
+      sym *= 16777619;
+   }
+   return StringFormat("SFXCY.%I64d.%08X", PlanLogin(), sym);
+}
+
+void CycleEnsureEpisode()
+{
+   if(G_CY_EPISODE_READY)
+      return;
+   const string key = CycleEpisodeKey();
+   if(GlobalVariableCheck(key))
+      G_CY_EPISODE = (int)MathMax(0.0, GlobalVariableGet(key));
+   G_CY_EPISODE_READY = true;
+}
+
+int CyclePickNeed(const bool isOpen)
+{
+   CycleEnsureEpisode();
+   G_CY_EPISODE++;
+   if(G_CY_EPISODE < 1)
+      G_CY_EPISODE = 1;
+   GlobalVariableSet(CycleEpisodeKey(), (double)G_CY_EPISODE);
+   uint h = PlanHash();
+   h ^= (uint)G_CY_EPISODE;
+   h *= 16777619;
+   h ^= (uint)(isOpen ? 1 : 2);
+   h *= 16777619;
+   int lo = I_CYCLE_COUNT_MIN;
+   int hi = I_CYCLE_COUNT_MAX;
+   if(hi < lo)
+   {
+      const int tmp = lo;
+      lo = hi;
+      hi = tmp;
+   }
+   if(lo < 1)
+      lo = 1;
+   if(hi < lo)
+      hi = lo;
+   const int span = hi - lo + 1;
+   return lo + (int)(h % (uint)span);
+}
+
+bool CycleGateConsider(const bool isOpen, const bool edgeFire, const double diffPts, const int thresholdPts,
+                       bool &on, int &need, int &count, ulong &lastMs, bool &rel)
+{
+   const double hotLevel = (double)thresholdPts;
+   const double releaseLevel = hotLevel - (double)CycleReleaseOffset();
+   const bool hot = (diffPts >= hotLevel);
+   const bool below = (diffPts < releaseLevel);
+   const int gapSec = MathMax(0, I_CYCLE_GAP_SEC);
+   const ulong now = NowMs();
+
+   if(on && need > 0 && count >= need)
+      return true;
+
+   if(!on)
+   {
+      if(!edgeFire)
+         return false;
+      need = CyclePickNeed(isOpen);
+      count = 1;
+      lastMs = now;
+      rel = false;
+      on = true;
+      SyncLog(StringFormat("[CYCLE] %s arm need=%d gap=%ds", isOpen ? "OPEN" : "CLOSE", need, gapSec));
+      return (count >= need);
+   }
+
+   if(below)
+      rel = true;
+
+   const bool gapOk = (gapSec <= 0) || (lastMs == 0) || ((now - lastMs) >= (ulong)gapSec * 1000UL);
+   bool take = false;
+   if(gapSec > 0 && gapOk && hot)
+      take = true;
+   else if(gapSec <= 0 && edgeFire)
+      take = true;
+   if(!take)
+      return false;
+
+   const bool wasRel = rel;
+   count++;
+   lastMs = now;
+   rel = false;
+   SyncLog(StringFormat("[CYCLE] %s round %d/%d %s",
+                        isOpen ? "OPEN" : "CLOSE", count, need, wasRel ? "reentry" : "stay"));
+   return (count >= need);
+}
+
+bool CycleGatePoll(const bool isOpen, const double diffPts, const int thresholdPts)
+{
+   if(!I_CYCLE_GATE_ENABLED)
+      return false;
+   if(isOpen)
+      return CycleGateConsider(true, false, diffPts, thresholdPts,
+                               G_CY_OPEN_ON, G_CY_OPEN_NEED, G_CY_OPEN_COUNT, G_CY_OPEN_LAST, G_CY_OPEN_REL);
+   return CycleGateConsider(false, false, diffPts, thresholdPts,
+                            G_CY_CLOSE_ON, G_CY_CLOSE_NEED, G_CY_CLOSE_COUNT, G_CY_CLOSE_LAST, G_CY_CLOSE_REL);
+}
+
+bool CycleGateOnEdge(const bool isOpen, const double diffPts, const int thresholdPts)
+{
+   if(!I_CYCLE_GATE_ENABLED)
+      return true;
+   if(isOpen)
+      return CycleGateConsider(true, true, diffPts, thresholdPts,
+                               G_CY_OPEN_ON, G_CY_OPEN_NEED, G_CY_OPEN_COUNT, G_CY_OPEN_LAST, G_CY_OPEN_REL);
+   return CycleGateConsider(false, true, diffPts, thresholdPts,
+                            G_CY_CLOSE_ON, G_CY_CLOSE_NEED, G_CY_CLOSE_COUNT, G_CY_CLOSE_LAST, G_CY_CLOSE_REL);
+}
+
+void CycleGateNote(const bool isOpen, const double diffPts, const int thresholdPts)
+{
+   if(!I_CYCLE_GATE_ENABLED)
+      return;
+   if(isOpen)
+   {
+      if(!G_CY_OPEN_ON)
+         return;
+   }
+   else if(!G_CY_CLOSE_ON)
+      return;
+   const double releaseLevel = (double)thresholdPts - (double)CycleReleaseOffset();
+   if(diffPts < releaseLevel)
+   {
+      if(isOpen)
+         G_CY_OPEN_REL = true;
+      else
+         G_CY_CLOSE_REL = true;
+   }
+}
+
+void CycleGateCommit(const bool isOpen)
+{
+   const bool on = isOpen ? G_CY_OPEN_ON : G_CY_CLOSE_ON;
+   if(!on)
+      return;
+   const int count = isOpen ? G_CY_OPEN_COUNT : G_CY_CLOSE_COUNT;
+   const int need = isOpen ? G_CY_OPEN_NEED : G_CY_CLOSE_NEED;
+   if(isOpen)
+      G_CY_OPEN_ON = false;
+   else
+      G_CY_CLOSE_ON = false;
+   SyncLog(StringFormat("[CYCLE] %s send rounds %d/%d", isOpen ? "OPEN" : "CLOSE", count, need));
+}
+
+void CycleGateCancel(const bool isOpen)
+{
+   if(isOpen)
+      G_CY_OPEN_ON = false;
+   else
+      G_CY_CLOSE_ON = false;
+}
+
+void CycleSilenceDetector(const bool isOpen)
+{
+   if(isOpen)
+   {
+      G_DIFF_OPEN_PENDING = false;
+      G_DIFF_OPEN_OK_COUNT = 0;
+      G_DIFF_RAW_OPEN_PEND = false;
+      G_DIFF_RAW_OPEN_CNT = 0;
+      G_DIFF_TG_OPEN_PEND = false;
+   }
+   else
+   {
+      G_DIFF_CLOSE_PENDING = false;
+      G_DIFF_CLOSE_OK_COUNT = 0;
+      G_DIFF_RAW_CLOSE_PEND = false;
+      G_DIFF_RAW_CLOSE_CNT = 0;
+      G_DIFF_TG_CLOSE_PEND = false;
+   }
+}
+
 void DiffQueueOpen()
 {
    DpmNotifyFired(true);
@@ -2341,6 +2560,7 @@ void DiffMasterTick()
 
    if(!G_PAIR_ACTIVE)
    {
+      CycleGateCancel(false);
       const ulong nw = NowMs();
       if(G_OPEN_CD_ROLLED_SEC > 0 &&
          (nw - G_DIFF_LAST_OPEN_SIGNAL_MS) < (ulong)G_OPEN_CD_ROLLED_SEC * (ulong)1000)
@@ -2354,13 +2574,26 @@ void DiffMasterTick()
       }
 
       const double diffOpen = DiffOpenPtsFor(DiffMasterBuyEffective());
-      bool fire = false;
+      CycleGateNote(true, diffOpen, th);
 
       if(I_DIFF_ZONE_STABILITY_ENABLED && !G_DIFF_OPEN_ZONE_OK)
       {
          DiffResetOpenSmoothing();
          return;
       }
+
+      if(CycleGatePoll(true, diffOpen, th))
+      {
+         G_DIFF_SIGNAL_SNAP_OPEN_PTS = diffOpen;
+         if(CloseOnlyMasterBlocksPairOpen())
+            return;
+         CycleGateCommit(true);
+         CycleSilenceDetector(true);
+         DiffQueueOpen();
+         return;
+      }
+
+      bool fire = false;
 
       if(I_DIFF_SIGNAL_MODE_VAL == DIFF_SIGNAL_AVG)
       {
@@ -2502,14 +2735,26 @@ void DiffMasterTick()
          G_DIFF_SIGNAL_SNAP_OPEN_PTS = diffOpen;
          if(CloseOnlyMasterBlocksPairOpen())
             return;
-         DiffQueueOpen();
+         if(CycleGateOnEdge(true, diffOpen, th))
+         {
+            if(I_CYCLE_GATE_ENABLED)
+            {
+               CycleGateCommit(true);
+               CycleSilenceDetector(true);
+            }
+            DiffQueueOpen();
+         }
       }
       return;
    }
 
+   CycleGateCancel(true);
    const ulong nw2 = NowMs();
    if((nw2 - G_DIFF_LAST_CLOSE_SIGNAL_MS) < (ulong)I_DIFF_CLOSE_COOLDOWN_SEC * (ulong)1000)
       return;
+
+   const double diffClose = DiffClosePtsFor(DiffMasterBuyEffective());
+   CycleGateNote(false, diffClose, I_DIFF_CLOSE_THRESHOLD_PTS);
 
    if(I_DIFF_ZONE_STABILITY_ENABLED && !G_DIFF_CLOSE_ZONE_OK)
    {
@@ -2517,7 +2762,15 @@ void DiffMasterTick()
       return;
    }
 
-   const double diffClose = DiffClosePtsFor(DiffMasterBuyEffective());
+   if(CycleGatePoll(false, diffClose, I_DIFF_CLOSE_THRESHOLD_PTS))
+   {
+      G_DIFF_SIGNAL_SNAP_CLOSE_PTS = diffClose;
+      CycleGateCommit(false);
+      CycleSilenceDetector(false);
+      DiffQueueClose();
+      return;
+   }
+
    bool fireC = false;
 
    if(I_DIFF_SIGNAL_MODE_VAL == DIFF_SIGNAL_AVG)
@@ -2658,7 +2911,15 @@ void DiffMasterTick()
    if(fireC)
    {
       G_DIFF_SIGNAL_SNAP_CLOSE_PTS = diffClose;
-      DiffQueueClose();
+      if(CycleGateOnEdge(false, diffClose, I_DIFF_CLOSE_THRESHOLD_PTS))
+      {
+         if(I_CYCLE_GATE_ENABLED)
+         {
+            CycleGateCommit(false);
+            CycleSilenceDetector(false);
+         }
+         DiffQueueClose();
+      }
    }
 }
 

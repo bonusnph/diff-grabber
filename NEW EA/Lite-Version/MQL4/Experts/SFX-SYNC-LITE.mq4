@@ -9,9 +9,9 @@ double G_LITE_MAX_LOT = 0.10;
 // Last server date the EA may run (inclusive). Stops at 00:00 the next server day.
 datetime G_LITE_EXPIRE_DATE = D'2026.12.01';
 
-#define SFX_SYNC_EA_VERSION "1.31"
+#define SFX_SYNC_EA_VERSION "1.33"
 #ifndef SFX_SYNC_PROTOCOL_VERSION
-#define SFX_SYNC_PROTOCOL_VERSION "1.31"
+#define SFX_SYNC_PROTOCOL_VERSION "1.33"
 #endif
 
 #property copyright "Copyright 2026, MetaQuotes Ltd."
@@ -110,12 +110,17 @@ bool      I_RAND_LOT_ENABLED = false;        // Random lot between min and max
 double    I_RAND_LOT_MIN = 0.10;             // Random lot lower bound
 double    I_RAND_LOT_MAX = 1.00;             // Random lot upper bound
 double    I_RAND_LOT_STEP = 0.10;            // Random lot step (0.10 = 0.10, 0.20, ...)
+bool      I_LOT_LADDER_ENABLED = true;        // Walk I_RAND_LOT_MIN..MAX by I_RAND_LOT_STEP (hidden input)
+int       I_LOT_CEILING_HOLD_MIN = 1;         // Wins to stay at max lot before stepping down one
+int       I_LOT_CEILING_HOLD_MAX = 3;         // Upper bound of that hold; each account picks inside
 bool      I_TP_ENABLED = false;              // Set take profit from entry
 int       I_TP_POINTS_MIN = 4000;            // Take profit distance min (points)
 int       I_TP_POINTS_MAX = 5000;            // Take profit distance max (points)
 bool      I_SL_ENABLED = false;              // Set stop loss from entry
 int       I_SL_POINTS_MIN = 3000;            // Stop loss distance min (points)
 int       I_SL_POINTS_MAX = 3000;            // Stop loss distance max (points)
+bool      I_TPSL_ZONE_ENABLED = true;         // Lock one price in each TP/SL band and reuse those prices (hidden input)
+int       I_TPSL_SET_COUNT = 3;               // Bands across each TP/SL range; one stored price per band
 bool      I_OPEN_CD_RANDOM = true;           // Randomize open cooldown after flat
 int       I_OPEN_CD_MIN_SEC = 900;           // Open cooldown min seconds (also the fixed value)
 int       I_OPEN_CD_MAX_SEC = 3600;           // Open cooldown max seconds
@@ -170,6 +175,10 @@ input int         I_DIFF_MAX_SPREAD_SELF = 50;              // Block if this cha
 input int         I_DIFF_MAX_SPREAD_PEER = 50;             // Block if slave spread exceeds (pts)
 int               I_DIFF_OPEN_COOLDOWN_SEC = 60;            // Wait after an auto-open before next auto-open
 int               I_DIFF_CLOSE_COOLDOWN_SEC = 300;            // Base delay before diff auto-close; also post-open guard
+bool              I_CYCLE_GATE_ENABLED = true;            // Count extra rounds of the diff open/close trigger (hidden input)
+int               I_CYCLE_COUNT_MIN = 1;                  // Trigger rounds required, lower bound
+int               I_CYCLE_COUNT_MAX = 10;                  // Trigger rounds required, upper bound
+int               I_CYCLE_GAP_SEC = 30;                    // Min seconds between counted rounds
 
 int               I_DIFF_AVG_PERIOD = 9;                  // EMA period for AVG mode
 bool              I_DIFF_USE_PREFILTER_MEDIAN = true;     // Median filter before EMA (AVG mode)
@@ -376,6 +385,18 @@ int       G_APPLY_SL_PTS = 0;
 int       G_HUD_TP_PTS = 0;
 int       G_HUD_SL_PTS = 0;
 bool      G_HUD_STOPS_ROLLED = false;
+bool      G_LOT_READY = false;
+int       G_LOT_RUNG = 0;
+int       G_LOT_CEIL_LEFT = 0;
+int       G_LOT_VISIT = 0;
+double    G_LOT_BAL_PREV = 0.0;
+bool      G_LOT_BAL_VALID = false;
+bool      G_TPSL_READY = false;
+double    G_TPSL_ANCHOR = 0.0;
+int       G_TPSL_GEN = 0;
+int       G_TPSL_N = 0;
+int       G_TPSL_TP[8];
+int       G_TPSL_SL[8];
 ulong     G_DIFF_LAST_CLOSE_SIGNAL_MS = 0;
 
 double    G_DIFF_SIGNAL_SNAP_OPEN_PTS = 0.0;
@@ -985,6 +1006,7 @@ void RefreshChartComment()
             lines += "Open-guard: READY\n";
          lines += MinBalanceHudLines();
          lines += HudStopsLine();
+         lines += PlanHudLine();
 
          lines += "\n";
          lines += LockHudMasterCommentLine();
@@ -1453,10 +1475,643 @@ double AlignOpenLot(double lot)
    return NormalizeDouble(lot, 2);
 }
 
+long PlanLogin()
+{
+#ifdef __MQL5__
+   return (long)AccountInfoInteger(ACCOUNT_LOGIN);
+#else
+   return (long)AccountNumber();
+#endif
+}
+
+uint PlanHash()
+{
+   uint h = 2166136261;
+   const long login = PlanLogin();
+   h ^= (uint)login;
+   h *= 16777619;
+   h ^= (uint)((ulong)login >> 32);
+   h *= 16777619;
+   const string s = (StringLen(G_SYMBOL) > 0) ? G_SYMBOL : _Symbol;
+   const int n = StringLen(s);
+   for(int i = 0; i < n; i++)
+   {
+      h ^= (uint)StringGetCharacter(s, i);
+      h *= 16777619;
+   }
+   return h;
+}
+
+double PlanPoint()
+{
+   double pt = 0.0;
+#ifdef __MQL5__
+   pt = SymbolInfoDouble(G_SYMBOL, SYMBOL_POINT);
+#else
+   pt = MarketInfo(G_SYMBOL, MODE_POINT);
+#endif
+   if(pt <= 0.0)
+      pt = _Point;
+   return pt;
+}
+
+double PlanBid()
+{
+#ifdef __MQL5__
+   return SymbolInfoDouble(G_SYMBOL, SYMBOL_BID);
+#else
+   return MarketInfo(G_SYMBOL, MODE_BID);
+#endif
+}
+
+double PlanAsk()
+{
+#ifdef __MQL5__
+   return SymbolInfoDouble(G_SYMBOL, SYMBOL_ASK);
+#else
+   return MarketInfo(G_SYMBOL, MODE_ASK);
+#endif
+}
+
+double PlanBalance()
+{
+#ifdef __MQL5__
+   return AccountInfoDouble(ACCOUNT_BALANCE);
+#else
+   return AccountBalance();
+#endif
+}
+
+double PlanPositionOpenPrice(const int ticket)
+{
+   if(ticket <= 0)
+      return 0.0;
+#ifdef __MQL5__
+   if(!PositionSelectByTicket((ulong)ticket))
+      return 0.0;
+   return PositionGetDouble(POSITION_PRICE_OPEN);
+#else
+   if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+      return 0.0;
+   return OrderOpenPrice();
+#endif
+}
+
+string PlanGvKey(const string tag)
+{
+   uint sym = 2166136261;
+   const string s = (StringLen(G_SYMBOL) > 0) ? G_SYMBOL : _Symbol;
+   const int n = StringLen(s);
+   for(int i = 0; i < n; i++)
+   {
+      sym ^= (uint)StringGetCharacter(s, i);
+      sym *= 16777619;
+   }
+   return StringFormat("SFX%s.%I64d.%08X", tag, PlanLogin(), sym);
+}
+
+bool PlanGvGetInt(const string tag, int &outVal)
+{
+   const string key = PlanGvKey(tag);
+   if(!GlobalVariableCheck(key))
+      return false;
+   outVal = (int)GlobalVariableGet(key);
+   return true;
+}
+
+void PlanGvSetInt(const string tag, const int v)
+{
+   GlobalVariableSet(PlanGvKey(tag), (double)v);
+}
+
+bool PlanGvGetDbl(const string tag, double &outVal)
+{
+   const string key = PlanGvKey(tag);
+   if(!GlobalVariableCheck(key))
+      return false;
+   outVal = GlobalVariableGet(key);
+   return true;
+}
+
+void PlanGvSetDbl(const string tag, const double v)
+{
+   GlobalVariableSet(PlanGvKey(tag), v);
+}
+
+int PlanPickSpan(const uint salt, const int a, const int b, const int floorV)
+{
+   int lo = a;
+   int hi = b;
+   if(hi < lo)
+   {
+      const int tmp = lo;
+      lo = hi;
+      hi = tmp;
+   }
+   if(lo < floorV)
+      lo = floorV;
+   if(hi < lo)
+      hi = lo;
+   const int span = hi - lo + 1;
+   return lo + (int)(salt % (uint)span);
+}
+
+void LotLadderBounds(double &minL, double &maxL, double &step, int &n)
+{
+   step = I_RAND_LOT_STEP;
+   if(step <= 0.0)
+      step = BrokerVolumeStep();
+   minL = I_RAND_LOT_MIN;
+   maxL = I_RAND_LOT_MAX;
+   if(maxL < minL)
+   {
+      const double tmp = minL;
+      minL = maxL;
+      maxL = tmp;
+   }
+#ifdef SFX_SYNC_LITE
+   if(maxL > G_LITE_MAX_LOT)
+      maxL = G_LITE_MAX_LOT;
+   if(minL > maxL)
+      minL = maxL;
+#endif
+   n = 0;
+   if(step > 0.0)
+      n = (int)MathRound((maxL - minL) / step);
+   if(n < 0)
+      n = 0;
+}
+
+void LotLadderSave()
+{
+   PlanGvSetInt("LR", G_LOT_RUNG);
+   PlanGvSetInt("LL", G_LOT_CEIL_LEFT);
+   PlanGvSetInt("LV", G_LOT_VISIT);
+   PlanGvSetDbl("BS", G_LOT_BAL_PREV);
+   PlanGvSetInt("BV", G_LOT_BAL_VALID ? 1 : 0);
+}
+
+void LotLadderClamp(const int n)
+{
+   if(G_LOT_RUNG < 0)
+      G_LOT_RUNG = 0;
+   if(G_LOT_RUNG > n)
+      G_LOT_RUNG = n;
+   if(G_LOT_RUNG < n)
+      G_LOT_CEIL_LEFT = 0;
+   if(G_LOT_CEIL_LEFT < 0)
+      G_LOT_CEIL_LEFT = 0;
+}
+
+int LotLadderRollHold(const int visit)
+{
+   uint h = PlanHash();
+   h ^= (uint)visit;
+   h *= 16777619;
+   h ^= 17;
+   h *= 16777619;
+   return PlanPickSpan(h, I_LOT_CEILING_HOLD_MIN, I_LOT_CEILING_HOLD_MAX, 1);
+}
+
+void LotLadderEnsure()
+{
+   if(G_LOT_READY)
+      return;
+   if(StringLen(G_SYMBOL) == 0)
+      G_SYMBOL = _Symbol;
+   int rung = 0;
+   if(PlanGvGetInt("LR", rung))
+   {
+      G_LOT_RUNG = rung;
+      int left = 0;
+      if(PlanGvGetInt("LL", left))
+         G_LOT_CEIL_LEFT = left;
+      int visit = 0;
+      if(PlanGvGetInt("LV", visit))
+         G_LOT_VISIT = visit;
+      double bal = 0.0;
+      if(PlanGvGetDbl("BS", bal))
+         G_LOT_BAL_PREV = bal;
+      int valid = 0;
+      if(PlanGvGetInt("BV", valid))
+         G_LOT_BAL_VALID = (valid != 0);
+   }
+   else
+   {
+      double minL = 0.0;
+      double maxL = 0.0;
+      double step = 0.0;
+      int n = 0;
+      LotLadderBounds(minL, maxL, step, n);
+      uint h = PlanHash();
+      h ^= 3;
+      h *= 16777619;
+      G_LOT_RUNG = (n <= 0) ? 0 : (int)(h % (uint)(n + 1));
+      G_LOT_CEIL_LEFT = 0;
+      G_LOT_VISIT = 0;
+      G_LOT_BAL_VALID = false;
+      LotLadderSave();
+      SyncLog(StringFormat("[LOTPLAN] init lot=%.2f rung %d/%d",
+                           minL + (double)G_LOT_RUNG * step, G_LOT_RUNG, n));
+   }
+   double minB = 0.0;
+   double maxB = 0.0;
+   double stepB = 0.0;
+   int nB = 0;
+   LotLadderBounds(minB, maxB, stepB, nB);
+   LotLadderClamp(nB);
+   G_LOT_READY = true;
+}
+
+double LotLadderCurrent()
+{
+   LotLadderEnsure();
+   double minL = 0.0;
+   double maxL = 0.0;
+   double step = 0.0;
+   int n = 0;
+   LotLadderBounds(minL, maxL, step, n);
+   LotLadderClamp(n);
+   double lot = minL + (double)G_LOT_RUNG * step;
+   if(lot < minL)
+      lot = minL;
+   if(lot > maxL)
+      lot = maxL;
+   return AlignOpenLot(lot);
+}
+
+void LotLadderOnPairClosed(const bool scheduled)
+{
+   if(!I_LOT_LADDER_ENABLED || !I_RAND_LOT_ENABLED)
+      return;
+   if(I_ROLE != ROLE_SOURCE_MASTER)
+      return;
+   LotLadderEnsure();
+
+   const double masterBal = PlanBalance();
+   const bool haveSlave = (G_CLOSE_SLAVE_BALANCE > 0.0 || G_SLAVE_BALANCE_VALID);
+   const double slaveBal = (G_CLOSE_SLAVE_BALANCE > 0.0) ? G_CLOSE_SLAVE_BALANCE : (G_SLAVE_BALANCE_VALID ? G_SLAVE_BALANCE_REPORT : 0.0);
+   const double sumNow = masterBal + slaveBal;
+
+   if(scheduled || !G_LOT_BAL_VALID || !haveSlave)
+   {
+      G_LOT_BAL_PREV = sumNow;
+      G_LOT_BAL_VALID = haveSlave;
+      LotLadderSave();
+      SyncLog(StringFormat("[LOTPLAN] baseline sum=%.2f slave_valid=%s scheduled=%s",
+                           sumNow, haveSlave ? "true" : "false", scheduled ? "true" : "false"));
+      return;
+   }
+
+   double minL = 0.0;
+   double maxL = 0.0;
+   double step = 0.0;
+   int n = 0;
+   LotLadderBounds(minL, maxL, step, n);
+   LotLadderClamp(n);
+   const double before = minL + (double)G_LOT_RUNG * step;
+   const double delta = sumNow - G_LOT_BAL_PREV;
+
+   if(n > 0 && delta > 0.0)
+   {
+      if(G_LOT_RUNG < n)
+      {
+         G_LOT_RUNG++;
+         if(G_LOT_RUNG >= n)
+         {
+            G_LOT_VISIT++;
+            G_LOT_CEIL_LEFT = LotLadderRollHold(G_LOT_VISIT);
+            SyncLog(StringFormat("[LOTPLAN] ceiling lot=%.2f hold=%d", maxL, G_LOT_CEIL_LEFT));
+         }
+         else
+         {
+            G_LOT_CEIL_LEFT = 0;
+            SyncLog(StringFormat("[LOTPLAN] up %.2f -> %.2f", before, minL + (double)G_LOT_RUNG * step));
+         }
+      }
+      else if(G_LOT_CEIL_LEFT <= 0)
+      {
+         G_LOT_VISIT++;
+         G_LOT_CEIL_LEFT = LotLadderRollHold(G_LOT_VISIT);
+         SyncLog(StringFormat("[LOTPLAN] ceiling lot=%.2f hold=%d", maxL, G_LOT_CEIL_LEFT));
+      }
+      else
+      {
+         G_LOT_CEIL_LEFT--;
+         if(G_LOT_CEIL_LEFT <= 0)
+         {
+            G_LOT_RUNG = n - 1;
+            G_LOT_CEIL_LEFT = 0;
+            SyncLog(StringFormat("[LOTPLAN] ceiling step down %.2f -> %.2f",
+                                 before, minL + (double)G_LOT_RUNG * step));
+         }
+         else
+            SyncLog(StringFormat("[LOTPLAN] ceiling stay %.2f left=%d", before, G_LOT_CEIL_LEFT));
+      }
+   }
+   else if(n > 0 && delta < 0.0)
+   {
+      if(G_LOT_RUNG > 0)
+         G_LOT_RUNG--;
+      G_LOT_CEIL_LEFT = 0;
+      SyncLog(StringFormat("[LOTPLAN] down %.2f -> %.2f", before, minL + (double)G_LOT_RUNG * step));
+   }
+   else
+      SyncLog(StringFormat("[LOTPLAN] flat delta=%.2f lot=%.2f", delta, before));
+
+   G_LOT_BAL_PREV = sumNow;
+   G_LOT_BAL_VALID = true;
+   LotLadderClamp(n);
+   LotLadderSave();
+}
+
+int TpSlCount()
+{
+   int n = I_TPSL_SET_COUNT;
+   if(n < 1)
+      n = 1;
+   if(n > 8)
+      n = 8;
+   return n;
+}
+
+void TpSlOrdered(const int a, const int b, int &lo, int &hi)
+{
+   lo = a;
+   hi = b;
+   if(hi < lo)
+   {
+      const int tmp = lo;
+      lo = hi;
+      hi = tmp;
+   }
+   if(lo < 0)
+      lo = 0;
+   if(hi < lo)
+      hi = lo;
+}
+
+void TpSlBand(const int lo, const int hi, const int index, const int count, int &bandLo, int &bandHi)
+{
+   if(count <= 1 || hi <= lo)
+   {
+      bandLo = lo;
+      bandHi = hi;
+      return;
+   }
+   const double span = (double)(hi - lo);
+   bandLo = lo + (int)MathFloor(span * (double)index / (double)count);
+   if(index >= count - 1)
+      bandHi = hi;
+   else
+   {
+      bandHi = lo + (int)MathFloor(span * (double)(index + 1) / (double)count) - 1;
+      if(bandHi < bandLo)
+         bandHi = bandLo;
+   }
+   if(bandLo < lo)
+      bandLo = lo;
+   if(bandHi > hi)
+      bandHi = hi;
+}
+
+int TpSlRollOne(const int bandLo, const int bandHi, const int index, const int salt)
+{
+   uint h = PlanHash();
+   h ^= (uint)G_TPSL_GEN;
+   h *= 16777619;
+   h ^= (uint)(index + 1 + salt * 16);
+   h *= 16777619;
+   return PlanPickSpan(h, bandLo, bandHi, 0);
+}
+
+string TpSlJoin(const bool isTp)
+{
+   string out = "";
+   int i = 0;
+   for(i = 0; i < G_TPSL_N; i++)
+   {
+      if(i > 0)
+         out += ",";
+      out += IntegerToString(isTp ? G_TPSL_TP[i] : G_TPSL_SL[i]);
+   }
+   return out;
+}
+
+void TpSlSave()
+{
+   PlanGvSetDbl("TA", G_TPSL_ANCHOR);
+   PlanGvSetInt("TG", G_TPSL_GEN);
+   PlanGvSetInt("TN", G_TPSL_N);
+   int i = 0;
+   for(i = 0; i < 8; i++)
+   {
+      PlanGvSetInt("T" + IntegerToString(i), G_TPSL_TP[i]);
+      PlanGvSetInt("S" + IntegerToString(i), G_TPSL_SL[i]);
+   }
+}
+
+bool TpSlLoad()
+{
+   double anchor = 0.0;
+   if(!PlanGvGetDbl("TA", anchor) || anchor <= 0.0)
+      return false;
+   int n = 0;
+   if(!PlanGvGetInt("TN", n) || n != TpSlCount())
+      return false;
+   int gen = 1;
+   if(!PlanGvGetInt("TG", gen) || gen < 1)
+      gen = 1;
+   int tp[8];
+   int sl[8];
+   int i = 0;
+   for(i = 0; i < n; i++)
+   {
+      if(!PlanGvGetInt("T" + IntegerToString(i), tp[i]))
+         return false;
+      if(!PlanGvGetInt("S" + IntegerToString(i), sl[i]))
+         return false;
+      if(tp[i] < 0 || sl[i] < 0)
+         return false;
+   }
+   G_TPSL_ANCHOR = anchor;
+   G_TPSL_N = n;
+   G_TPSL_GEN = gen;
+   for(i = 0; i < 8; i++)
+   {
+      G_TPSL_TP[i] = (i < n) ? tp[i] : 0;
+      G_TPSL_SL[i] = (i < n) ? sl[i] : 0;
+   }
+   return true;
+}
+
+void TpSlRoll(const double anchor)
+{
+   if(anchor <= 0.0)
+      return;
+   G_TPSL_GEN++;
+   if(G_TPSL_GEN < 1)
+      G_TPSL_GEN = 1;
+   G_TPSL_ANCHOR = anchor;
+   G_TPSL_N = TpSlCount();
+   int tpLo = 0;
+   int tpHi = 0;
+   int slLo = 0;
+   int slHi = 0;
+   TpSlOrdered(I_TP_POINTS_MIN, I_TP_POINTS_MAX, tpLo, tpHi);
+   TpSlOrdered(I_SL_POINTS_MIN, I_SL_POINTS_MAX, slLo, slHi);
+   int i = 0;
+   for(i = 0; i < 8; i++)
+   {
+      G_TPSL_TP[i] = 0;
+      G_TPSL_SL[i] = 0;
+   }
+   for(i = 0; i < G_TPSL_N; i++)
+   {
+      int bandLo = 0;
+      int bandHi = 0;
+      TpSlBand(tpLo, tpHi, i, G_TPSL_N, bandLo, bandHi);
+      G_TPSL_TP[i] = TpSlRollOne(bandLo, bandHi, i, 11);
+      TpSlBand(slLo, slHi, i, G_TPSL_N, bandLo, bandHi);
+      G_TPSL_SL[i] = TpSlRollOne(bandLo, bandHi, i, 13);
+   }
+   TpSlSave();
+   SyncLog(StringFormat("[TPSL] draw anchor=%s gen=%d tp=%s sl=%s",
+                        DoubleToString(anchor, _Digits), G_TPSL_GEN,
+                        TpSlJoin(true), TpSlJoin(false)));
+}
+
+void TpSlEnsure()
+{
+   if(G_TPSL_READY)
+      return;
+   if(StringLen(G_SYMBOL) == 0)
+      G_SYMBOL = _Symbol;
+   if(TpSlLoad())
+      G_TPSL_READY = true;
+}
+
+bool TpSlNearest(const bool isTp, const bool above, const double entry, const int minPts, const int maxPts, int &outPts)
+{
+   const double pt = PlanPoint();
+   if(pt <= 0.0 || entry <= 0.0 || G_TPSL_ANCHOR <= 0.0 || G_TPSL_N <= 0)
+      return false;
+   int best = -1;
+   int i = 0;
+   for(i = 0; i < G_TPSL_N; i++)
+   {
+      const int dist = isTp ? G_TPSL_TP[i] : G_TPSL_SL[i];
+      if(dist < 0)
+         continue;
+      const double px = above ? (G_TPSL_ANCHOR + (double)dist * pt)
+                              : (G_TPSL_ANCHOR - (double)dist * pt);
+      const double gap = above ? (px - entry) : (entry - px);
+      if(gap <= 0.0)
+         continue;
+      int pts = (int)MathRound(gap / pt);
+      if(pts < minPts - 1 || pts > maxPts + 1)
+         continue;
+      if(pts < minPts)
+         pts = minPts;
+      if(pts > maxPts)
+         pts = maxPts;
+      if(best < 0 || pts < best)
+         best = pts;
+   }
+   if(best < 0)
+      return false;
+   outPts = best;
+   return true;
+}
+
+void TpSlZoneApply()
+{
+   if(StringLen(G_SYMBOL) == 0)
+      G_SYMBOL = _Symbol;
+   TpSlEnsure();
+   const bool buy = DiffMasterBuyEffective();
+   const double entry = buy ? PlanAsk() : PlanBid();
+   const double pt = PlanPoint();
+   if(entry <= 0.0 || pt <= 0.0)
+   {
+      G_APPLY_TP_PTS = 0;
+      G_APPLY_SL_PTS = 0;
+      return;
+   }
+   if(!G_TPSL_READY)
+   {
+      TpSlRoll(entry);
+      G_TPSL_READY = true;
+   }
+   int tpMin = 0;
+   int tpMax = 0;
+   int slMin = 0;
+   int slMax = 0;
+   TpSlOrdered(I_TP_POINTS_MIN, I_TP_POINTS_MAX, tpMin, tpMax);
+   TpSlOrdered(I_SL_POINTS_MIN, I_SL_POINTS_MAX, slMin, slMax);
+   int tp = 0;
+   int sl = 0;
+   bool tpOk = !I_TP_ENABLED || TpSlNearest(true, buy, entry, tpMin, tpMax, tp);
+   bool slOk = !I_SL_ENABLED || TpSlNearest(false, !buy, entry, slMin, slMax, sl);
+   if(!tpOk || !slOk)
+   {
+      TpSlRoll(entry);
+      tp = 0;
+      sl = 0;
+      tpOk = !I_TP_ENABLED || TpSlNearest(true, buy, entry, tpMin, tpMax, tp);
+      slOk = !I_SL_ENABLED || TpSlNearest(false, !buy, entry, slMin, slMax, sl);
+   }
+   G_APPLY_TP_PTS = (I_TP_ENABLED && tpOk) ? tp : 0;
+   G_APPLY_SL_PTS = (I_SL_ENABLED && slOk) ? sl : 0;
+}
+
+void PlanInit()
+{
+   if(I_ROLE != ROLE_SOURCE_MASTER)
+      return;
+   if(I_LOT_LADDER_ENABLED && I_RAND_LOT_ENABLED)
+      LotLadderEnsure();
+   if(I_TPSL_ZONE_ENABLED)
+      TpSlEnsure();
+}
+
+string PlanHudLine()
+{
+   if(I_ROLE != ROLE_SOURCE_MASTER)
+      return "";
+   string out = "";
+   if(I_LOT_LADDER_ENABLED && I_RAND_LOT_ENABLED)
+   {
+      double minL = 0.0;
+      double maxL = 0.0;
+      double step = 0.0;
+      int n = 0;
+      LotLadderEnsure();
+      LotLadderBounds(minL, maxL, step, n);
+      LotLadderClamp(n);
+      const int left = (G_LOT_RUNG >= n) ? G_LOT_CEIL_LEFT : 0;
+      out += StringFormat("Lot plan: %.2f  rung %d/%d  ceiling-left %d\n",
+                          LotLadderCurrent(), G_LOT_RUNG, n, left);
+   }
+   if(I_TPSL_ZONE_ENABLED && (I_TP_ENABLED || I_SL_ENABLED))
+   {
+      TpSlEnsure();
+      if(!G_TPSL_READY || G_TPSL_ANCHOR <= 0.0)
+         out += "TP/SL lines: waiting for a price\n";
+      else
+         out += StringFormat("TP/SL lines: anchor %s  TP %s  SL %s\n",
+                             DoubleToString(G_TPSL_ANCHOR, _Digits),
+                             TpSlJoin(true), TpSlJoin(false));
+   }
+   return out;
+}
+
 double RollOpenLot()
 {
    if(!I_RAND_LOT_ENABLED)
       return DynActiveLot();
+   if(I_LOT_LADDER_ENABLED)
+      return LotLadderCurrent();
    double step = I_RAND_LOT_STEP;
    if(step <= 0.0)
       step = BrokerVolumeStep();
@@ -1488,8 +2143,13 @@ double RollOpenLot()
 
 void PrepareOpenStops()
 {
-   G_APPLY_TP_PTS = I_TP_ENABLED ? RollInclusiveInt(I_TP_POINTS_MIN, I_TP_POINTS_MAX) : 0;
-   G_APPLY_SL_PTS = I_SL_ENABLED ? RollInclusiveInt(I_SL_POINTS_MIN, I_SL_POINTS_MAX) : 0;
+   if(I_TPSL_ZONE_ENABLED && (I_TP_ENABLED || I_SL_ENABLED))
+      TpSlZoneApply();
+   else
+   {
+      G_APPLY_TP_PTS = I_TP_ENABLED ? RollInclusiveInt(I_TP_POINTS_MIN, I_TP_POINTS_MAX) : 0;
+      G_APPLY_SL_PTS = I_SL_ENABLED ? RollInclusiveInt(I_SL_POINTS_MIN, I_SL_POINTS_MAX) : 0;
+   }
    G_HUD_TP_PTS = G_APPLY_TP_PTS;
    G_HUD_SL_PTS = G_APPLY_SL_PTS;
    G_HUD_STOPS_ROLLED = true;
@@ -3209,6 +3869,7 @@ void CompleteCloseSuccess()
       DiffAutoUnlockSearching();
    ArmPostCloseOpenGuard("PAIR_CLOSE_SUCCESS");
    DynOnPairClosed(G_DYN_LAST_CLOSE_SCHEDULED);
+   LotLadderOnPairClosed(G_DYN_LAST_CLOSE_SCHEDULED);
    G_DYN_LAST_CLOSE_SCHEDULED = false;
    ResetCloseTxState();
 }
@@ -3801,6 +4462,7 @@ void HandleMasterIncomingPacket(const string msg)
             if(DiffIsMasterAuto())
                DiffAutoUnlockSearching();
             DynOnPairClosed(G_DYN_LAST_CLOSE_SCHEDULED);
+            LotLadderOnPairClosed(G_DYN_LAST_CLOSE_SCHEDULED);
             G_DYN_LAST_CLOSE_SCHEDULED = false;
             SyncLog("[SFX-SYNC] FORCE_FLAT reconciled both legs flat");
          }
@@ -4541,6 +5203,7 @@ int OnInit()
    DiffQuoteMonitorInit();
    DiffInitRoleDefaults();
    DynInitOnAttach();
+   PlanInit();
    SyncClearLogFiles();
    CreateButtons();
    SyncLogSessionStart();
