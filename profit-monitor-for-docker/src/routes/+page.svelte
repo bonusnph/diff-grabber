@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
-	import type { AccountSummary, CurrencySettings, DashboardStats, EquityWarningState, ExternalWallet, FxQuote, OrderInfo, PendingWithdrawal, PlAlertSettings, PlAlertState } from '$lib/types.js';
+	import type { AccountSummary, CurrencySettings, DashboardStats, EquityWarningState, ExternalWallet, FxQuote, LotsDisplaySettings, OrderInfo, PendingWithdrawal, PlAlertSettings, PlAlertState } from '$lib/types.js';
 	import { EXTERNAL_WALLET_NAME_MAX, defaultExternalWallet, normalizeExternalWallet, roundMoney } from '$lib/external-wallet-model.js';
 	import { PENDING_NOTE_MAX_LENGTH } from '$lib/pending-withdrawal-model.js';
 	import { defaultPlAlertSettings, defaultPlAlertState } from '$lib/pl-alert-model.js';
@@ -15,6 +15,7 @@
 		normalizeEquityWarningState
 	} from '$lib/equity-warning-model.js';
 	import { convertUsd, defaultCurrencySettings, identityFxQuote, makeFxQuote, normalizeCurrencySettings, normalizeQuickThbSeconds } from '$lib/currency.js';
+	import { defaultLotsDisplay, normalizeLotsDisplay } from '$lib/lots-display.js';
 	import CurrencyFlag from '$lib/CurrencyFlag.svelte';
 	import {
 		computeUnitDelta,
@@ -101,6 +102,8 @@
 	let equityWarningState: EquityWarningState = defaultEquityWarningState();
 	let currencySettings: CurrencySettings = defaultCurrencySettings();
 	let draftCurrency: CurrencySettings = defaultCurrencySettings();
+	let lotsDisplay: LotsDisplaySettings = defaultLotsDisplay();
+	let draftLotsDisplay: LotsDisplaySettings = defaultLotsDisplay();
 	let fxQuote: FxQuote = identityFxQuote(defaultCurrencySettings());
 	let thbQuote: FxQuote = makeFxQuote(
 		{ ...defaultCurrencySettings(), currency: 'THB' },
@@ -359,6 +362,7 @@
 		if (wdPrompt?.kind === 'settings-wd') wdPrompt = null;
 		draftPlAlert = { ...plAlertSettings };
 		draftCurrency = { ...currencySettings };
+		draftLotsDisplay = { ...lotsDisplay };
 		showSettingsModal = true;
 	}
 
@@ -707,6 +711,7 @@
 			plAlertState = data.pl_alert_state || defaultPlAlertState();
 			equityWarningState = normalizeEquityWarningState(data.equity_warning_state);
 			applyCurrencyPayload({ currency: data.currency, fx: data.fx });
+			lotsDisplay = normalizeLotsDisplay(data.lots_display);
 		} catch (error) {
 			console.error('Error loading settings:', error);
 			// Keep default values if loading fails
@@ -1673,6 +1678,15 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 		return reveal ? shown : MASK;
 	}
 
+	function shownLots(real: number): string {
+		const value = lotsDisplay.enabled ? lotsDisplay.lots : real;
+		return value.toFixed(2);
+	}
+
+	$: lotsChipClass = lotsDisplay.enabled
+		? 'text-xs px-1.5 py-0.5 rounded-md font-semibold bg-teal-900/40 text-teal-300'
+		: 'text-xs px-1.5 py-0.5 rounded-md font-semibold bg-violet-900/40 text-violet-400';
+
 	function aliasBrokerName(name: string): string {
 		const key = name || 'unknown';
 		if (brokerAliasByName[key]) return brokerAliasByName[key];
@@ -1730,7 +1744,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					unit_withdrawals: draftWithdrawals,
 					unit_deposits: draftDeposits,
 					pl_alert: draftPlAlert,
-					currency: draftCurrency
+					currency: draftCurrency,
+					lots_display: draftLotsDisplay
 			};
 			if (settingsWalletCredit !== 0) {
 				settingsBody.external_wallet = {
@@ -1757,6 +1772,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				plAlertState = data.pl_alert_state || plAlertState;
 				if (data.equity_warning_state) equityWarningState = normalizeEquityWarningState(data.equity_warning_state);
 				applyCurrencyPayload({ currency: data.currency || draftCurrency, fx: data.fx });
+				lotsDisplay = normalizeLotsDisplay(data.lots_display || draftLotsDisplay);
 				const pendingOk = await flushStagedWdPendings();
 				if (!pendingOk) {
 					settingsSaveError = 'Settings were saved, but the pending withdrawal was not created. Press Save to retry, or Cancel to skip it.';
@@ -2255,8 +2271,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												{bookValue(String(unitPairs.length), revealBookValues)} pair{unitPairs.length > 1 ? 's' : ''}
 											</span>
 											{#if totalLots > 0}
-												<span class="text-xs px-1.5 py-0.5 rounded-md font-semibold bg-violet-900/40 text-violet-400" title="Total lots across pairs">
-													{bookValue(totalLots.toFixed(2), revealBookValues)}L
+												<span class={lotsChipClass} title="Total lots across pairs">
+													{bookValue(shownLots(totalLots), revealBookValues)}L
 												</span>
 											{/if}
 											{#if unitUnmatched.length > 0}
@@ -2270,8 +2286,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											</span>
 											{@const soloLots = unitUnmatched.reduce((s, o) => s + o.lots, 0)}
 											{#if soloLots > 0}
-												<span class="text-xs px-1.5 py-0.5 rounded-md font-semibold bg-violet-900/40 text-violet-400">
-													{bookValue(soloLots.toFixed(2), revealBookValues)}L
+												<span class={lotsChipClass}>
+													{bookValue(shownLots(soloLots), revealBookValues)}L
 												</span>
 											{/if}
 										{:else}
@@ -2285,8 +2301,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 											{@const positionLots = accountWithPosition?.lastSize || 0}
 											{@const positionSide = accountWithPosition?.lastPositionSide}
 											{#if positionLots > 0}
-												<span class="text-xs px-1.5 py-0.5 rounded-md font-semibold bg-violet-900/40 text-violet-400">
-													{bookValue(positionLots.toFixed(2), revealBookValues)}L
+												<span class={lotsChipClass}>
+													{bookValue(shownLots(positionLots), revealBookValues)}L
 												</span>
 												{#if positionSide === 'BUY' || positionSide === 'SELL'}
 													<span class="text-xs px-1.5 py-0.5 rounded-md font-bold {positionSide === 'BUY' ? 'bg-sky-900/40 text-sky-400' : 'bg-orange-900/40 text-orange-400'}">
@@ -2313,7 +2329,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 												{/if}
 												<span class="font-semibold">{p.diffPoints >= 0 ? '+' : ''}{p.diffPoints.toFixed(0)}</span>
 												<span class="opacity-70">·</span>
-												<span>{bookValue(((p.buyLots + p.sellLots) / 2).toFixed(2), revealBookValues)}L</span>
+												<span>{bookValue(shownLots((p.buyLots + p.sellLots) / 2), revealBookValues)}L</span>
 											</span>
 										{/each}
 									</div>
@@ -2489,7 +2505,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 									<div class="flex items-center justify-between mb-1.5">
 										<span class="text-[10px] font-semibold text-[#ececec] uppercase tracking-wider">Open Pairs ({unitPairs.length})</span>
 										{#if totalLots > 0}
-											<span class="text-[10px] text-[#ececec]">Total {bookValue(totalLots.toFixed(2), revealBookValues)}L</span>
+											<span class="text-[10px] text-[#ececec]">Total {bookValue(shownLots(totalLots), revealBookValues)}L</span>
 										{/if}
 									</div>
 									<div class="md:hidden space-y-2">
@@ -2509,8 +2525,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 															{p.diffPoints >= 0 ? '+' : ''}{p.diffPoints.toFixed(0)} pts
 														</div>
 														<div class="text-[11px] text-[#ececec] tabular-nums">
-															{p.buyLots.toFixed(2)}L
-															{#if Math.abs(p.buyLots - p.sellLots) > 0.001}
+															{shownLots(p.buyLots)}L
+															{#if !lotsDisplay.enabled && Math.abs(p.buyLots - p.sellLots) > 0.001}
 																<span class="text-[#ececec]"> / {p.sellLots.toFixed(2)}</span>
 															{/if}
 														</div>
@@ -2541,7 +2557,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 													</div>
 													<div class="text-right shrink-0">
 														<div class="text-sm font-semibold text-amber-400 italic">solo</div>
-														<div class="text-[11px] text-[#ececec] tabular-nums">{o.lots.toFixed(2)}L</div>
+														<div class="text-[11px] text-[#ececec] tabular-nums">{shownLots(o.lots)}L</div>
 													</div>
 												</div>
 												<div class="mt-2 text-[11px]">
@@ -2590,8 +2606,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 															{p.diffPoints >= 0 ? '+' : ''}{p.diffPoints.toFixed(0)}
 														</td>
 														<td class="py-1 px-2 text-right text-[#f5f5f5] tabular-nums align-top">
-															{p.buyLots.toFixed(2)}
-															{#if Math.abs(p.buyLots - p.sellLots) > 0.001}
+															{shownLots(p.buyLots)}
+															{#if !lotsDisplay.enabled && Math.abs(p.buyLots - p.sellLots) > 0.001}
 																<span class="text-[#ececec]"> / {p.sellLots.toFixed(2)}</span>
 															{/if}
 														</td>
@@ -2619,7 +2635,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 															{o.side === 'SELL' ? o.price : '-'}
 														</td>
 														<td class="py-1 px-2 text-right text-amber-400 italic align-top">solo</td>
-														<td class="py-1 px-2 text-right text-[#f5f5f5] tabular-nums align-top">{o.lots.toFixed(2)}</td>
+														<td class="py-1 px-2 text-right text-[#f5f5f5] tabular-nums align-top">{shownLots(o.lots)}</td>
 														<td class="py-1 px-2 text-left align-top">
 															{#if o.side === 'BUY'}
 																<div class="text-[10px] text-sky-300 truncate" title={o.broker_name}>{o.broker_name || '—'}</div>
@@ -3236,6 +3252,44 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
                         </p>
                     </fieldset>
                 </div>
+
+				<div>
+					<fieldset>
+						<legend class="block text-sm font-medium text-[#f5f5f5] mb-2">Lots</legend>
+						<div class="flex flex-wrap items-center gap-2 mb-3">
+							<label class="inline-flex items-center gap-2 text-sm text-[#ececec]">
+								<input
+									type="checkbox"
+									checked={draftLotsDisplay.enabled}
+									on:change={(e) => {
+										draftLotsDisplay = { ...draftLotsDisplay, enabled: (e.target as HTMLInputElement).checked };
+									}}
+									class="border-stone-600 bg-stone-700 text-[#f5f5f5] focus:ring-[#f5f5f5]"
+								/>
+								<span>Fixed lots</span>
+							</label>
+							<input
+								type="number"
+								min="0.01"
+								max="100"
+								step="0.01"
+								value={draftLotsDisplay.lots}
+								on:change={(e) => {
+									const v = parseFloat((e.target as HTMLInputElement).value);
+									draftLotsDisplay = {
+										...draftLotsDisplay,
+										lots: !Number.isFinite(v) || v <= 0 ? 0.01 : Math.round(v * 100) / 100
+									};
+								}}
+								class="w-28 border border-stone-600 bg-stone-700 text-[#f5f5f5] px-2 py-1 text-right focus:ring-2 focus:ring-[#f5f5f5] focus:border-[#f5f5f5]"
+								aria-label="Fixed lots size"
+							/>
+						</div>
+						<p class="text-xs text-[#ececec]">
+							Off by default. When on, lots on the monitor use this size. Stored sizes stay unchanged.
+						</p>
+					</fieldset>
+				</div>
 
 				<div>
 					<fieldset>

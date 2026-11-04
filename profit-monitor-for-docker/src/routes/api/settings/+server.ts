@@ -4,6 +4,7 @@ import { storage } from '$lib/storage-postgres.js';
 import { schedulePlAlertEvaluation } from '$lib/pl-alerts.js';
 import { normalizePlAlertSettings } from '$lib/pl-alert-model.js';
 import { normalizeCurrencySettings } from '$lib/currency.js';
+import { normalizeLotsDisplay } from '$lib/lots-display.js';
 import { normalizeExternalWallet } from '$lib/external-wallet-model.js';
 import { resolveFxQuotes } from '$lib/fx-rate.js';
 
@@ -38,7 +39,8 @@ async function settingsPayload() {
 		equity_warning_state: await storage.getEquityWarningState(),
 		currency,
 		fx,
-		thb
+		thb,
+		lots_display: await storage.getLotsDisplay()
 	};
 }
 
@@ -48,7 +50,7 @@ export const GET: RequestHandler = async () => {
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
-		const { initial_capital, unit_initial_capitals, total_active_accounts, unit_warning_equity_percentages, unit_mappings, unit_broker_min_margins, unit_withdrawals, unit_deposits, external_wallet, snapshot, clear_snapshot, pl_alert, currency } = await request.json();
+		const { initial_capital, unit_initial_capitals, total_active_accounts, unit_warning_equity_percentages, unit_mappings, unit_broker_min_margins, unit_withdrawals, unit_deposits, external_wallet, snapshot, clear_snapshot, pl_alert, currency, lots_display } = await request.json();
 		// Snapshot operations (optional)
 		if (clear_snapshot === true) {
 			console.log('Clearing snapshot from database...');
@@ -175,6 +177,13 @@ export const POST: RequestHandler = async ({ request }) => {
 				return json({ error: 'Invalid currency settings' }, { status: 400 });
 			}
 			await storage.setCurrencySettings(normalizeCurrencySettings(currency));
+		}
+
+		if (lots_display !== undefined) {
+			if (typeof lots_display !== 'object' || lots_display === null || Array.isArray(lots_display)) {
+				return json({ error: 'Invalid lots display settings' }, { status: 400 });
+			}
+			await storage.setLotsDisplay(normalizeLotsDisplay(lots_display));
 		}
 
 		return json({

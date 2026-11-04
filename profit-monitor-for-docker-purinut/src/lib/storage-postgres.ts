@@ -9,6 +9,7 @@ import type {
 	AccountSummary,
 	CurrencySettings,
 	DashboardStats,
+	LotsDisplaySettings,
 	EquityWarningState,
 	ExternalWallet,
 	PendingWithdrawal,
@@ -25,6 +26,7 @@ import {
 import { normalizePendingWithdrawals } from './pending-withdrawal-model.js';
 import { defaultEquityWarningState, normalizeEquityWarningState } from './equity-warning-model.js';
 import { defaultCurrencySettings, normalizeCurrencySettings } from './currency.js';
+import { defaultLotsDisplay, normalizeLotsDisplay } from './lots-display.js';
 
 const DEFAULT_UNIT_MAPPINGS = '{}';
 
@@ -788,6 +790,16 @@ class PostgresStorage {
 	async getCurrencySettings(): Promise<CurrencySettings> {
 		return normalizeCurrencySettings(
 			parseJson(await this.getSetting('currency_settings'), defaultCurrencySettings())
+		);
+	}
+
+	async setLotsDisplay(settings: LotsDisplaySettings): Promise<void> {
+		await this.setSetting('lots_display', JSON.stringify(normalizeLotsDisplay(settings)));
+	}
+
+	async getLotsDisplay(): Promise<LotsDisplaySettings> {
+		return normalizeLotsDisplay(
+			parseJson(await this.getSetting('lots_display'), defaultLotsDisplay())
 		);
 	}
 

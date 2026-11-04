@@ -93,6 +93,11 @@ export interface CurrencySettings {
 	quickThbSeconds: number;
 }
 
+export interface LotsDisplaySettings {
+	enabled: boolean;
+	lots: number;
+}
+
 export interface FxQuote {
 	currency: DisplayCurrency;
 	rate: number;
