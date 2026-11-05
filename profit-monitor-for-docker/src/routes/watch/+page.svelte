@@ -355,6 +355,7 @@
 		<p class="amount flat">—</p>
 	{:else}
 		<div class="hero">
+			<div class="readout">
 			<p class="mode">{snapshot ? 'SNAPSHOT Δ' : 'P/L'}</p>
 			{#if quickThb}
 				<p
@@ -394,6 +395,8 @@
 			{:else}
 				<p class="meta {percentTone}">{percentShown}%</p>
 			{/if}
+			</div>
+			<div class="duo-side">
 			{#if diffLanes.length > 0}
 				<div class="bubbles" aria-label="Unit diffs">
 					{#each diffLanes as lane, i (lane.unit)}
@@ -418,6 +421,7 @@
 					<p class="meta stamp" class:stale class:busy={refreshing}>{stamp}</p>
 				{/if}
 				<p class="count">{countLabel}</p>
+			</div>
 			</div>
 		</div>
 	{/if}
@@ -659,6 +663,134 @@
 		50% {
 			opacity: 0.28;
 		}
+	}
+
+	.readout,
+	.duo-side {
+		display: contents;
+	}
+
+	:global(html[data-duo='folded-portrait']) .watch {
+		min-height: 100svh;
+		padding-top: max(6px, env(safe-area-inset-top));
+		padding-bottom: max(8px, env(safe-area-inset-bottom));
+	}
+
+	:global(html[data-duo='folded-portrait']) .hero {
+		--ui: 1.12;
+	}
+
+	:global(html[data-duo='folded-portrait']) .amount {
+		font-size: clamp(2.35rem, 17vw, 3.45rem);
+	}
+
+	:global(html[data-duo='folded-portrait']) .bubbles {
+		flex-wrap: wrap;
+	}
+
+	:global(html[data-duo='folded-landscape']) .watch,
+	:global(html[data-duo='open-landscape']) .watch,
+	:global(html[data-duo='open-portrait']) .watch {
+		height: 100dvh;
+		min-height: 0;
+	}
+
+	:global(html[data-duo='folded-landscape']) .hero {
+		--ui: 1.02;
+	}
+
+	:global(html[data-duo='folded-landscape']) .hero,
+	:global(html[data-duo='open-landscape']) .hero {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+		align-items: center;
+		width: 100%;
+		height: 100%;
+	}
+
+	:global(html[data-duo='open-landscape']) .hero {
+		grid-template-columns:
+			minmax(0, env(viewport-segment-width 0 0, 1fr))
+			minmax(0, env(viewport-segment-width 1 0, 1fr));
+		padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+			env(safe-area-inset-left);
+	}
+
+	:global(html[data-duo='folded-landscape']) .readout,
+	:global(html[data-duo='open-landscape']) .readout,
+	:global(html[data-duo='open-portrait']) .readout,
+	:global(html[data-duo='folded-landscape']) .duo-side,
+	:global(html[data-duo='open-landscape']) .duo-side,
+	:global(html[data-duo='open-portrait']) .duo-side {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: calc(6px * var(--ui, 1.45));
+		min-width: 0;
+		min-height: 0;
+	}
+
+	:global(html[data-duo='folded-landscape']) .readout,
+	:global(html[data-duo='open-landscape']) .readout {
+		grid-column: 1;
+		padding-right: 0.75rem;
+	}
+
+	:global(html[data-duo='folded-landscape']) .duo-side,
+	:global(html[data-duo='open-landscape']) .duo-side {
+		grid-column: 2;
+		height: 100%;
+		padding-left: 0.85rem;
+		border-left: 1px solid #2a2a2a;
+	}
+
+	:global(html[data-duo='folded-landscape']) .amount {
+		font-size: clamp(2rem, 7.2vw, 3rem);
+	}
+
+	:global(html[data-duo='open-landscape']) .amount {
+		font-size: clamp(3.2rem, 9vw, 5.6rem);
+	}
+
+	:global(html[data-duo='folded-landscape']) .bubbles,
+	:global(html[data-duo='open-landscape']) .bubbles,
+	:global(html[data-duo='open-portrait']) .bubbles {
+		flex-wrap: wrap;
+		justify-content: center;
+	}
+
+	:global(html[data-duo='open-portrait']) .watch {
+		padding-top: env(safe-area-inset-top);
+		padding-bottom: env(safe-area-inset-bottom);
+	}
+
+	:global(html[data-duo='open-portrait']) .hero {
+		display: grid;
+		grid-template-rows:
+			minmax(0, env(viewport-segment-height 0 0, 1fr))
+			minmax(0, env(viewport-segment-height 0 1, 1fr));
+		align-items: stretch;
+		width: 100%;
+		height: 100%;
+	}
+
+	:global(html[data-duo='open-portrait']) .readout {
+		grid-row: 1;
+		align-self: end;
+		padding-bottom: 0.85rem;
+	}
+
+	:global(html[data-duo='open-portrait']) .duo-side {
+		grid-row: 2;
+		align-self: start;
+		width: 100%;
+		padding-top: 0.85rem;
+		border-top: 1px solid #2a2a2a;
+	}
+
+	:global(html[data-duo='open-portrait']) .amount {
+		font-size: clamp(3.1rem, 14vw, 5.2rem);
 	}
 
 </style>

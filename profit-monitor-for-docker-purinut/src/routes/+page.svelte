@@ -1875,15 +1875,16 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 	</style>
 </svelte:head>
 
-<div class="min-h-screen bg-[#0a0a0a] text-[#f5f5f5] pb-[max(1rem,env(safe-area-inset-bottom))]" class:hidden={!appReady}>
-	<div class="sticky top-0 z-30 bg-[#0a0a0a] pt-[env(safe-area-inset-top)]">
-		<div class="max-w-7xl mx-auto px-3 sm:px-4 py-3 flex items-start justify-between gap-3">
+<div class="duo-shell min-h-screen bg-[#0a0a0a] text-[#f5f5f5] pb-[max(1rem,env(safe-area-inset-bottom))]" class:hidden={!appReady}>
+	<div class="duo-top">
+	<div class="duo-bar sticky top-0 z-30 bg-[#0a0a0a] pt-[env(safe-area-inset-top)]">
+		<div class="duo-bar-inner max-w-7xl mx-auto px-3 sm:px-4 py-3 flex items-start justify-between gap-3">
 			<div class="min-w-0 flex-1">
 				<div class="flex items-center gap-2">
 					<CurrencyFlag currency={displayCurrency} />
 					<div class="text-xs sm:text-sm tracking-wide">PROFIT MONITOR</div>
 				</div>
-				<div class="flex flex-col gap-0.5 text-xs mt-1 min-w-0 sm:flex-row sm:items-center sm:gap-2">
+				<div class="flex flex-col gap-0.5 text-xs mt-1 min-w-0">
 					{#if resumeLoading}
 						<span title="Returned to app — fetching latest data">RESUMED · LOADING LATEST</span>
 					{:else}
@@ -1895,7 +1896,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						</div>
 						{#if quickThb}
 							<span
-								class="whitespace-nowrap font-semibold text-[#ffcc33] tabular-nums"
+								class="font-semibold text-[#ffcc33] tabular-nums"
 								aria-live="polite"
 								title={shownFx.displayMode === 'live+buffer'
 									? `USD → THB @ ${shownFx.rawRate} − ${shownFx.buffer} = ${shownFx.rate} (${shownFx.source})`
@@ -1916,7 +1917,49 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					{/if}
 				</div>
 			</div>
-			<div class="flex items-center gap-1.5 shrink-0">
+			<div class="flex items-center justify-end gap-1.5 shrink-0 flex-wrap">
+				<button
+					type="button"
+					on:click={openTakeSnapshotDialog}
+					class="fac-ghost fac-icon"
+					class:fac-on={!!snapshot}
+					disabled={snapshotLoading || loading}
+					title={snapshot ? 'Reset snapshot' : 'Take snapshot'}
+					aria-label={snapshot ? 'Reset snapshot' : 'Take snapshot'}
+				>
+					<svg viewBox="0 0 24 24" aria-hidden="true">
+						<path d="M4.5 8.5h3.2l1.4-2h5.8l1.4 2H19.5V18.5h-15z" />
+						<circle cx="12" cy="13.2" r="2.4" />
+					</svg>
+				</button>
+				{#if snapshot}
+					<button
+						type="button"
+						on:click={openTurnOffSnapshotDialog}
+						class="fac-ghost fac-icon"
+						disabled={snapshotLoading || loading}
+						title="Turn off snapshot"
+						aria-label="Turn off snapshot"
+					>
+						<svg viewBox="0 0 24 24" aria-hidden="true">
+							<path d="M4.5 8.5h3.2l1.4-2h5.8l1.4 2H19.5V18.5h-15z" />
+							<path d="M5 19L19 5" />
+						</svg>
+					</button>
+				{/if}
+				<button
+					type="button"
+					on:click={openSummaryEmailDialog}
+					class="fac-ghost fac-icon disabled:opacity-40 disabled:cursor-not-allowed"
+					disabled={summaryEmailSending || loading || !plAlertSettings.recipientEmail.trim()}
+					title={plAlertSettings.recipientEmail.trim() ? `Send summary to ${plAlertSettings.recipientEmail}` : 'Set Recipient email in Settings'}
+					aria-label={plAlertSettings.recipientEmail.trim() ? `Send summary to ${plAlertSettings.recipientEmail}` : 'Set Recipient email in Settings'}
+				>
+					<svg viewBox="0 0 24 24" aria-hidden="true">
+						<path d="M3 6h18v12H3z" />
+						<path d="M3 7l9 7 9-7" />
+					</svg>
+				</button>
 				<button
 					on:click={() => setRevealBookValues(!revealBookValues)}
 					class="fac-ghost fac-icon"
@@ -1964,7 +2007,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			</div>
 		</div>
 		{#if (plAlertSettings.profitEnabled && plAlertState.profitPaused) || (plAlertSettings.lossEnabled && plAlertState.lossPaused)}
-			<div class="max-w-7xl mx-auto px-3 sm:px-4 pb-3 flex flex-col sm:flex-row gap-2">
+			<div class="duo-alerts max-w-7xl mx-auto px-3 sm:px-4 pb-3 flex flex-col sm:flex-row gap-2">
 				{#if plAlertSettings.profitEnabled && plAlertState.profitPaused}
 					<button
 						on:click={() => resetPlAlert('profit')}
@@ -1986,15 +2029,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			</div>
 		{/if}
 	</div>
-
-	<div class="max-w-7xl mx-auto px-3 sm:px-4 py-4 space-y-4">
-		{#if loading}
-			<div class="flex justify-center items-center h-64">
-				<div class="animate-spin h-10 w-10 border-2 border-[#f5f5f5] border-t-transparent"></div>
-			</div>
-		{:else}
-
-		<div class="pt-6 pb-2" data-fx-rate={displayRate}>
+		{#if !loading}
+		<div class="duo-read max-w-7xl mx-auto px-3 sm:px-4 pt-4 space-y-4">
+		<div class="duo-hero pt-6 pb-2" data-fx-rate={displayRate}>
 			{#if !isDataComplete}
 				<span class="inline-block text-xs font-semibold fac-minus mb-2">Partial Data</span>
 			{/if}
@@ -2004,7 +2041,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			<div class="flex items-center gap-3 sm:gap-4">
 				<CurrencyFlag currency={displayCurrency} size={28} />
 				<div
-					class="fac-display text-6xl sm:text-7xl lg:text-[7rem] font-extrabold tracking-tight leading-none tabular-nums flex items-baseline gap-[0.18em] flex-wrap {!isDataComplete ? 'opacity-60' : ''} {Math.abs(heroValue) < 0.005 ? 'text-[#ececec]' : heroValue >= 0 ? 'fac-plus' : 'fac-minus'}"
+					class="pl-hero fac-display text-6xl sm:text-7xl lg:text-[7rem] font-extrabold tracking-tight leading-none tabular-nums flex items-baseline gap-[0.18em] flex-wrap {!isDataComplete ? 'opacity-60' : ''} {Math.abs(heroValue) < 0.005 ? 'text-[#ececec]' : heroValue >= 0 ? 'fac-plus' : 'fac-minus'}"
 				>
 					{#if currencySettings.currency === 'USD'}
 						<button
@@ -2060,32 +2097,9 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				</p>
 			{/if}
 
-			<div class="flex items-center gap-3 flex-wrap text-xs mt-2">
-				<button on:click={openTakeSnapshotDialog} class="fac-ghost text-xs" disabled={snapshotLoading}>
-					{snapshot ? 'RESET SNAPSHOT' : 'TAKE SNAPSHOT'}
-				</button>
-				{#if snapshot}
-					<button on:click={openTurnOffSnapshotDialog} class="fac-ghost text-xs" disabled={snapshotLoading}>
-						TURN OFF SNAPSHOT
-					</button>
-				{/if}
-				<button
-					type="button"
-					on:click={openSummaryEmailDialog}
-					class="fac-ghost fac-icon disabled:opacity-40 disabled:cursor-not-allowed"
-					disabled={summaryEmailSending || !plAlertSettings.recipientEmail.trim()}
-					title={plAlertSettings.recipientEmail.trim() ? `Send summary to ${plAlertSettings.recipientEmail}` : 'Set Recipient email in Settings'}
-					aria-label={plAlertSettings.recipientEmail.trim() ? `Send summary to ${plAlertSettings.recipientEmail}` : 'Set Recipient email in Settings'}
-				>
-					<svg viewBox="0 0 24 24" aria-hidden="true">
-						<path d="M3 6h18v12H3z" />
-						<path d="M3 7l9 7 9-7" />
-					</svg>
-				</button>
-			</div>
 		</div>
 
-		<div class="flex flex-col gap-1 pb-2 text-xs text-[#ececec]">
+		<div class="duo-lanes flex flex-col gap-1 pb-2 text-xs text-[#ececec]">
 			{#if diffLanes.length > 0}
 				<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5" aria-label="Unit diffs">
 					{#each diffLanes as lane, i (lane.unit)}
@@ -2109,6 +2123,18 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			{/if}
 		</div>
 
+		
+		</div>
+		{/if}
+	</div>
+
+	<div class="duo-stage">
+	<div class="duo-work max-w-7xl mx-auto px-3 sm:px-4 py-4 space-y-4">
+		{#if loading}
+			<div class="flex justify-center items-center h-64">
+				<div class="animate-spin h-10 w-10 border-2 border-[#f5f5f5] border-t-transparent"></div>
+			</div>
+		{:else}
 		<div class="flex items-center justify-between gap-2 flex-wrap py-3">
 			<div class="flex items-center gap-2">
 				<button
@@ -2816,6 +2842,70 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					{/each}
 		</div>
 
+		
+
+		{#if summaries.length === 0}
+			<div class="py-12 text-center">
+				<svg class="mx-auto h-10 w-10 text-stone-600 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+				</svg>
+				<h3 class="text-base font-medium text-[#f5f5f5] mb-1">No Data Available</h3>
+				<p class="text-sm text-[#ececec]">Waiting for EA to send account data...</p>
+			</div>
+		{/if}
+
+		{/if}
+	</div>
+	{#if !loading}
+<div class="duo-books max-w-7xl mx-auto px-3 sm:px-4">
+		<div class="duo-lanes duo-lanes-cover flex flex-col gap-1 pb-2 text-xs text-[#ececec]">
+			{#if diffLanes.length > 0}
+				<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5" aria-label="Unit diffs">
+					{#each diffLanes as lane, i (lane.unit)}
+						{#if i > 0}
+							<span class="inline-block h-4 w-px shrink-0 bg-[#ececec]/35" aria-hidden="true"></span>
+						{/if}
+						<span class="inline-flex items-center gap-1">
+							<span class="tabular-nums {lane.lowEquity ? 'fac-warn' : 'text-[#9a9a9a]'}" title={lane.lowEquity ? 'Low equity' : undefined}>#{lane.unit}</span>
+							{#if lane.diffs.length === 0}
+								<span class={lane.lowEquity ? 'fac-warn' : 'text-[#5c5c5c]'} title="No open diff">—</span>
+							{:else}
+								{#each lane.diffs as diff, di (`${lane.unit}-${di}`)}
+									<span class="{diff >= 0 ? 'fac-chip-plus' : 'fac-chip-minus'} tabular-nums">
+										{diff >= 0 ? '+' : ''}{diff}
+									</span>
+								{/each}
+							{/if}
+						</span>
+					{/each}
+				</div>
+			{/if}
+		</div>
+			{#if summaries.length >= 0}
+			{@const visibleAccounts = (summaries || []).filter((a) => activeBrokers.has(a.broker_name) && activeAccountNames.has(a.account_name))}
+			{@const coverFloat = visibleAccounts.reduce((sum, a) => sum + ((a.latest_equity || 0) - (a.latest_balance || 0)), 0)}
+			{@const lowCount = visibleAccounts.filter((a) => isLowEquityWarning(a)).length}
+			{@const staleCount = visibleAccounts.filter((a) => getDataAge(a.last_update).status === 'stale').length}
+			{@const openCount = diffLanes.filter((lane) => lane.diffs.length > 0).length}
+			<div class="duo-cover-pulse" aria-label="Book pulse">
+				<div>
+					<span>FLOAT</span>
+					<strong class={Math.abs(coverFloat) < 0.005 ? '' : coverFloat > 0 ? 'fac-plus' : 'fac-minus'}>{moneyLine(coverFloat, coverFloat > 0.005 ? '+' : '', revealBookValues)}</strong>
+				</div>
+				<div>
+					<span>LOW</span>
+					<strong class={lowCount > 0 ? 'fac-warn' : ''}>{lowCount}</strong>
+				</div>
+				<div>
+					<span>STALE</span>
+					<strong class={staleCount > 0 ? 'fac-warn' : ''}>{staleCount}</strong>
+				</div>
+				<div>
+					<span>OPEN</span>
+					<strong>{openCount}<span class="duo-cover-of">/{diffLanes.length}</span></strong>
+				</div>
+			</div>
+			{/if}
 		<!-- Sum Total -->
 		{#if unitStats.length > 0}
 			{@const brokerTree = (() => {
@@ -3066,25 +3156,15 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 				{/if}
 			</div>
 		{/if}
-
-		{#if summaries.length === 0}
-			<div class="py-12 text-center">
-				<svg class="mx-auto h-10 w-10 text-stone-600 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-				</svg>
-				<h3 class="text-base font-medium text-[#f5f5f5] mb-1">No Data Available</h3>
-				<p class="text-sm text-[#ececec]">Waiting for EA to send account data...</p>
-			</div>
-		{/if}
-
-		{/if}
+		</div>
+	{/if}
 	</div>
 </div>
 
 <!-- Settings Modal -->
 {#if showSettingsModal}
 	<div
-		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 overflow-y-auto flex items-stretch md:items-center justify-center p-0 md:p-6"
+		class="settings-sheet duo-sheet fixed inset-0 bg-black/60 backdrop-blur-sm z-50 overflow-y-auto flex items-stretch md:items-center justify-center p-0 md:p-6"
 		on:click={closeSettings}
 		on:keydown={(e) => e.key === 'Escape' && closeSettings()}
 		role="dialog"
@@ -3099,7 +3179,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 			on:keydown|stopPropagation
 			on:mousedown|stopPropagation
 		>
-			<div class="flex justify-between items-center px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-3 sm:p-6 sm:pb-4">
+			<div class="settings-head flex justify-between items-center px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-3 sm:p-6 sm:pb-4">
 				<h2 id="settings-title" class="text-xl font-semibold text-[#f5f5f5]">Settings</h2>
 				<button
 					on:click={closeSettings}
@@ -3116,7 +3196,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 					</svg>
 				</button>
 			</div>
-            <div class="flex-1 overflow-y-auto px-4 sm:px-6 pb-4 space-y-6">
+            <div class="settings-cols flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 pb-4">
+                <div class="settings-col space-y-6">
                 <div>
                     <fieldset>
                         <legend class="block text-sm font-medium text-[#f5f5f5] mb-2">Display Currency</legend>
@@ -3336,6 +3417,8 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						</div>
 					</fieldset>
 				</div>
+				</div>
+				<div class="settings-col space-y-6">
 
                 <div>
                     <fieldset>
@@ -3636,6 +3719,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 						</div>
 					</fieldset>
 				</div>
+				</div>
 			</div>
 
 			{#if settingsSaveError}
@@ -3665,7 +3749,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 <!-- Delete Confirmation Modal -->
 {#if showDeleteConfirmModal}
 	<div
-		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-60 flex items-center justify-center p-4 sm:p-6"
+		class="duo-sheet fixed inset-0 bg-black/60 backdrop-blur-sm z-60 flex items-center justify-center p-4 sm:p-6"
 		on:click={() => (showDeleteConfirmModal = false)}
 		on:keydown={(e) => e.key === 'Escape' && (showDeleteConfirmModal = false)}
 		role="dialog"
@@ -3736,7 +3820,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 
 {#if pendingDialogAccount}
 	<div
-		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 overflow-y-auto flex items-stretch md:items-center justify-center p-0 md:p-6"
+		class="duo-sheet fixed inset-0 bg-black/60 backdrop-blur-sm z-50 overflow-y-auto flex items-stretch md:items-center justify-center p-0 md:p-6"
 		on:click={closePendingDialog}
 		on:keydown={(e) => e.key === 'Escape' && closePendingDialog()}
 		role="dialog"
@@ -3843,7 +3927,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 
 {#if pendingDeleteTarget}
 	<div
-		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[70] flex items-center justify-center p-4 sm:p-6"
+		class="duo-sheet fixed inset-0 bg-black/60 backdrop-blur-sm z-[70] flex items-center justify-center p-4 sm:p-6"
 		on:click={closePendingDelete}
 		on:keydown={(e) => e.key === 'Escape' && closePendingDelete()}
 		role="dialog"
@@ -3906,7 +3990,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 
 {#if noteAdd}
 	<div
-		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4 sm:p-6"
+		class="duo-sheet fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4 sm:p-6"
 		on:click={closeNoteAdd}
 		on:keydown={(e) => e.key === 'Escape' && closeNoteAdd()}
 		role="dialog"
@@ -3987,7 +4071,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 	{@const before = walletPrompt.kind === 'settings-dp' ? roundMoney(externalWallet.balance + settingsWalletCredit) : externalWallet.balance}
 	{@const after = roundMoney(before + effect)}
 	<div
-		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
+		class="duo-sheet fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
 		on:click={dismissWalletPrompt}
 		on:keydown={(e) => e.key === 'Escape' && dismissWalletPrompt()}
 		role="dialog"
@@ -4075,7 +4159,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 	{@const amount = wdPendingAmount(wdPrompt.previous, wdPrompt.next)}
 	{@const accounts = accountsForUnit(wdPrompt.unit)}
 	<div
-		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
+		class="duo-sheet fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
 		on:click={dismissWdPrompt}
 		on:keydown={(e) => e.key === 'Escape' && dismissWdPrompt()}
 		role="dialog"
@@ -4193,7 +4277,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 
 {#if snapshotDialog}
 	<div
-		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
+		class="duo-sheet fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
 		on:click={closeSnapshotDialog}
 		on:keydown={(e) => e.key === 'Escape' && closeSnapshotDialog()}
 		role="dialog"
@@ -4304,7 +4388,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 
 {#if summaryEmailOpen}
 	<div
-		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
+		class="duo-sheet fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
 		on:click={closeSummaryEmailDialog}
 		on:keydown={(e) => e.key === 'Escape' && closeSummaryEmailDialog()}
 		role="dialog"
@@ -4366,7 +4450,7 @@ function truncateWithEllipsis(name: string, max: number = 6): string {
 
 {#if walletAdjustOpen}
 	<div
-		class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
+		class="duo-sheet fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6"
 		on:click={closeWalletAdjust}
 		on:keydown={(e) => e.key === 'Escape' && closeWalletAdjust()}
 		role="dialog"
